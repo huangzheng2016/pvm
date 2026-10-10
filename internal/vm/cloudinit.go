@@ -15,6 +15,9 @@ type GuestMount struct {
 }
 
 func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
+	if err := ValidateSpec(spec, mounts); err != nil {
+		return nil, err
+	}
 	fstab := []string{
 		"pvmshare /share 9p trans=virtio,version=9p2000.L,msize=262144,access=any,rw,_netdev,nofail 0 0",
 	}
@@ -28,19 +31,6 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 			"mkdir -p "+m.Guest,
 			fmt.Sprintf("mountpoint -q %s || mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,access=any %s %s", m.Guest, m.Tag, m.Guest),
 		)
-	}
-
-	// Git identity is written only when explicitly requested at create
-	// time; the host's ~/.gitconfig is never consulted or propagated
-	// (it leaks into Claude Code's gitStatus session context).
-	if spec.GitEmail != "" {
-		git := []string{
-			fmt.Sprintf("sudo -u %s git config --global user.email %q", spec.User, spec.GitEmail),
-		}
-		if spec.GitName != "" {
-			git = append(git, fmt.Sprintf("sudo -u %s git config --global user.name %q", spec.User, spec.GitName))
-		}
-		runcmd = append(git, runcmd...)
 	}
 
 	doc := map[string]any{
@@ -84,11 +74,28 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 		"uid":                 spec.GuestUID,
 		"ssh_authorized_keys": []string{strings.TrimSpace(sshPub)},
 	}}
-	doc["write_files"] = []map[string]any{{
+	writeFiles := []map[string]any{{
 		"path":    "/etc/fstab",
 		"append":  true,
 		"content": strings.Join(fstab, "\n") + "\n",
 	}}
+	// Git identity is written only when explicitly requested at create
+	// time; the host's ~/.gitconfig is never consulted or propagated
+	// (it leaks into Claude Code's gitStatus session context). Written as
+	// a file, never via shell.
+	if spec.GitEmail != "" {
+		content := fmt.Sprintf("[user]\n\temail = %s\n", spec.GitEmail)
+		if spec.GitName != "" {
+			content += fmt.Sprintf("\tname = %s\n", spec.GitName)
+		}
+		writeFiles = append(writeFiles, map[string]any{
+			"path":        "/home/" + spec.User + "/.gitconfig",
+			"owner":       spec.User + ":" + spec.User,
+			"permissions": "0644",
+			"content":     content,
+		})
+	}
+	doc["write_files"] = writeFiles
 	out, err := yaml.Marshal(doc)
 	if err != nil {
 		return nil, err
