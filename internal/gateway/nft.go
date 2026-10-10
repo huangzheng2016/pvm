@@ -10,14 +10,15 @@ import (
 
 // RenderNFT produces the complete `inet pvm` table for the config:
 // MASQUERADE out the uplink and out any exit tunnels, one DNAT per port
-// map, DNS hijack (plain DNS is forced to the gateway resolver, DoT is
-// refused so clients fall back to plain DNS), the fake-ip REDIRECT into
-// the local transparent proxy, and a forward kill-switch: VMs routed
-// via an exit may never talk to the uplink directly — except traffic
-// whose destination is in the bypass set (direct CIDRs and IPs learned
-// from direct-rule DNS answers), which must pass or direct rules would
-// be dead for proxied VMs. The table is rebuilt atomically on every
-// apply so stale rules can never linger; bypassIPs carries the current
+// map, DNS hijack (plain DNS is forced to the gateway resolver, DoT and
+// well-known public DoH/DoQ endpoints are refused so clients fall back
+// to plain DNS), the fake-ip REDIRECT into the local transparent proxy,
+// and a default-deny forward policy for br0 -> uplink: only bypass
+// destinations (direct CIDRs and learned direct-domain IPs) and the
+// registered DHCP MAC/IP pairs of direct VMs may pass, so exit-routed
+// VMs fail closed when the tunnel is down and unregistered or spoofed
+// sources get nothing. The table is rebuilt atomically on every apply
+// so stale rules can never linger; bypassIPs carries the current
 // learned set so the rebuild preserves it.
 func RenderNFT(c *Config, uplink, br string, bypassIPs []string) string {
 	var b strings.Builder
@@ -54,6 +55,11 @@ func RenderNFT(c *Config, uplink, br string, bypassIPs []string) string {
 	fmt.Fprintf(&b, "    iifname %q tcp dport 53 dnat ip to %s\n", br, c.GwIP)
 	fmt.Fprintf(&b, "    iifname %q udp dport 853 reject\n", br)
 	fmt.Fprintf(&b, "    iifname %q tcp dport 853 reject\n", br)
+	// DoH/DoQ to the well-known public resolvers is refused as well:
+	// domain rules only see DNS that passes the gateway, and their :53 is
+	// already hijacked, so this only breaks the hard-coded-DoH bypass.
+	fmt.Fprintf(&b, "    iifname %q ip daddr %s tcp dport 443 reject\n", br, dohResolverSet())
+	fmt.Fprintf(&b, "    iifname %q ip daddr %s udp dport 443 reject\n", br, dohResolverSet())
 	// fake-ip data plane: TCP goes to the local transparent proxy. All
 	// UDP to fake IPs is refused (QUIC udp/443 retries over TCP; other
 	// UDP has no proxy path and must fail fast instead of leaking into
@@ -64,24 +70,28 @@ func RenderNFT(c *Config, uplink, br string, bypassIPs []string) string {
 	b.WriteString("  }\n")
 	b.WriteString("  chain forward {\n")
 	b.WriteString("    type filter hook forward priority 0; policy accept;\n")
-	// kill-switch: exit-routed VMs may never reach the uplink directly
-	// (fail closed when the tunnel is down) — but direct-rule traffic
-	// policy-routed to the main table via the bypass set must pass.
+	// IPv6 must never reach the uplink: the cluster is v4-only and the
+	// kill-switch below is v4-only. (The gateway also sets
+	// net.ipv6.conf.all.disable_ipv6=1; this is the belt-and-suspenders.)
+	fmt.Fprintf(&b, "    iifname %q oifname %q meta nfproto ipv6 drop\n", br, uplink)
+	// br0 -> uplink is default-deny: bypass destinations (direct CIDRs and
+	// learned direct-domain IPs) pass for every VM, then each direct VM's
+	// registered DHCP MAC/IP pair. Exit-routed VMs match neither and fail
+	// closed, and an unregistered/spoofed source gets nothing — a guest
+	// can no longer escape the kill-switch by changing its address.
+	fmt.Fprintf(&b, "    iifname %q oifname %q ip daddr @bypass4 accept\n", br, uplink)
 	for _, v := range c.VMs {
 		exitName, via := c.VMExits[v.Name]
-		if !via || exitName == "" || exitName == "direct" {
-			continue
+		if via && exitName != "" && exitName != "direct" {
+			continue // exit-routed VMs only get bypass + tunnel
 		}
-		// DHCP already pins each VM's MAC/IP pair; matching both makes
-		// casual source-IP spoofing fail closed. A determined guest can
-		// still forge both fields, so this is best-effort, not port isolation.
 		mac := ""
 		if v.MAC != "" {
 			mac = " ether saddr " + v.MAC
 		}
-		fmt.Fprintf(&b, "    ip saddr %s%s oifname %q ip daddr @bypass4 accept\n", v.IP, mac, uplink)
-		fmt.Fprintf(&b, "    ip saddr %s%s oifname %q drop\n", v.IP, mac, uplink)
+		fmt.Fprintf(&b, "    iifname %q%s ip saddr %s oifname %q accept\n", br, mac, v.IP, uplink)
 	}
+	fmt.Fprintf(&b, "    iifname %q oifname %q drop\n", br, uplink)
 	b.WriteString("  }\n")
 	b.WriteString("}\n")
 	return b.String()

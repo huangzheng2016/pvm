@@ -36,7 +36,12 @@ func (a *Agent) applyNetwork(c *Config) error {
 }
 
 func os_WriteSysctl() error {
-	return run("sysctl", "-w", "net.ipv4.ip_forward=1")
+	if err := run("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
+		return err
+	}
+	// the cluster is IPv4-only; v6 egress has no kill-switch coverage and
+	// must not exist. cloud-init writes the same values persistently.
+	return run("sysctl", "-w", "net.ipv6.conf.all.disable_ipv6=1")
 }
 
 // uplinkIface returns the interface owning the default route.
