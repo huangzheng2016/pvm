@@ -23,7 +23,7 @@ vm:
                 (create needs a running vm; rm needs the vm stopped)
   exec          run a command via the guest agent (no network needed): pvm exec dev1 cmd...
   logs          stream a vm console: pvm logs dev1 [--follow] [--tail N]
-  kasm          open a vm's web desktop: pvm kasm dev1 [--open]
+  desktop       open the vm's native xfce desktop: pvm desktop dev1 [--open] [--stop] [--size WxH]
 
 network:
   map           map ports: pvm map dev1 8080:80 [--udp] | ls | rm <port> [--udp]
@@ -36,7 +36,7 @@ network:
 
 image:
   image fetch   download a base image (ubuntu:24.04, debian:13, alpine:3.21)
-  image build   bake a golden image (docker + kasm preinstalled; ubuntu/debian only)
+  image build   bake a golden image (docker + xfce desktop preinstalled; ubuntu/debian only)
                 flags: --keep-vm --cpus N --mem MB --disk GB
   image list    list base and golden images
 
@@ -75,7 +75,7 @@ examples:
   pvm create --image ubuntu:24.04 --name dev1 --user dev
   pvm route dev1 --via us
   pvm ssh dev1 'curl -s ipinfo.io'
-  pvm kasm dev1
+  pvm desktop dev1
   pvm map dev1 8080:80
   pvm snapshot create dev1 && pvm start dev1
 `
@@ -130,8 +130,8 @@ func main() {
 		code = cli.CmdAgent(args)
 	case "version", "--version", "-v":
 		fmt.Println(buildinfo.Version)
-	case "kasm":
-		code = cli.CmdKasm(args)
+	case "desktop":
+		code = cli.CmdDesktop(args)
 	case "gateway":
 		fmt.Println("gateway is managed automatically by the pvm daemon; no manual action is required")
 	default:

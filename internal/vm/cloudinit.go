@@ -89,7 +89,7 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 		doc["timezone"] = tz
 	}
 	if alpine {
-		// Alpine uses apk + OpenRC. Keep the image lean: no docker/kasm.
+		// Alpine uses apk + OpenRC. Keep the image lean: no docker/desktop.
 		doc["package_update"] = true
 		doc["packages"] = []string{"openssh", "sudo", "shadow", "bash", "ca-certificates", "tzdata"}
 	} else if spec.Golden > 0 {
