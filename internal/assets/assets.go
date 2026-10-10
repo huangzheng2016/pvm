@@ -28,17 +28,6 @@ type manifestEntry struct {
 	Mode   int32  `json:"mode"`
 }
 
-// nativeAssetAllowed reports whether path is one of the guest payloads
-// built for the current host architecture.
-func nativeAssetAllowed(path string) bool {
-	switch path {
-	case "agent-linux-" + runtime.GOARCH, "gateway-linux-" + runtime.GOARCH:
-		return true
-	default:
-		return false
-	}
-}
-
 // Unpack extracts all manifest entries into dir, verifying hashes. It is
 // safe to call on every startup: files whose hash already matches are
 // skipped. Without embedded assets (dev build) it is a no-op.
@@ -63,7 +52,6 @@ func Unpack(dir string) error {
 	for _, e := range entries {
 		if e.Path != native.GuestBinary("agent") && e.Path != native.GuestBinary("gateway") {
 			return fmt.Errorf("unsupported embedded asset %q (only native agent/gateway binaries are allowed)", e.Path)
-		}
 		}
 		raw, err := packed.ReadFile("packed/" + e.Path + ".zst")
 		if err != nil {
