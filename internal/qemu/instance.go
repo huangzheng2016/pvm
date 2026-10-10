@@ -20,6 +20,9 @@ type Instance struct {
 	StatePath string
 	Toolchain *Toolchain
 
+	// mu serializes operations within this Instance value only. The daemon
+	// creates a fresh Instance per call, so cross-call lifecycle exclusion
+	// must use LockVM; mu is not a daemon-wide or per-VM lock.
 	mu  sync.Mutex
 	cmd *exec.Cmd
 }
@@ -53,12 +56,20 @@ func (in *Instance) loadState() (*RunState, error) {
 }
 
 // Running reports the current run state if the recorded process is alive.
-func (in *Instance) Running() *RunState {
+// A missing state file is not an error, but a corrupted one is: callers
+// must not mistake that for "not running" and start a second QEMU.
+func (in *Instance) Running() (*RunState, error) {
 	st, err := in.loadState()
-	if err != nil || st.Ident == nil || !st.Ident.Alive() {
-		return nil
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("vm state %s: %w", in.StatePath, err)
 	}
-	return st
+	if st.Ident == nil || !st.Ident.Alive() {
+		return nil, nil
+	}
+	return st, nil
 }
 
 // Start launches QEMU. On early hardware-accel failure it retries once
@@ -66,7 +77,11 @@ func (in *Instance) Running() *RunState {
 func (in *Instance) Start() error {
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	if st := in.Running(); st != nil {
+	st, err := in.Running()
+	if err != nil {
+		return fmt.Errorf("cannot start vm safely: %w; move the corrupted state file aside or delete it after confirming no qemu process is running", err)
+	}
+	if st != nil {
 		return fmt.Errorf("vm already running (pid %d)", st.PID)
 	}
 	if err := in.startWithAccel(in.Cfg.Accel); err == nil {
@@ -148,7 +163,10 @@ func (in *Instance) startWithAccel(accel Accel) error {
 func (in *Instance) Stop() error {
 	in.mu.Lock()
 	defer in.mu.Unlock()
-	st := in.Running()
+	st, err := in.Running()
+	if err != nil {
+		return fmt.Errorf("cannot stop vm safely: %w", err)
+	}
 	if st == nil {
 		os.Remove(in.StatePath)
 		return nil

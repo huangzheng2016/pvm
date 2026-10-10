@@ -126,13 +126,16 @@ func TestRenderNFTBypassBeforeDrop(t *testing.T) {
 			t.Errorf("ruleset missing %q\n%s", want, out)
 		}
 	}
-	accept := strings.Index(out, `ip saddr 192.168.1.10 oifname "enp0s1" ip daddr @bypass4 accept`)
-	drop := strings.Index(out, `ip saddr 192.168.1.10 oifname "enp0s1" drop`)
+	accept := strings.Index(out, `ip saddr 192.168.1.10 ether saddr 52:54:00:00:00:10 oifname "enp0s1" ip daddr @bypass4 accept`)
+	drop := strings.Index(out, `ip saddr 192.168.1.10 ether saddr 52:54:00:00:00:10 oifname "enp0s1" drop`)
 	if accept < 0 || drop < 0 {
 		t.Fatalf("missing bypass accept or kill-switch drop\n%s", out)
 	}
 	if accept > drop {
 		t.Errorf("bypass accept must precede the kill-switch drop\n%s", out)
+	}
+	if !strings.Contains(out, "ether saddr 52:54:00:00:00:10") {
+		t.Errorf("kill-switch must bind the DHCP MAC/IP pair\n%s", out)
 	}
 	// sets are only legal at table level: bypass4 must be declared
 	// before the first chain or nft -f rejects the whole render

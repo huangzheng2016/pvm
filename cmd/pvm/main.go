@@ -98,7 +98,7 @@ func main() {
 	case "kasm":
 		code = cli.CmdKasm(args)
 	case "gateway":
-		fmt.Printf("%s: not implemented yet\n", os.Args[1])
+		fmt.Println("gateway is managed automatically by the pvm daemon; no manual action is required")
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])
 		fmt.Printf(usage, buildinfo.Version)
