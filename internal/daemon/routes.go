@@ -4,10 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 
 	"github.com/huangzheng2016/pvm/internal/cluster"
+	"github.com/huangzheng2016/pvm/internal/exit"
 	"github.com/huangzheng2016/pvm/internal/gw/rules"
+	"github.com/huangzheng2016/pvm/internal/qemu"
+	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
 type routeRuleRequest struct {
@@ -44,6 +48,10 @@ func (s *Server) handleRouteAdd(w http.ResponseWriter, r *http.Request) {
 		rule.Exit, rule.DNS = "", ""
 	case rules.Proxy:
 		rule.DNS = ""
+		if _, err := exit.LoadEntry(filepath.Join(s.P.Home, "exits"), rule.Exit); err != nil {
+			writeErr(w, 400, fmt.Errorf("exit %q is not registered (see `pvm exit ls`)", rule.Exit))
+			return
+		}
 	case rules.Internal:
 		rule.Exit = ""
 		if rule.Type != rules.DomainSuffix && rule.Type != rules.DomainPrefix && rule.Type != rules.DomainKeyword {
@@ -121,7 +129,25 @@ func (s *Server) handleVMRoute(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
-	if err := s.Clusters.SetVMExit(spec.ClusterID, spec.Name, req.Via); err != nil {
+	via := req.Via
+	if via != "" && via != "direct" {
+		if _, err := exit.LoadEntry(filepath.Join(s.P.Home, "exits"), via); err != nil {
+			writeErr(w, 400, fmt.Errorf("exit %q is not registered (see `pvm exit ls`)", via))
+			return
+		}
+	}
+	lock := qemu.LockVM(name)
+	lock.Lock()
+	defer lock.Unlock()
+	// The region profile mutates PrevTZ/PrevLocale on a fresh copy; the
+	// cached spec is only replaced afterwards, so concurrent readers
+	// never observe a half-updated struct.
+	fresh, err := vm.Load(s.P, name)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	if err := s.Clusters.SetVMExit(spec.ClusterID, spec.Name, via); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
@@ -132,12 +158,15 @@ func (s *Server) handleVMRoute(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	note := ""
-	if req.Via == "direct" || req.Via == "" {
-		note = s.restoreRegion(spec)
+	if via == "direct" || via == "" {
+		note = s.restoreRegion(fresh)
 	} else {
-		note = s.applyRegionProfile(spec, req.Via)
+		note = s.applyRegionProfile(fresh, via)
 	}
-	writeJSON(w, 200, map[string]any{"vm": spec.Name, "via": req.Via, "note": note})
+	s.mu.Lock()
+	s.vms[name] = fresh
+	s.mu.Unlock()
+	writeJSON(w, 200, map[string]any{"vm": spec.Name, "via": via, "note": note})
 }
 
 // handleDNSList returns the gateway's live fake-ip mapping table.

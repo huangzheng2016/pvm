@@ -14,33 +14,37 @@ import (
 type relaySet struct {
 	mu sync.Mutex
 	// key: "tcp/8080"
-	tcp map[string]net.Listener
-	udp map[string]*udpRelay
+	tcp  map[string]net.Listener
+	udp  map[string]*udpRelay
+	pool map[string]int // key -> poolPort, mismatch is an error not a silent alias
 }
 
 func newRelaySet() *relaySet {
-	return &relaySet{tcp: map[string]net.Listener{}, udp: map[string]*udpRelay{}}
+	return &relaySet{tcp: map[string]net.Listener{}, udp: map[string]*udpRelay{}, pool: map[string]int{}}
 }
 
 func relayKey(proto string, port int) string { return fmt.Sprintf("%s/%d", proto, port) }
 
-// Ensure starts the relay for one map if not already running.
+// Ensure starts the relay for one map if not already running. An
+// existing relay bound to a different pool port is a hard error: an
+// orphaned relay must never quietly serve a new VM's traffic.
 func (r *relaySet) Ensure(proto string, hostPort, poolPort int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := relayKey(proto, hostPort)
-	if proto == "udp" {
-		if _, ok := r.udp[key]; ok {
-			return nil
+	if pp, ok := r.pool[key]; ok {
+		if pp != poolPort {
+			return fmt.Errorf("host port %d/%s already relayed to pool port %d (want %d)", hostPort, proto, pp, poolPort)
 		}
+		return nil
+	}
+	if proto == "udp" {
 		rel, err := startUDPRelay(hostPort, poolPort)
 		if err != nil {
 			return err
 		}
 		r.udp[key] = rel
-		return nil
-	}
-	if _, ok := r.tcp[key]; ok {
+		r.pool[key] = poolPort
 		return nil
 	}
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", hostPort))
@@ -48,6 +52,7 @@ func (r *relaySet) Ensure(proto string, hostPort, poolPort int) error {
 		return fmt.Errorf("relay listen %d: %w", hostPort, err)
 	}
 	r.tcp[key] = ln
+	r.pool[key] = poolPort
 	go acceptTCP(ln, poolPort)
 	return nil
 }
@@ -64,6 +69,7 @@ func (r *relaySet) Remove(proto string, hostPort int) {
 		rel.close()
 		delete(r.udp, key)
 	}
+	delete(r.pool, key)
 }
 
 func acceptTCP(ln net.Listener, poolPort int) {

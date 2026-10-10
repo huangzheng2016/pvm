@@ -59,6 +59,7 @@ func (p *Paths) Ensure() error {
 func (p *Paths) ConfigFile() string       { return filepath.Join(p.Home, "config.yaml") }
 func (p *Paths) DaemonSock() string       { return filepath.Join(p.Run, "daemon.sock") }
 func (p *Paths) DaemonLock() string       { return filepath.Join(p.Run, "daemon.lock") }
+func (p *Paths) DaemonRunLock() string    { return filepath.Join(p.Run, "daemon.run.lock") }
 func (p *Paths) DaemonStopMark() string   { return filepath.Join(p.Run, "daemon.stopped") }
 func (p *Paths) DaemonLog() string        { return filepath.Join(p.Run, "daemon.log") }
 func (p *Paths) SSHKey() string           { return filepath.Join(p.Keys, "id_ed25519") }

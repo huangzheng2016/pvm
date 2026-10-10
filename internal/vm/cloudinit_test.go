@@ -58,10 +58,13 @@ func TestUserDataRegionProfile(t *testing.T) {
 		t.Fatal(err)
 	}
 	s = string(ud)
-	for _, want := range []string{"timezone: America/Los_Angeles", `user.email "dev@example.com"`, `user.name "Dev"`} {
+	for _, want := range []string{"timezone: America/Los_Angeles", "/home/u/.gitconfig", "email = dev@example.com", "name = Dev"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("user-data missing %q", want)
 		}
+	}
+	if strings.Contains(s, "git config --global") {
+		t.Error("git identity must not be written via shell")
 	}
 }
 
