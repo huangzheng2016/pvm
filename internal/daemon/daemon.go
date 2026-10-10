@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/huangzheng2016/pvm/internal/agent"
 	"github.com/huangzheng2016/pvm/internal/buildinfo"
 	"github.com/huangzheng2016/pvm/internal/config"
 	"github.com/huangzheng2016/pvm/internal/paths"
@@ -34,6 +35,9 @@ type Server struct {
 	started time.Time
 	mu      sync.Mutex // guards vms cache
 	vms     map[string]*vm.Spec
+
+	agentMu sync.Mutex // guards agents
+	agents  map[string]*agent.Client
 }
 
 type vmInfo struct {
@@ -44,7 +48,40 @@ type vmInfo struct {
 }
 
 func NewServer(p *paths.Paths, cfg *config.Config, tc *qemu.Toolchain, accel qemu.Accel, sshPub string) *Server {
-	return &Server{P: p, Cfg: cfg, TC: tc, Accel: accel, SSHPub: sshPub, started: time.Now(), vms: map[string]*vm.Spec{}}
+	return &Server{P: p, Cfg: cfg, TC: tc, Accel: accel, SSHPub: sshPub, started: time.Now(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}}
+}
+
+// agentClient returns the shared per-VM agent connection, dialing if
+// needed. QEMU's chardev socket accepts exactly one host connection,
+// so every exec multiplexes over this single client. Fresh connections
+// are Ping-checked: a half-open or protocol-desynced channel is
+// discarded instead of handed to callers.
+func (s *Server) agentClient(name string) (*agent.Client, error) {
+	s.agentMu.Lock()
+	defer s.agentMu.Unlock()
+	if c := s.agents[name]; c != nil && !c.Closed() {
+		return c, nil
+	}
+	c, err := agent.DialSock(s.P.AgentSock(name))
+	if err != nil {
+		return nil, err
+	}
+	if _, err := c.Ping(); err != nil {
+		c.Close()
+		return nil, err
+	}
+	s.agents[name] = c
+	return c, nil
+}
+
+// dropAgent discards a broken shared connection.
+func (s *Server) dropAgent(name string, c *agent.Client) {
+	s.agentMu.Lock()
+	defer s.agentMu.Unlock()
+	if s.agents[name] == c {
+		delete(s.agents, name)
+	}
+	c.Close()
 }
 
 func (s *Server) instance(spec *vm.Spec) *qemu.Instance {
@@ -82,6 +119,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/vms/{name}", s.handleDelete)
 	mux.HandleFunc("POST /v1/vms/{name}/start", s.handleStart)
 	mux.HandleFunc("POST /v1/vms/{name}/stop", s.handleStop)
+	mux.HandleFunc("POST /v1/vms/{name}/exec", s.handleExec)
 	mux.HandleFunc("POST /v1/shutdown", s.handleShutdown)
 	return mux
 }
@@ -99,14 +137,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, map[string]any{
-		"version":  buildinfo.Version,
-		"pid":      os.Getpid(),
-		"uptime":   time.Since(s.started).Round(time.Second).String(),
-		"vms":      len(specs),
-		"running":  running,
-		"accel":    s.Accel,
-		"qemu":     s.TC.System,
-		"bundled":  s.TC.Bundled,
+		"version": buildinfo.Version,
+		"pid":     os.Getpid(),
+		"uptime":  time.Since(s.started).Round(time.Second).String(),
+		"vms":     len(specs),
+		"running": running,
+		"accel":   s.Accel,
+		"qemu":    s.TC.System,
+		"bundled": s.TC.Bundled,
 	})
 }
 
@@ -214,6 +252,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, fmt.Errorf("created but start failed: %w", err))
 			return
 		}
+		s.ensureAgentAsync(spec)
 	}
 	writeJSON(w, 201, vmInfo{Spec: spec, Running: req.Start})
 }
@@ -269,6 +308,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
+	s.ensureAgentAsync(spec)
 	writeJSON(w, 200, map[string]any{"started": spec.Name})
 }
 

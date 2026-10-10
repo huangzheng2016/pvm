@@ -18,6 +18,7 @@ vm:
   start|stop    start/stop a vm
   rm            stop and delete a vm
   ssh           ssh into a vm: pvm ssh dev1 [cmd...]
+  exec          run a command via the guest agent (no network needed): pvm exec dev1 cmd...
 
 image:
   image fetch   download a base image (ubuntu:24.04, debian:13)
@@ -58,9 +59,13 @@ func main() {
 		code = cli.CmdRm(args)
 	case "ssh":
 		code = cli.CmdSSH(args)
+	case "exec":
+		code = cli.CmdExec(args)
+	case "agent":
+		code = cli.CmdAgent(args)
 	case "version", "--version", "-v":
 		fmt.Println(buildinfo.Version)
-	case "map", "exit", "route", "dns", "kasm", "agent", "gateway", "exit-agent":
+	case "map", "exit", "route", "dns", "kasm", "gateway", "exit-agent":
 		fmt.Printf("%s: not implemented yet (M2+)\n", os.Args[1])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])

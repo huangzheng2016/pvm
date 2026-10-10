@@ -147,6 +147,28 @@ func (c *Client) Delete(path string, out any) error {
 	return decodeResp(resp, out)
 }
 
+// PostStream posts JSON and returns the raw streaming response; the
+// caller must close the body. Used for ndjson streams like exec.
+func (c *Client) PostStream(path string, body any) (*http.Response, error) {
+	var rdr io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		rdr = bytes.NewReader(data)
+	}
+	resp, err := c.http.Post("http://d"+path, "application/json", rdr)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		defer resp.Body.Close()
+		return nil, decodeResp(resp, nil)
+	}
+	return resp, nil
+}
+
 func decodeResp(resp *http.Response, out any) error {
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {

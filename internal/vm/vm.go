@@ -18,9 +18,9 @@ import (
 )
 
 type Spec struct {
-	Name     string `json:"name"`
-	Image    string `json:"image"` // e.g. ubuntu:24.04
-	User     string `json:"user"`
+	Name  string `json:"name"`
+	Image string `json:"image"` // e.g. ubuntu:24.04
+	User  string `json:"user"`
 	// GuestUID pins the guest user's uid to the host user's uid so 9p
 	// shares behave sanely (same trick as lima/docker-desktop).
 	GuestUID int    `json:"guest_uid"`
@@ -37,10 +37,10 @@ type Spec struct {
 
 var nameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
 
-func (s *Spec) dir(p *paths.Paths) string   { return p.VMDir(s.Name) }
-func (s *Spec) Disk(p *paths.Paths) string  { return filepath.Join(s.dir(p), "disk.qcow2") }
-func (s *Spec) Seed(p *paths.Paths) string  { return filepath.Join(s.dir(p), "seed.img") }
-func (s *Spec) Vars(p *paths.Paths) string  { return filepath.Join(s.dir(p), "vars.fd") }
+func (s *Spec) dir(p *paths.Paths) string  { return p.VMDir(s.Name) }
+func (s *Spec) Disk(p *paths.Paths) string { return filepath.Join(s.dir(p), "disk.qcow2") }
+func (s *Spec) Seed(p *paths.Paths) string { return filepath.Join(s.dir(p), "seed.img") }
+func (s *Spec) Vars(p *paths.Paths) string { return filepath.Join(s.dir(p), "vars.fd") }
 func (s *Spec) SpecPath(p *paths.Paths) string {
 	return filepath.Join(s.dir(p), "vm.json")
 }
@@ -103,6 +103,7 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel) qemu.VMConfig {
 		ConsoleLog:  filepath.Join(dir, "console.log"),
 		QMPSock:     filepath.Join(dir, "qmp.sock"),
 		SerialSock:  filepath.Join(dir, "serial.sock"),
+		AgentSock:   p.AgentSock(s.Name),
 		SSHHostPort: s.SSHPort,
 		ShareDir:    p.Share,
 		ExtraMounts: mounts,

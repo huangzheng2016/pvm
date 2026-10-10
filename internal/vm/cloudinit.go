@@ -31,12 +31,12 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 	}
 
 	doc := map[string]any{
-		"hostname":        spec.Name,
-		"fqdn":            spec.Name + ".pvm.internal",
-		"ssh_pwauth":      false,
-		"package_update":  true,
-		"packages":        []string{"qemu-guest-agent"},
-		"runcmd":          runcmd,
+		"hostname":       spec.Name,
+		"fqdn":           spec.Name + ".pvm.internal",
+		"ssh_pwauth":     false,
+		"package_update": true,
+		"packages":       []string{"qemu-guest-agent"},
+		"runcmd":         runcmd,
 		"users": []map[string]any{{
 			"name":                spec.User,
 			"groups":              []string{"sudo"},

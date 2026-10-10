@@ -2,14 +2,17 @@
 // future QEMU bundles) into ~/.pvm/runtime with SHA256 verification,
 // following the platform wails asset model: manifest-driven, zstd
 // compressed, versioned, old versions cleaned up.
+//
+// The embedded FS lives in packed_fs.go and is only compiled in with
+// `-tags embedassets`; otherwise Unpack is a no-op.
 package assets
 
 import (
 	"crypto/sha256"
-	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -17,9 +20,6 @@ import (
 
 	"github.com/huangzheng2016/pvm/internal/buildinfo"
 )
-
-//go:embed all:packed
-var packed embed.FS
 
 type manifestEntry struct {
 	Path   string `json:"path"`   // relative target path under runtime dir
@@ -29,10 +29,13 @@ type manifestEntry struct {
 
 // Unpack extracts all manifest entries into dir, verifying hashes. It is
 // safe to call on every startup: files whose hash already matches are
-// skipped.
+// skipped. Without embedded assets (dev build) it is a no-op.
 func Unpack(dir string) error {
 	data, err := packed.ReadFile("packed/manifest.json")
 	if err != nil {
+		if err == fs.ErrNotExist {
+			return nil
+		}
 		return fmt.Errorf("read manifest: %w", err)
 	}
 	var entries []manifestEntry
