@@ -52,6 +52,9 @@ type Server struct {
 
 	progMu sync.Mutex // guards prog
 	prog   map[string][]StageEvent
+
+	watchMu  sync.Mutex // guards watchSeq
+	watchSeq map[string]uint64
 }
 
 type vmInfo struct {
@@ -67,7 +70,7 @@ type vmInfo struct {
 
 func NewServer(p *paths.Paths, cfg *config.Config, tc *qemu.Toolchain, accel qemu.Accel, sshPub string, clusters *cluster.Store) *Server {
 	return &Server{P: p, Cfg: cfg, TC: tc, Accel: accel, SSHPub: sshPub,
-		Clusters: clusters, relays: newRelaySet(), started: time.Now(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}, prog: map[string][]StageEvent{}}
+		Clusters: clusters, relays: newRelaySet(), started: time.Now(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}, prog: map[string][]StageEvent{}, watchSeq: map[string]uint64{}}
 }
 
 // agentClient returns the shared per-VM agent connection, dialing if
@@ -189,7 +192,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	specs, _ := vm.ListAll(s.P)
 	running := 0
 	for _, sp := range specs {
-		if s.instance(sp).Running() != nil {
+		if st, err := s.instance(sp).Running(); err == nil && st != nil {
 			running++
 		}
 	}
@@ -218,7 +221,7 @@ func (s *Server) collectInfos() []vmInfo {
 				}
 			}
 		}
-		if st := s.instance(sp).Running(); st != nil {
+		if st, err := s.instance(sp).Running(); err == nil && st != nil {
 			info.Running = true
 			info.PID = st.PID
 			info.Uptime = time.Since(st.Started).Round(time.Second).String()
@@ -411,6 +414,7 @@ func (s *Server) startVM(spec *vm.Spec) (*qemu.Instance, *qemu.SnapshotManifest,
 		if cl := s.clustersByGatewayName(spec.Name); cl != nil {
 			go s.onGatewayStarted(cl)
 		}
+		s.watchVM(spec)
 		return inst, nil, nil
 	}
 	if spec.ClusterID > 0 {
@@ -431,6 +435,7 @@ func (s *Server) startVM(spec *vm.Spec) (*qemu.Instance, *qemu.SnapshotManifest,
 	if err := inst.Start(); err != nil {
 		return nil, nil, err
 	}
+	s.watchVM(spec)
 	return inst, man, nil
 }
 
@@ -587,7 +592,10 @@ func (s *Server) handleSnapshotDelete(w http.ResponseWriter, r *http.Request) {
 	lock := qemu.LockVM(name)
 	lock.Lock()
 	defer lock.Unlock()
-	if st := s.instance(spec).Running(); st != nil {
+	if st, err := s.instance(spec).Running(); err != nil {
+		writeErr(w, 500, err)
+		return
+	} else if st != nil {
 		writeErr(w, 409, fmt.Errorf("vm %s is running; stop it before removing the snapshot", name))
 		return
 	}
@@ -659,17 +667,35 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 
 // StopAllVMs gracefully stops every running VM (used on SIGTERM).
 func (s *Server) StopAllVMs() {
-	for _, info := range s.collectInfos() {
+	stopInfosParallel(s.collectInfos(), 8, func(spec *vm.Spec) {
+		lock := qemu.LockVM(spec.Name)
+		lock.Lock()
+		defer lock.Unlock()
+		if err := s.instance(spec).Stop(); err != nil {
+			log.Printf("graceful stop %s: %v", spec.Name, err)
+		}
+	})
+}
+
+func stopInfosParallel(infos []vmInfo, limit int, stop func(*vm.Spec)) {
+	if limit < 1 {
+		limit = 1
+	}
+	sem := make(chan struct{}, limit)
+	var wg sync.WaitGroup
+	for _, info := range infos {
 		if !info.Running {
 			continue
 		}
-		lock := qemu.LockVM(info.Spec.Name)
-		lock.Lock()
-		if err := s.instance(info.Spec).Stop(); err != nil {
-			log.Printf("graceful stop %s: %v", info.Spec.Name, err)
-		}
-		lock.Unlock()
+		wg.Add(1)
+		go func(spec *vm.Spec) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			stop(spec)
+		}(info.Spec)
 	}
+	wg.Wait()
 }
 
 // recoverClusters restores gateways, links, port-map relays and agent
@@ -685,7 +711,7 @@ func (s *Server) recoverClusters() {
 			if err != nil {
 				continue
 			}
-			if s.instance(spec).Running() != nil {
+			if st, err := s.instance(spec).Running(); err == nil && st != nil {
 				if err := s.ensureLink(cl, vn.Name); err != nil {
 					log.Printf("recover link %s: %v", vn.Name, err)
 				}

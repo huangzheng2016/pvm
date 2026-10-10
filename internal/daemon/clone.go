@@ -50,7 +50,10 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, fmt.Errorf("vm %q already exists", req.NewName))
 		return
 	}
-	if st := s.instance(src).Running(); st != nil {
+	if st, err := s.instance(src).Running(); err != nil {
+		writeErr(w, 500, err)
+		return
+	} else if st != nil {
 		writeErr(w, 409, fmt.Errorf("source vm %s is running; stop it first — copying a live disk is unsafe", name))
 		return
 	}

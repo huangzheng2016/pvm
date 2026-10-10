@@ -72,8 +72,15 @@ func RenderNFT(c *Config, uplink, br string, bypassIPs []string) string {
 		if !via || exitName == "" || exitName == "direct" {
 			continue
 		}
-		fmt.Fprintf(&b, "    ip saddr %s oifname %q ip daddr @bypass4 accept\n", v.IP, uplink)
-		fmt.Fprintf(&b, "    ip saddr %s oifname %q drop\n", v.IP, uplink)
+		// DHCP already pins each VM's MAC/IP pair; matching both makes
+		// casual source-IP spoofing fail closed. A determined guest can
+		// still forge both fields, so this is best-effort, not port isolation.
+		mac := ""
+		if v.MAC != "" {
+			mac = " ether saddr " + v.MAC
+		}
+		fmt.Fprintf(&b, "    ip saddr %s%s oifname %q ip daddr @bypass4 accept\n", v.IP, mac, uplink)
+		fmt.Fprintf(&b, "    ip saddr %s%s oifname %q drop\n", v.IP, mac, uplink)
 	}
 	b.WriteString("  }\n")
 	b.WriteString("}\n")
