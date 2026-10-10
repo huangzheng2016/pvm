@@ -168,3 +168,50 @@ func (t *Tunnel) httpGet(ctx context.Context, ip netip.Addr, port uint16, host, 
 	b, err := io.ReadAll(io.LimitReader(br, 4096))
 	return string(b), err
 }
+
+// download streams an HTTP GET through the tunnel, discarding the body and
+// reporting received bytes and wall time (speed test).
+func (t *Tunnel) download(ctx context.Context, ip netip.Addr, port uint16, path string) (int64, time.Duration, error) {
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	defer cancel()
+	start := time.Now()
+	conn, err := t.Net.DialContextTCPAddrPort(ctx, netip.AddrPortFrom(ip, port))
+	if err != nil {
+		return 0, 0, err
+	}
+	defer conn.Close()
+	host := ip.String()
+	if _, err := fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: pvm-speedtest\r\nConnection: close\r\n\r\n", path, host); err != nil {
+		return 0, 0, err
+	}
+	br := bufio.NewReader(conn)
+	status, err := br.ReadString('\n')
+	if err != nil {
+		return 0, 0, err
+	}
+	if !strings.Contains(status, " 200") {
+		return 0, 0, fmt.Errorf("http status: %s", strings.TrimSpace(status))
+	}
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return 0, 0, err
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
+	n, err := io.Copy(io.Discard, br)
+	return n, time.Since(start), err
+}
+
+// Ping fetches /ping from the tunnel speed endpoint (caller times the RTT).
+func (t *Tunnel) Ping(ctx context.Context, serverIP netip.Addr) (string, error) {
+	return t.httpGet(ctx, serverIP, SpeedPort, serverIP.String(), "/ping")
+}
+
+// Download fetches path from the tunnel speed endpoint, reporting bytes
+// received and wall time.
+func (t *Tunnel) Download(ctx context.Context, serverIP netip.Addr, path string) (int64, time.Duration, error) {
+	return t.download(ctx, serverIP, SpeedPort, path)
+}

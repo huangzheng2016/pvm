@@ -31,7 +31,7 @@ network:
                 split rules: pvm route add direct|proxy|internal [--domain-suffix|--domain-prefix|--domain-keyword|--cidr] <v> [--via <exit>] [--dns <srv>]
                 inspect: pvm route ls | pvm route rm <index>
   dns           inspect fake-ip mappings: pvm dns ls
-  exit          manage exit nodes: add | set | ls | rm | test
+  exit          manage exit nodes: add (--transport auto=probe&pick fastest) | set | ls | rm | test [--speed]
   exit-agent    run the vps exit agent: pvm exit-agent --listen :18443 --token <tok>
 
 image:

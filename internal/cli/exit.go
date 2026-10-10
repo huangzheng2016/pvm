@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -111,10 +112,10 @@ func exitsDir() (string, error) {
 }
 
 func exitAdd(args []string) int {
-	fs := newFlagSet("exit add", "<name> --server host:port --token <tok> [--transport udp|tcp] [--tz TZ] [--locale L]")
+	fs := newFlagSet("exit add", "<name> --server host:port --token <tok> [--transport auto|udp|tcp] [--tz TZ] [--locale L]")
 	server := fs.String("server", "", "control plane host:port")
 	token := fs.String("token", "", "control plane token")
-	transport := fs.String("transport", "udp", "udp | tcp")
+	transport := fs.String("transport", "auto", "auto | udp | tcp (auto probes both and picks the fastest)")
 	fpExpect := fs.String("fingerprint", "", "expected server cert fingerprint (out-of-band; aborts on mismatch instead of blind TOFU)")
 	tz := fs.String("tz", "", "IANA timezone of this exit's region (e.g. America/Los_Angeles)")
 	locale := fs.String("locale", "", "locale matching this exit's region (e.g. en_US.UTF-8)")
@@ -139,8 +140,8 @@ func exitAdd(args []string) int {
 		fs.Usage()
 		return 2
 	}
-	if *transport != "udp" && *transport != "tcp" {
-		return fatalf("transport must be udp or tcp")
+	if *transport != "auto" && *transport != "udp" && *transport != "tcp" {
+		return fatalf("transport must be auto, udp or tcp")
 	}
 	if *tz != "" {
 		if err := vm.ValidateTZ(*tz); err != nil {
@@ -172,43 +173,76 @@ func exitAdd(args []string) int {
 	}
 	fmt.Printf("server cert fingerprint: %s (pinned)\n", fp)
 
-	priv, err := tunnel.GenerateKey()
-	if err != nil {
-		return fatalf("%v", err)
+	var e *exit.Entry
+	var suggestedTZ string
+	if *transport == "auto" {
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		fmt.Println("probing transports in parallel (8MB download each)...")
+		probes := exit.ProbeAll(ctx, *server, *token, fp, []string{"udp", "tcp"}, exit.ProbeSpeedBytes)
+		for _, pr := range probes {
+			if pr.Err != nil {
+				fmt.Printf("  %-4s failed: %v\n", pr.Transport, pr.Err)
+			} else {
+				fmt.Printf("  %-4s %.1f MB/s  rtt %s\n", pr.Transport, pr.Mbps(), pr.RTT.Round(time.Millisecond))
+			}
+		}
+		winner, err := exit.ChooseTransport(probes)
+		if err != nil {
+			for _, pr := range probes {
+				exit.RevokeProbe(ctx, *server, *token, fp, pr)
+			}
+			return fatalf("%v", err)
+		}
+		for _, pr := range probes {
+			if pr != winner {
+				exit.RevokeProbe(ctx, *server, *token, fp, pr)
+			}
+		}
+		fmt.Printf("selected transport: %s\n", winner.Transport)
+		e = winner.Entry(name, *server, *token, fp)
+		suggestedTZ = winner.Resp.SuggestedTZ
+	} else {
+		priv, err := tunnel.GenerateKey()
+		if err != nil {
+			return fatalf("%v", err)
+		}
+		pub, err := tunnel.PublicKey(priv)
+		if err != nil {
+			return fatalf("%v", err)
+		}
+		host, err := os.Hostname()
+		if err != nil {
+			host = "pvm"
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		client := exit.NewClient(*server, *token, fp)
+		resp, err := client.Enroll(ctx, pub, host, *transport)
+		if err != nil {
+			return fatalf("enroll: %v", err)
+		}
+		e = &exit.Entry{
+			Name:         name,
+			Server:       *server,
+			Token:        *token,
+			Transport:    *transport,
+			Fingerprint:  fp,
+			WGPrivateKey: priv,
+			WGPublicKey:  pub,
+			ServerPubKey: resp.ServerPubKey,
+			TunnelIP:     resp.TunnelIP,
+			ServerIP:     resp.ServerIP,
+			MTU:          resp.MTU,
+			Endpoint:     resp.Endpoint,
+			CreatedAt:    time.Now(),
+		}
+		suggestedTZ = resp.SuggestedTZ
 	}
-	pub, err := tunnel.PublicKey(priv)
-	if err != nil {
-		return fatalf("%v", err)
-	}
-	host, err := os.Hostname()
-	if err != nil {
-		host = "pvm"
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	client := exit.NewClient(*server, *token, fp)
-	resp, err := client.Enroll(ctx, pub, host, *transport)
-	if err != nil {
-		return fatalf("enroll: %v", err)
-	}
-	e := &exit.Entry{
-		Name:         name,
-		Server:       *server,
-		Token:        *token,
-		Transport:    *transport,
-		Fingerprint:  fp,
-		WGPrivateKey: priv,
-		WGPublicKey:  pub,
-		ServerPubKey: resp.ServerPubKey,
-		TunnelIP:     resp.TunnelIP,
-		MTU:          resp.MTU,
-		Endpoint:     resp.Endpoint,
-		TZ:           *tz,
-		Locale:       *locale,
-		CreatedAt:    time.Now(),
-	}
+	e.TZ = *tz
+	e.Locale = *locale
 	if *tz == "" {
-		e.AutoTZ = resp.SuggestedTZ
+		e.AutoTZ = suggestedTZ
 	}
 	if err := exit.SaveEntry(dir, e); err != nil {
 		return fatalf("save entry: %v", err)
@@ -332,11 +366,20 @@ func exitRm(args []string) int {
 }
 
 func exitTest(args []string) int {
-	fs := newFlagSet("exit test", "<name>")
+	fs := newFlagSet("exit test", "<name> [--speed]")
+	speed := fs.Bool("speed", false, "also measure tunneled download throughput and RTT")
+	name := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		name = args[0]
+		args = args[1:]
+	}
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() != 1 {
+	if fs.NArg() > 0 {
+		name = fs.Arg(0)
+	}
+	if name == "" {
 		fs.Usage()
 		return 2
 	}
@@ -344,9 +387,9 @@ func exitTest(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	e, err := exit.LoadEntry(dir, fs.Arg(0))
+	e, err := exit.LoadEntry(dir, name)
 	if err != nil {
-		return fatalf("exit %q not found", fs.Arg(0))
+		return fatalf("exit %q not found", name)
 	}
 	fmt.Printf("dialing %s (%s %s)...\n", e.Name, e.Transport, e.Endpoint)
 	t, err := exit.DialEntry(e)
@@ -354,9 +397,12 @@ func exitTest(args []string) int {
 		return fatalf("tunnel: %v", err)
 	}
 	defer t.Close()
-	serverIP, err := exit.ServerIP(e.Transport)
-	if err != nil {
-		return fatalf("%v", err)
+	serverIP := e.ServerIP
+	if serverIP == "" {
+		serverIP, err = exit.ServerIP(e.Transport)
+		if err != nil {
+			return fatalf("%v", err)
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -378,6 +424,20 @@ func exitTest(args []string) int {
 		}
 	}
 	fmt.Println("wireguard handshake: ok")
+	if *speed {
+		sip := netip.MustParseAddr(serverIP)
+		t0 := time.Now()
+		if _, err := t.Ping(ctx, sip); err != nil {
+			return fatalf("ping: %v", err)
+		}
+		rtt := time.Since(t0)
+		n, dur, err := t.Download(ctx, sip, fmt.Sprintf("/speed?bytes=%d", exit.ProbeSpeedBytes))
+		if err != nil {
+			return fatalf("download: %v", err)
+		}
+		mbps := float64(n) / dur.Seconds() / 1e6
+		fmt.Printf("speed: %.1f MB/s (%d bytes in %s), rtt %s\n", mbps, n, dur.Round(time.Millisecond), rtt.Round(time.Millisecond))
+	}
 	ip, err := t.FetchExitIP(ctx)
 	if err != nil {
 		return fatalf("fetch exit ip: %v", err)
@@ -420,12 +480,14 @@ func reEnrollExit(dir string, e *exit.Entry) error {
 	}
 	e.ServerPubKey = resp.ServerPubKey
 	e.TunnelIP = resp.TunnelIP
+	e.ServerIP = resp.ServerIP
 	e.MTU = resp.MTU
 	e.Endpoint = resp.Endpoint
 	return exit.SaveEntry(dir, e)
 }
 
-func observedIPMatchesHost(host, observed string, resolve hostIPResolver) (bool, error) {	observedIP := net.ParseIP(observed)
+func observedIPMatchesHost(host, observed string, resolve hostIPResolver) (bool, error) {
+	observedIP := net.ParseIP(observed)
 	if observedIP == nil {
 		return false, fmt.Errorf("invalid observed ip %q", observed)
 	}

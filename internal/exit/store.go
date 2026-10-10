@@ -24,17 +24,18 @@ func entryPath(dir, name string) string {
 
 // Entry is a locally stored exit-node enrollment (client side).
 type Entry struct {
-	Name         string    `json:"name"`
-	Server       string    `json:"server"` // control plane host:port
-	Token        string    `json:"token"`
-	Transport    string    `json:"transport"` // udp | tcp
-	Fingerprint  string    `json:"fingerprint"`
-	WGPrivateKey string    `json:"wg_private_key"`
-	WGPublicKey  string    `json:"wg_public_key"`
-	ServerPubKey string    `json:"server_pubkey"`
-	TunnelIP     string    `json:"tunnel_ip"`
-	MTU          int       `json:"mtu"`
-	Endpoint     string    `json:"endpoint"` // wireguard data-plane host:port
+	Name         string `json:"name"`
+	Server       string `json:"server"` // control plane host:port
+	Token        string `json:"token"`
+	Transport    string `json:"transport"` // udp | tcp
+	Fingerprint  string `json:"fingerprint"`
+	WGPrivateKey string `json:"wg_private_key"`
+	WGPublicKey  string `json:"wg_public_key"`
+	ServerPubKey string `json:"server_pubkey"`
+	TunnelIP     string `json:"tunnel_ip"`
+	ServerIP     string `json:"server_ip,omitempty"` // tunnel-side .1 (speed/ping target)
+	MTU          int    `json:"mtu"`
+	Endpoint     string `json:"endpoint"` // wireguard data-plane host:port
 	// Region profile: applied to VMs routed via this exit so their
 	// environment matches the exit's geography. TZ is the manual
 	// override (exit set --tz); AutoTZ is learned from the exit-agent's

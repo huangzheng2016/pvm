@@ -153,10 +153,16 @@ pvm daemon stop && pvm daemon start
 # VPS 上手动启动（生产已有 us/us-tcp，不要重复部署）
 pvm exit-agent --listen :18443 --token <随机强 token>
 
-# 本机注册（指纹建议带外核对）
-pvm exit add <name> --server <vps>:18443 --token <token> --transport udp
+# 本机注册（指纹建议带外核对）；--transport 默认 auto：
+# 并行实测 udp+tcp（各 8MB 隧道下载）选最快，UDP 吞吐不低于 TCP 80% 时优先 UDP
+pvm exit add <name> --server <vps>:18443 --token <token>
 pvm exit add <name> --server <vps>:18443 --token <token> --transport tcp --fingerprint <sha256>
+
+# 验证出口；--speed 打印隧道吞吐与 RTT
+pvm exit test <name>
+pvm exit test <name> --speed
 ```
 
 - 控制面 HTTPS + Bearer token + TOFU 指纹 pin；数据面 WireGuard，UDP 优先、TCP 后备。
+- 测速不经公网第三方：exit-agent 在每张隧道 NIC 的 `.1:18081` 暴露 `/speed?bytes=N`（上限 64MB）与 `/ping`，仅隧道内可达。
 - exit-agent 支持 `nft` / `iptables` / `userspace` NAT 后端；userspace 不需要 root，但不转发 ICMP ping。
