@@ -164,3 +164,20 @@ func (s *Server) setGuestRegion(spec *vm.Spec, tz, locale string) string {
 	}
 	return fmt.Sprintf("region applied: tz=%s locale=%s", tz, locale)
 }
+
+// sanitizeTZ takes the first non-empty line of guest-provided output and
+// validates it as an IANA timezone, falling back to UTC. Used on any TZ
+// string read from a guest before it is embedded into shell commands.
+func sanitizeTZ(out string) string {
+	tz := ""
+	for line := range strings.Lines(out) {
+		tz = strings.TrimSpace(line)
+		if tz != "" {
+			break
+		}
+	}
+	if err := vm.ValidateTZ(tz); err != nil {
+		return "UTC"
+	}
+	return tz
+}
