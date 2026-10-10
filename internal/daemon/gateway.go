@@ -312,6 +312,19 @@ func (s *Server) pushGatewayConfig(cl *cluster.Cluster) error {
 	return nil
 }
 
+// pushGatewayConfigRetry pushes the gateway config, retrying while the
+// gateway's ssh is still coming up after a (re)start.
+func (s *Server) pushGatewayConfigRetry(cl *cluster.Cluster) error {
+	var err error
+	for i := 0; i < 60; i++ {
+		if err = s.pushGatewayConfig(cl); err == nil {
+			return nil
+		}
+		time.Sleep(3 * time.Second)
+	}
+	return fmt.Errorf("push gateway config: %w", err)
+}
+
 // sshBaseArgs builds the ssh arguments and target for a guest. Cluster
 // VMs have no hostfwd: they are reached through the gateway hop, the
 // same ProxyCommand path `pvm ssh` uses.
