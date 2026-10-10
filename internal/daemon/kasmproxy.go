@@ -17,9 +17,10 @@ import (
 // http://127.0.0.1:port/ URL — no login, no self-signed cert prompt.
 // Loopback-only, so anyone who can reach it is already on this machine.
 type kasmProxy struct {
-	port int
-	srv  *http.Server
-	pw   atomic.Value // string: current container VNC_PW
+	port       int
+	targetPort int
+	srv        *http.Server
+	pw         atomic.Value // string: current container VNC_PW
 }
 
 func newKasmProxy(targetPort int, pw string) (*kasmProxy, error) {
@@ -28,7 +29,7 @@ func newKasmProxy(targetPort int, pw string) (*kasmProxy, error) {
 		return nil, err
 	}
 	target := &url.URL{Scheme: "https", Host: fmt.Sprintf("127.0.0.1:%d", targetPort)}
-	p := &kasmProxy{port: ln.Addr().(*net.TCPAddr).Port}
+	p := &kasmProxy{port: ln.Addr().(*net.TCPAddr).Port, targetPort: targetPort}
 	p.pw.Store(pw)
 	rp := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
@@ -44,14 +45,22 @@ func newKasmProxy(targetPort int, pw string) (*kasmProxy, error) {
 	return p, nil
 }
 
+func (p *kasmProxy) close() { p.srv.Close() }
+
 // kasmProxyFor returns the VM's proxy, creating it on first use and
 // rotating the injected credential when the container is recreated.
+// A stale proxy bound to an outdated target port is rebuilt, so a
+// recreated map can never point the URL at another VM's desktop.
 func (s *Server) kasmProxyFor(vmName string, targetPort int, pw string) (*kasmProxy, error) {
 	s.kasmMu.Lock()
 	defer s.kasmMu.Unlock()
 	if px, ok := s.kasms[vmName]; ok {
-		px.pw.Store(pw)
-		return px, nil
+		if px.targetPort == targetPort {
+			px.pw.Store(pw)
+			return px, nil
+		}
+		px.close()
+		delete(s.kasms, vmName)
 	}
 	px, err := newKasmProxy(targetPort, pw)
 	if err != nil {

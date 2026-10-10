@@ -34,8 +34,13 @@ func (s *Server) ensureCluster(id int) (*cluster.Cluster, error) {
 	if err != nil {
 		return nil, err
 	}
-	gwName := cl.Gateway
-	spec, err := vm.Load(s.P, gwName)
+	// Gateway lifecycle is serialised too: two user VMs racing their
+	// first start (or an API start racing daemon recovery) would both
+	// try to create/start the same gateway.
+	lock := qemu.LockVM(cl.Gateway)
+	lock.Lock()
+	defer lock.Unlock()
+	spec, err := vm.Load(s.P, cl.Gateway)
 	if err != nil {
 		spec, err = s.createGatewayVM(cl)
 		if err != nil {

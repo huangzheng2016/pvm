@@ -14,7 +14,14 @@ import (
 type QMP struct {
 	conn   net.Conn
 	r      *bufio.Reader
-	events []string
+	events []qmpEvent
+}
+
+// qmpEvent is a buffered async event; device carries the DEVICE_DELETED
+// device id ("" for other events).
+type qmpEvent struct {
+	name   string
+	device string
 }
 
 type qmpGreeting struct {
@@ -95,10 +102,13 @@ func (q *QMP) Execute(cmd string, args map[string]any) (json.RawMessage, error) 
 		if resp.Return == nil && resp.Error == nil {
 			var ev struct {
 				Event string `json:"event"`
+				Data  struct {
+					Device string `json:"device"`
+				} `json:"data"`
 			}
 			json.Unmarshal(line, &ev)
 			if ev.Event != "" {
-				q.events = append(q.events, ev.Event)
+				q.events = append(q.events, qmpEvent{name: ev.Event, device: ev.Data.Device})
 			}
 			continue
 		}
@@ -115,7 +125,7 @@ func (q *QMP) WaitEvent(name string, d time.Duration) error {
 	deadline := time.Now().Add(d)
 	for {
 		for i, e := range q.events {
-			if e == name {
+			if e.name == name {
 				q.events = append(q.events[:i], q.events[i+1:]...)
 				return nil
 			}
@@ -131,10 +141,13 @@ func (q *QMP) WaitEvent(name string, d time.Duration) error {
 		}
 		var ev struct {
 			Event string `json:"event"`
+			Data  struct {
+				Device string `json:"device"`
+			} `json:"data"`
 		}
 		json.Unmarshal(line, &ev)
 		if ev.Event != "" {
-			q.events = append(q.events, ev.Event)
+			q.events = append(q.events, qmpEvent{name: ev.Event, device: ev.Data.Device})
 		}
 	}
 }
@@ -182,11 +195,22 @@ func (q *QMP) DeviceDel(id string, timeout time.Duration) error {
 	}
 	deadline := time.Now().Add(timeout)
 	defer q.conn.SetReadDeadline(time.Time{}) // don't leak the deadline into later commands
-	for time.Now().Before(deadline) {
+	for {
+		// Drain buffered events first: DEVICE_DELETED may already have
+		// arrived during an earlier Execute.
+		for i, e := range q.events {
+			if e.name == "DEVICE_DELETED" && e.device == id {
+				q.events = append(q.events[:i], q.events[i+1:]...)
+				return nil
+			}
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("device_del %s: timed out waiting for DEVICE_DELETED", id)
+		}
 		q.conn.SetReadDeadline(deadline)
 		var msg struct {
-			Event  string `json:"event"`
-			Data   struct {
+			Event string `json:"event"`
+			Data  struct {
 				Device string `json:"device"`
 			} `json:"data"`
 			Resp qmpResponse
@@ -204,8 +228,12 @@ func (q *QMP) DeviceDel(id string, timeout time.Duration) error {
 		if msg.Event == "DEVICE_DELETED" && msg.Data.Device == id {
 			return nil
 		}
+		// Buffer unrelated events for later WaitEvent/DeviceDel callers
+		// instead of silently dropping them.
+		if msg.Event != "" {
+			q.events = append(q.events, qmpEvent{name: msg.Event, device: msg.Data.Device})
+		}
 	}
-	return fmt.Errorf("device_del %s: timed out waiting for DEVICE_DELETED", id)
 }
 
 // MigrateStatus polls query-migrate: "active", "completed", "failed",

@@ -37,9 +37,14 @@ func probeVersion(system string) [3]int {
 // (cpu_pre_load assertion on incoming migration, fixed upstream by
 // 06fd39e426 which first ships in 11.1.0). Only the exact 11.0.0
 // release is broken; 11.1+ stock builds pass, and bundled runtimes are
-// pvm's own known-good builds and are always exempt.
+// pvm's own known-good builds and are always exempt. An unparseable
+// version ({0,0,0}) is treated as unknown and refused too — the restore
+// crash is worse than a false positive.
 func (t *Toolchain) BrokenLiveRestore(arch string, accel Accel) bool {
-	return !t.Bundled && arch == "arm64" && accel == AccelHVF && t.Version == [3]int{11, 0, 0}
+	if t.Bundled || arch != "arm64" || accel != AccelHVF {
+		return false
+	}
+	return t.Version == [3]int{11, 0, 0} || t.Version == [3]int{0, 0, 0}
 }
 
 // QemuArch maps GOARCH to the qemu-system suffix.

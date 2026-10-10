@@ -3,6 +3,7 @@ package qemu
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -128,6 +129,14 @@ func (in *Instance) startWithAccel(accel Accel) error {
 	}
 	go func() {
 		<-exited
+		// A concurrent Start may already have replaced the state files
+		// with a new generation; only remove files still owned by this one.
+		in.mu.Lock()
+		defer in.mu.Unlock()
+		cur, err := in.loadState()
+		if err != nil || cur.PID != st.PID || !cur.Started.Equal(st.Started) {
+			return
+		}
 		os.Remove(in.StatePath)
 		os.Remove(cfg.QMPSock)
 		os.Remove(cfg.SerialSock)
@@ -151,12 +160,30 @@ func (in *Instance) Stop() error {
 			return nil
 		}
 	}
-	syscall.Kill(st.PID, syscall.SIGTERM)
+	if err := killVerified(st, syscall.SIGTERM); err != nil {
+		return err
+	}
 	if waitDead(st.Ident, 5*time.Second) {
 		return nil
 	}
-	syscall.Kill(st.PID, syscall.SIGKILL)
-	waitDead(st.Ident, 5*time.Second)
+	if err := killVerified(st, syscall.SIGKILL); err != nil {
+		return err
+	}
+	if !waitDead(st.Ident, 5*time.Second) {
+		return fmt.Errorf("process %d still alive after SIGKILL", st.PID)
+	}
+	return nil
+}
+
+// killVerified re-checks the recorded identity immediately before
+// signalling, so a recycled PID is never signalled by mistake.
+func killVerified(st *RunState, sig syscall.Signal) error {
+	if !st.Ident.Alive() {
+		return nil
+	}
+	if err := syscall.Kill(st.PID, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("kill(%d, %v): %w", st.PID, sig, err)
+	}
 	return nil
 }
 

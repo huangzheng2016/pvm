@@ -103,7 +103,7 @@ func (s *Store) Ensure(id int) (*Cluster, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if c, ok := s.data.Clusters[id]; ok {
-		return c, nil
+		return c.deepCopy(), nil
 	}
 	if id < 1 || id > 254 {
 		return nil, fmt.Errorf("cluster id %d out of range", id)
@@ -122,7 +122,7 @@ func (s *Store) Ensure(id int) (*Cluster, error) {
 		VMs:      map[string]*VMNet{},
 	}
 	s.data.Clusters[id] = c
-	return c, s.save()
+	return c.deepCopy(), s.save()
 }
 
 // freePoolWindow finds a PoolSize-wide window of loopback ports that is
@@ -156,10 +156,35 @@ func poolWindowFree(base, size int) bool {
 	return true
 }
 
+// deepCopy returns an independent copy safe to read outside the store
+// lock; mutations must go through Store methods.
+func (c *Cluster) deepCopy() *Cluster {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	out.VMs = make(map[string]*VMNet, len(c.VMs))
+	for k, v := range c.VMs {
+		vv := *v
+		out.VMs[k] = &vv
+	}
+	out.Maps = make([]*PortMap, len(c.Maps))
+	for i, m := range c.Maps {
+		mm := *m
+		out.Maps[i] = &mm
+	}
+	out.Rules = append([]rules.Rule(nil), c.Rules...)
+	out.VMExits = make(map[string]string, len(c.VMExits))
+	for k, v := range c.VMExits {
+		out.VMExits[k] = v
+	}
+	return &out
+}
+
 func (s *Store) Get(id int) *Cluster {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.data.Clusters[id]
+	return s.data.Clusters[id].deepCopy()
 }
 
 func (s *Store) List() []*Cluster {
@@ -167,7 +192,7 @@ func (s *Store) List() []*Cluster {
 	defer s.mu.Unlock()
 	var out []*Cluster
 	for _, c := range s.data.Clusters {
-		out = append(out, c)
+		out = append(out, c.deepCopy())
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -214,7 +239,8 @@ func (s *Store) AddVM(id int, name string) (*VMNet, error) {
 		MAC:  fmt.Sprintf("52:54:00:%02x:%02x:%02x", c.ID, last>>8, last&0xff),
 	}
 	c.VMs[name] = vn
-	return vn, s.save()
+	out := *vn
+	return &out, s.save()
 }
 
 func (s *Store) RemoveVM(id int, name string) error {
@@ -225,6 +251,7 @@ func (s *Store) RemoveVM(id int, name string) error {
 		return nil
 	}
 	delete(c.VMs, name)
+	delete(c.VMExits, name)
 	var maps []*PortMap
 	for _, m := range c.Maps {
 		if m.VM != name {
@@ -268,7 +295,8 @@ func (s *Store) AddMap(id int, vmName, vmIP string, hostPort, guestPort int, pro
 	}
 	m := &PortMap{VM: vmName, VMIP: vmIP, HostPort: hostPort, PoolPort: pool, GuestPort: guestPort, Proto: proto}
 	c.Maps = append(c.Maps, m)
-	return m, s.save()
+	out := *m
+	return &out, s.save()
 }
 
 func (s *Store) RemoveMap(id int, hostPort int, proto string) error {
