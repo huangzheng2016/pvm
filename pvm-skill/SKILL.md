@@ -26,6 +26,12 @@ pvm 仅支持宿主原生架构：darwin/arm64 只运行 arm64 VM，linux/amd64 
 - **exit-agent NAT 后端**：`auto`（自动探测）/ `nft` / `iptables` / `userspace`（免 root、无 ICMP）
 - **出口路由**：`direct`（本机出口）或 `<exit-name>`（本机现有 `us`、`us-tcp`）
 - **create 常用参数**：`--image`、`--distro`、`--version`、`--name`、`--user`、`--cpus`、`--mem`、`--disk`、`--mount`、`--tz`、`--locale`、`--git-email`、`--git-name`、`--smbios-spoof`、`--no-start`、`--no-wait`
+
+### 目录挂载（--mount 与 /share）
+
+- 每台 VM 默认把宿主机 `~/.pvm/share` 挂到 VM 的 `/share`（9p，**双向读写**，含子目录），临时交换文件直接丢这里，无需任何配置。
+- 额外挂载用 `--mount <宿主路径>:<VM路径>`，可重复多次：`pvm create --image ubuntu:24.04 --name dev1 --user dev --mount ~/work/proj:/home/dev/proj --mount ~/data:/mnt/data`。
+- 挂载是 virtio-9p（security_model=none + access=any，guest uid 与宿主 uid 对齐），性能适合源码/文档，不适合高 IOPS 数据库目录。
   - `--image alpine:3.20` 与 `--distro alpine --version 3.20` 等价；冲突参数会报错。
 - **Alpine 差异**：精简定位——没有 golden 镜像、没有 docker/桌面、首次启动要跑 apk 装包（稍慢）、登录 shell 默认 `/bin/sh`。跑 Claude Code 等场景建议用 Ubuntu/Debian（Alpine/musl 不是典型桌面用户环境）。
 - **`pvm image build` 代理透传**：构建 golden 时自动使用宿主 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY`（回环代理地址自动改写为 VM 可见地址），构建结束彻底清理，不会把代理配置烘进镜像。
@@ -149,18 +155,33 @@ pvm daemon stop && pvm daemon start
 
 ## 新增出口（仅在用户明确要求时）
 
+### 方式一：一条命令部署（推荐）
+
+```bash
+# 给定 SSH 即可完成：本地交叉编译 → scp → systemd → 输出 token+指纹；
+# 带 --name 顺手注册（auto 测速选传输，--fingerprint 带外核验自动带上）
+pvm exit deploy root@<vps>[:port] --name <exit名>
+
+# 不带 --name 只部署并打印凭据（适合生产 us 的升级维护，unit 已存在则
+# 复用原 token 并滚动重启，健康检查失败自动回滚 pvm.prev）
+pvm exit deploy root@<vps>[:port]
+```
+
+### 方式二：手动备选路径
+
 ```bash
 # VPS 上手动启动（生产已有 us/us-tcp，不要重复部署）
 pvm exit-agent --listen :18443 --token <随机强 token>
 
 # 本机注册（指纹建议带外核对）；--transport 默认 auto：
-# 并行实测 udp+tcp（各 8MB 隧道下载）选最快，UDP 吞吐不低于 TCP 80% 时优先 UDP
+# 并行实测 udp+tcp（各 Nx8MB 隧道下载取平均）选最快，UDP 吞吐不低于 TCP 80% 时优先 UDP
+# --samples N 调采样次数（默认 3）
 pvm exit add <name> --server <vps>:18443 --token <token>
 pvm exit add <name> --server <vps>:18443 --token <token> --transport tcp --fingerprint <sha256>
 
-# 验证出口；--speed 打印隧道吞吐与 RTT
+# 验证出口；--speed 打印隧道吞吐与 RTT（--samples N 多次采样取平均，默认 3）
 pvm exit test <name>
-pvm exit test <name> --speed
+pvm exit test <name> --speed --samples 5
 ```
 
 - 控制面 HTTPS + Bearer token + TOFU 指纹 pin；数据面 WireGuard，UDP 优先、TCP 后备。

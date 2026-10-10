@@ -100,7 +100,7 @@ func TestUserspaceNATEndToEnd(t *testing.T) {
 			}
 			defer tun.Close()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), testLongTimeout)
 			defer cancel()
 			if err := tun.WaitHandshake(ctx, serverIP); err != nil {
 				t.Fatal(err)

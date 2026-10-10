@@ -20,7 +20,7 @@ import (
 
 var (
 	ipinfoURL  = "https://ipinfo.io/json"
-	httpClient = &http.Client{Timeout: 5 * time.Second}
+	httpClient = &http.Client{Timeout: httpTimeout}
 	// stubs for tests
 	ipinfoLookup = defaultIPInfoLookup
 	systemTZFn   = systemTZ
@@ -30,7 +30,7 @@ var (
 // exit-agent startup; the result is served on every enroll.
 func DetectSuggestedTZ(stateDir string) string {
 	cachePath := filepath.Join(stateDir, "tz.json")
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second) //nolint:staticcheck // bounded by httpTimeout too
 	defer cancel()
 	if tz, err := ipinfoLookup(ctx); err == nil && tz != "" {
 		_ = os.MkdirAll(stateDir, 0o700)
