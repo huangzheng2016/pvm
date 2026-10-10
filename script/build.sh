@@ -17,7 +17,7 @@ echo "== assetpack"
 go run ./cmd/assetpack
 # Only the compressed payloads and manifest are embedded; raw guests are
 # build intermediates and would otherwise be embedded a second time.
-rm -f internal/assets/packed/gateway-linux-* internal/assets/packed/agent-linux-*
+rm -f "internal/assets/packed/gateway-linux-$HOSTARCH" "internal/assets/packed/agent-linux-$HOSTARCH"
 
 echo "== pvm"
 go build -tags embedassets -buildvcs=false -trimpath -ldflags "-s -w -buildid=" -o pvm ./cmd/pvm
