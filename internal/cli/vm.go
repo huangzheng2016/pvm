@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/huangzheng2016/pvm/internal/daemon"
 	"github.com/huangzheng2016/pvm/internal/image"
@@ -32,6 +33,11 @@ type vmInfoView struct {
 	Uptime      string `json:"uptime"`
 	GatewaySSH  int    `json:"gw_ssh_port"`
 	GatewayUser string `json:"gw_user"`
+	Ready       bool   `json:"ready"`
+	Stages      []struct {
+		Stage  string `json:"stage"`
+		Detail string `json:"detail"`
+	} `json:"stages"`
 }
 
 func CmdImage(args []string) int {
@@ -133,6 +139,7 @@ func CmdCreate(args []string) int {
 	mem := fs.Int("mem", 0, "memory MB")
 	disk := fs.Int("disk", 0, "disk GB")
 	noStart := fs.Bool("no-start", false, "create but do not start")
+	noWait := fs.Bool("no-wait", false, "return immediately after boot instead of following provisioning")
 	tz := fs.String("tz", "", "guest timezone (IANA, e.g. America/Los_Angeles; default UTC)")
 	locale := fs.String("locale", "", "guest locale (default en_US.UTF-8)")
 	gitEmail := fs.String("git-email", "", "git user.email in the guest (never copied from the host)")
@@ -180,14 +187,56 @@ func CmdCreate(args []string) int {
 		body["smbios_spoof"] = true
 	}
 	var out vmInfoView
+	describeImage(*imageSpec, p)
+	start := time.Now()
 	if err := c.Post("/v1/vms", body, &out); err != nil {
 		return fatalf("create: %v", err)
 	}
+	fmt.Printf("[2/5] disk+seed: overlay + cloud-init (done in %.1fs)\n", time.Since(start).Seconds())
+	fmt.Printf("[3/5] cluster: ip=%s via gateway\n[4/5] boot: qemu started\n", out.Spec.IP)
 	fmt.Printf("created %s (user=%s ip=%s)\n", out.Spec.Name, out.Spec.User, out.Spec.IP)
-	if !*noStart {
-		fmt.Printf("starting; first boot runs cloud-init (packages, /share mount) and may take a few minutes\n")
+	if *noStart {
+		return 0
 	}
+	if *noWait {
+		fmt.Printf("provisioning in background; watch: pvm logs %s --follow\n", *name)
+		return 0
+	}
+	fmt.Printf("[5/5] provision: following (ctrl-c to detach; vm keeps provisioning)\n")
+	if rc := followProvision(c, *name, 15*time.Minute); rc != 0 {
+		return rc
+	}
+	fmt.Printf("ready in %.0fs; ssh: pvm ssh %s\n", time.Since(start).Seconds(), *name)
 	return 0
+}
+
+// describeImage prints the [1/5] stage line: which base/golden image
+// the VM will come from, or a fetch hint when it is missing.
+func describeImage(spec string, p *paths.Paths) {
+	kind := "base"
+	file := ""
+	var size int64
+	distro, version, ok := strings.Cut(spec, ":")
+	if ok {
+		if g := image.LatestGolden(p.Images, distro, version, runtime.GOARCH); g != nil {
+			kind = fmt.Sprintf("golden v%d", g.Version)
+			file = g.File
+			if fi, err := os.Stat(p.Images + "/golden/" + g.File); err == nil {
+				size = fi.Size()
+			}
+		}
+	}
+	if file == "" {
+		stem := strings.ReplaceAll(spec, ":", "-") + "-" + runtime.GOARCH + ".qcow2"
+		file = stem
+		if fi, err := os.Stat(p.Images + "/" + stem); err == nil {
+			size = fi.Size()
+		} else {
+			fmt.Printf("[1/5] image: %s (MISSING - fetch first: pvm image fetch %s)\n", spec, spec)
+			return
+		}
+	}
+	fmt.Printf("[1/5] image: %s (%s, %.1fG)\n", spec, kind, float64(size)/1e9)
 }
 
 func promptUsername() string {

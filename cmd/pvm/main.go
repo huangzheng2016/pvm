@@ -61,6 +61,8 @@ func main() {
 		code = cli.CmdRm(args)
 	case "ssh":
 		code = cli.CmdSSH(args)
+	case "logs":
+		code = cli.CmdLogs(args)
 	case "map":
 		code = cli.CmdMap(args)
 	case "route":

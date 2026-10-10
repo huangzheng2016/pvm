@@ -48,20 +48,25 @@ type Server struct {
 
 	kasmMu sync.Mutex // guards kasms
 	kasms  map[string]*kasmProxy
+
+	progMu sync.Mutex // guards prog
+	prog   map[string][]StageEvent
 }
 
 type vmInfo struct {
-	Spec        *vm.Spec `json:"spec"`
-	Running     bool     `json:"running"`
-	PID         int      `json:"pid,omitempty"`
-	Uptime      string   `json:"uptime,omitempty"`
-	GatewaySSH  int      `json:"gw_ssh_port,omitempty"`
-	GatewayUser string   `json:"gw_user,omitempty"`
+	Spec        *vm.Spec     `json:"spec"`
+	Running     bool         `json:"running"`
+	PID         int          `json:"pid,omitempty"`
+	Uptime      string       `json:"uptime,omitempty"`
+	GatewaySSH  int          `json:"gw_ssh_port,omitempty"`
+	GatewayUser string       `json:"gw_user,omitempty"`
+	Ready       bool         `json:"ready,omitempty"`
+	Stages      []StageEvent `json:"stages,omitempty"`
 }
 
 func NewServer(p *paths.Paths, cfg *config.Config, tc *qemu.Toolchain, accel qemu.Accel, sshPub string, clusters *cluster.Store) *Server {
 	return &Server{P: p, Cfg: cfg, TC: tc, Accel: accel, SSHPub: sshPub,
-		Clusters: clusters, relays: newRelaySet(), started: time.Now(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}}
+		Clusters: clusters, relays: newRelaySet(), started: time.Now(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}, prog: map[string][]StageEvent{}}
 }
 
 // agentClient returns the shared per-VM agent connection, dialing if
@@ -168,6 +173,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/routes/{index}", s.handleRouteRemove)
 	mux.HandleFunc("POST /v1/vms/{name}/route", s.handleVMRoute)
 	mux.HandleFunc("POST /v1/vms/{name}/kasm", s.handleKasm)
+	mux.HandleFunc("GET /v1/vms/{name}/console", s.handleConsole)
 	mux.HandleFunc("GET /v1/dns", s.handleDNSList)
 	mux.HandleFunc("POST /v1/shutdown", s.handleShutdown)
 	return mux
@@ -232,11 +238,13 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, info := range s.collectInfos() {
 		if info.Spec.Name == spec.Name {
+			info.Stages = s.stages(spec.Name)
+			info.Ready = s.vmReady(spec.Name)
 			writeJSON(w, 200, info)
 			return
 		}
 	}
-	writeJSON(w, 200, vmInfo{Spec: spec})
+	writeJSON(w, 200, vmInfo{Spec: spec, Stages: s.stages(spec.Name), Ready: s.vmReady(spec.Name)})
 }
 
 func (s *Server) handleClusters(w http.ResponseWriter, r *http.Request) {
@@ -316,6 +324,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
+	s.stage(req.Name, "cluster", cl.Gateway)
 
 	if req.TZ != "" {
 		if err := vm.ValidateTZ(req.TZ); err != nil {
@@ -341,20 +350,24 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		GitEmail: req.GitEmail, GitName: req.GitName,
 		SmbiosSpoof: req.SmbiosSpoof,
 	}
+	createStart := time.Now()
 	if err := vm.Create(s.P, s.TC, spec, s.SSHPub); err != nil {
 		s.Clusters.RemoveVM(cl.ID, req.Name)
 		writeErr(w, 500, err)
 		return
 	}
+	s.stage(req.Name, "disk+seed", fmt.Sprintf("%s (%.1fs)", filepath.Base(base), time.Since(createStart).Seconds()))
 	s.mu.Lock()
 	s.vms[spec.Name] = spec
 	s.mu.Unlock()
 
 	if req.Start {
+		bootStart := time.Now()
 		if _, _, err := s.startVM(spec); err != nil {
 			writeErr(w, 500, fmt.Errorf("created but start failed: %w", err))
 			return
 		}
+		s.stage(req.Name, "boot", fmt.Sprintf("qemu pid up (%.1fs)", time.Since(bootStart).Seconds()))
 		s.ensureAgentAsync(spec)
 	}
 	writeJSON(w, 201, vmInfo{Spec: spec, Running: req.Start})

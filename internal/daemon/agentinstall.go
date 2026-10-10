@@ -41,9 +41,11 @@ func (s *Server) ensureAgentAsync(spec *vm.Spec) {
 }
 
 func (s *Server) installAgent(spec *vm.Spec, bin string) error {
+	s.stage(spec.Name, "provision", "waiting for ssh (cloud-init running)")
 	if err := s.waitSSH(spec, 6*time.Minute); err != nil {
 		return err
 	}
+	s.stage(spec.Name, "ready", "ssh reachable")
 	if err := s.scpTo(spec, bin, "/tmp/pvm-agent.new"); err != nil {
 		return fmt.Errorf("scp: %w", err)
 	}
@@ -63,6 +65,7 @@ func (s *Server) installAgent(spec *vm.Spec, bin string) error {
 			_, perr := ac.Ping()
 			ac.Close()
 			if perr == nil {
+				s.stage(spec.Name, "agent", "guest agent installed")
 				return nil
 			}
 		}
