@@ -14,26 +14,30 @@ usage: pvm <command> [args]
 
 vm:
   create        create (and start) a vm
-  clone         clone a stopped vm: pvm clone dev1 dev2 [--inherit-ports]
+  clone         clone a stopped vm: pvm clone dev1 dev2 [--inherit-ports] [--no-start]
   list          list vms
   start|stop    start/stop a vm
-  rm            stop and delete a vm (asks for confirmation; -y to skip)
+  rm            stop and delete a vm (asks for confirmation; -y|--force to skip)
   ssh           ssh into a vm: pvm ssh dev1 [cmd...]
   snapshot      ram snapshots: create <name> | ls [name] | rm <name>
+                (create needs a running vm; rm needs the vm stopped)
   exec          run a command via the guest agent (no network needed): pvm exec dev1 cmd...
   logs          stream a vm console: pvm logs dev1 [--follow] [--tail N]
   kasm          open a vm's web desktop: pvm kasm dev1 [--open]
 
 network:
-  map           map ports: pvm map dev1 8080:80 [--udp] | ls | rm <port>
-  route         route vm/direct/internal rules: pvm route dev1 --via us|direct
+  map           map ports: pvm map dev1 8080:80 [--udp] | ls | rm <port> [--udp]
+  route         vm default route: pvm route dev1 --via us|direct
+                split rules: pvm route add direct|proxy|internal [--domain-suffix|--domain-prefix|--domain-keyword|--cidr] <v> [--via <exit>] [--dns <srv>]
+                inspect: pvm route ls | pvm route rm <index>
   dns           inspect fake-ip mappings: pvm dns ls
   exit          manage exit nodes: add | set | ls | rm | test
   exit-agent    run the vps exit agent: pvm exit-agent --listen :18443 --token <tok>
 
 image:
-  image fetch   download a base image (ubuntu:24.04, debian:13)
-  image build   bake a golden image (docker + kasm preinstalled)
+  image fetch   download a base image (ubuntu:24.04, debian:13, alpine:3.21)
+  image build   bake a golden image (docker + kasm preinstalled; ubuntu/debian only)
+                flags: --keep-vm --cpus N --mem MB --disk GB
   image list    list base and golden images
 
 daemon:
@@ -45,13 +49,13 @@ other:
   version       print version
 
 common choices:
-  images        ubuntu:24.04 | ubuntu:22.04 | debian:13 | debian:12 | alpine:3.20
+  images        ubuntu:24.04 | ubuntu:22.04 | debian:13 | debian:12 | alpine:3.20 | alpine:3.21
   transports    udp (default, wireguard) | tcp (wireguard over tcp)
   nat backends  auto | nft | iptables | userspace (no root, no icmp)
   route via     direct | <exit-name>  (this host: us, us-tcp)
 
 create options:
-  --image IMG   ubuntu:24.04 | ubuntu:22.04 | debian:13 | debian:12 | alpine:3.20
+  --image IMG   ubuntu:24.04 | ubuntu:22.04 | debian:13 | debian:12 | alpine:3.20 | alpine:3.21
   --distro D --version V  same as --image D:V (conflict with --image errors)
   --name NAME   vm name (required)
   --user USER   guest login user (required for non-interactive use)
@@ -62,7 +66,7 @@ create options:
   --tz TZ       iana timezone, e.g. America/Los_Angeles
   --locale LOC  guest locale (default en_US.UTF-8)
   --git-email E optional neutral git identity (never inherited from host)
-  --git-name N  optional neutral git name
+  --git-name N  optional neutral git name (requires --git-email)
   --smbios-spoof  spoof dmi as a dell inspiron laptop
   --no-start    create disk and metadata without starting the vm
   --no-wait     return before cloud-init finishes
