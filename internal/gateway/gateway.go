@@ -9,6 +9,8 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,7 +59,15 @@ type Agent struct {
 }
 
 func New(configPath string) *Agent {
-	return &Agent{configPath: configPath, br: "br0", exits: newExitManager(), stop: make(chan struct{})}
+	a := &Agent{configPath: configPath, br: "br0", exits: newExitManager(), stop: make(chan struct{})}
+	// learned bypass IPs are inserted into the nft set immediately;
+	// full table rebuilds re-include them via BypassList.
+	a.exits.onBypass = func(cidr string) {
+		if out, err := exec.Command("nft", "add", "element", "inet", "pvm", "bypass4", "{", cidr, "}").CombinedOutput(); err != nil {
+			log.Printf("nft bypass4 add %s: %v (%s)", cidr, err, strings.TrimSpace(string(out)))
+		}
+	}
+	return a
 }
 
 func (a *Agent) loadConfig() (*Config, error) {

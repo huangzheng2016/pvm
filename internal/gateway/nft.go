@@ -13,12 +13,25 @@ import (
 // map, DNS hijack (plain DNS is forced to the gateway resolver, DoT is
 // refused so clients fall back to plain DNS), the fake-ip REDIRECT into
 // the local transparent proxy, and a forward kill-switch: VMs routed
-// via an exit may never talk to the uplink directly. The table is
-// rebuilt atomically on every apply so stale rules can never linger.
-func RenderNFT(c *Config, uplink, br string) string {
+// via an exit may never talk to the uplink directly — except traffic
+// whose destination is in the bypass set (direct CIDRs and IPs learned
+// from direct-rule DNS answers), which must pass or direct rules would
+// be dead for proxied VMs. The table is rebuilt atomically on every
+// apply so stale rules can never linger; bypassIPs carries the current
+// learned set so the rebuild preserves it.
+func RenderNFT(c *Config, uplink, br string, bypassIPs []string) string {
 	var b strings.Builder
 	b.WriteString("destroy table inet pvm\n")
 	b.WriteString("table inet pvm {\n")
+	// bypass set lives at table level (sets inside chains are a syntax
+	// error and abort the whole render); full rebuilds re-include the
+	// learned IPs via bypassIPs.
+	b.WriteString("  set bypass4 {\n")
+	b.WriteString("    type ipv4_addr; flags interval;\n")
+	if len(bypassIPs) > 0 {
+		fmt.Fprintf(&b, "    elements = { %s }\n", strings.Join(bypassIPs, ", "))
+	}
+	b.WriteString("  }\n")
 	fmt.Fprintf(&b, "  chain postrouting {\n")
 	fmt.Fprintf(&b, "    type nat hook postrouting priority 100; policy accept;\n")
 	fmt.Fprintf(&b, "    oifname %q masquerade\n", uplink)
@@ -48,13 +61,15 @@ func RenderNFT(c *Config, uplink, br string) string {
 	b.WriteString("  }\n")
 	b.WriteString("  chain forward {\n")
 	b.WriteString("    type filter hook forward priority 0; policy accept;\n")
-	// kill-switch: exit-routed VMs may never reach the uplink directly;
-	// when the tunnel is down they have no other route (fail closed).
+	// kill-switch: exit-routed VMs may never reach the uplink directly
+	// (fail closed when the tunnel is down) — but direct-rule traffic
+	// policy-routed to the main table via the bypass set must pass.
 	for _, v := range c.VMs {
 		exitName, via := c.VMExits[v.Name]
 		if !via || exitName == "" || exitName == "direct" {
 			continue
 		}
+		fmt.Fprintf(&b, "    ip saddr %s oifname %q ip daddr @bypass4 accept\n", v.IP, uplink)
 		fmt.Fprintf(&b, "    ip saddr %s oifname %q drop\n", v.IP, uplink)
 	}
 	b.WriteString("  }\n")

@@ -94,7 +94,7 @@ func TestRenderNFT(t *testing.T) {
 			{HostPort: 30053, VMIP: "192.168.1.11", GuestPort: 53, Proto: "udp"},
 		},
 	}
-	out := RenderNFT(cfg, "enp0s1", "br0")
+	out := RenderNFT(cfg, "enp0s1", "br0", nil)
 	for _, want := range []string{
 		"destroy table inet pvm",
 		`oifname "enp0s1" masquerade`,
@@ -106,5 +106,48 @@ func TestRenderNFT(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("ruleset missing %q\n%s", want, out)
 		}
+	}
+}
+
+// The kill-switch must exempt bypass destinations or direct rules are
+// dead for proxied VMs; the accept must precede the drop.
+func TestRenderNFTBypassBeforeDrop(t *testing.T) {
+	cfg := &Config{
+		CIDR: "192.168.1.0/24", GwIP: "192.168.1.1",
+		VMs:     []VMEntry{{Name: "dev1", MAC: "52:54:00:00:00:10", IP: "192.168.1.10"}},
+		VMExits: map[string]string{"dev1": "us"},
+	}
+	out := RenderNFT(cfg, "enp0s1", "br0", []string{"10.0.0.0/8", "104.20.23.154/32"})
+	for _, want := range []string{
+		"set bypass4 {",
+		"elements = { 10.0.0.0/8, 104.20.23.154/32 }",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("ruleset missing %q\n%s", want, out)
+		}
+	}
+	accept := strings.Index(out, `ip saddr 192.168.1.10 oifname "enp0s1" ip daddr @bypass4 accept`)
+	drop := strings.Index(out, `ip saddr 192.168.1.10 oifname "enp0s1" drop`)
+	if accept < 0 || drop < 0 {
+		t.Fatalf("missing bypass accept or kill-switch drop\n%s", out)
+	}
+	if accept > drop {
+		t.Errorf("bypass accept must precede the kill-switch drop\n%s", out)
+	}
+	// sets are only legal at table level: bypass4 must be declared
+	// before the first chain or nft -f rejects the whole render
+	setIdx := strings.Index(out, "set bypass4 {")
+	chainIdx := strings.Index(out, "chain postrouting {")
+	if setIdx < 0 || chainIdx < 0 || setIdx > chainIdx {
+		t.Errorf("set bypass4 must be declared at table level before chains\n%s", out)
+	}
+	// VM without an exit route stays untouched
+	cfg2 := &Config{
+		CIDR: "192.168.1.0/24", GwIP: "192.168.1.1",
+		VMs: []VMEntry{{Name: "dev2", MAC: "52:54:00:00:00:11", IP: "192.168.1.11"}},
+	}
+	out2 := RenderNFT(cfg2, "enp0s1", "br0", nil)
+	if strings.Contains(out2, "192.168.1.11 oifname") {
+		t.Errorf("direct VM must not get kill-switch rules\n%s", out2)
 	}
 }

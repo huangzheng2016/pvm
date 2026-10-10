@@ -94,6 +94,10 @@ type exitManager struct {
 	vmRules   map[string]int  // vmIP -> exit idx
 	cidrRules map[string]int  // proxied cidr -> exit idx
 	bypass    map[string]bool // direct cidrs/ips -> lookup main
+	// onBypass fires when a new bypass ip/cidr is learned at runtime
+	// (direct-domain DNS answers), so the nft bypass set stays in sync
+	// between full table rebuilds.
+	onBypass func(ip string)
 }
 
 func newExitManager() *exitManager {
@@ -174,7 +178,23 @@ func (m *exitManager) AddBypassIP(ip string) {
 	}
 	if err := ipRule("add", "to", ip+"/32", "lookup", "main", "pref", strconv.Itoa(rulePrefBypass)); err == nil {
 		m.bypass[ip+"/32"] = true
+		if m.onBypass != nil {
+			m.onBypass(ip + "/32")
+		}
 	}
+}
+
+// BypassList snapshots the current bypass set (direct CIDRs, endpoint
+// /32s and learned direct-domain IPs) for the nft full-table render.
+func (m *exitManager) BypassList() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.bypass))
+	for cidr := range m.bypass {
+		out = append(out, cidr)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (m *exitManager) reconcileRulesLocked(wantVM map[string]int, wantCIDR map[string]int, wantBypass map[string]bool) {
