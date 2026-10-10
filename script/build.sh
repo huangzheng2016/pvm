@@ -17,11 +17,10 @@ CGO_ENABLED=0 GOOS=linux GOARCH="$PVM_HOSTARCH" go build -trimpath -ldflags='-s 
 echo "== assetpack"
 go run ./cmd/assetpack
 # Only the compressed payloads and manifest are embedded; raw guests are
-# Only the compressed payloads and manifest are embedded; raw guests are
 # build intermediates and would otherwise be embedded a second time.
-rm -f "internal/assets/packed/gateway-linux-$HOSTARCH" "internal/assets/packed/agent-linux-$HOSTARCH"
+rm -f "internal/assets/packed/gateway-linux-$PVM_HOSTARCH" "internal/assets/packed/agent-linux-$PVM_HOSTARCH"
 for kind in gateway agent; do
-  payload="internal/assets/packed/$kind-linux-$HOSTARCH.zst"
+  payload="internal/assets/packed/$kind-linux-$PVM_HOSTARCH.zst"
   [ -s "$payload" ] || { echo "missing packed asset: $payload" >&2; exit 1; }
 done
 
