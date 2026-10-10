@@ -414,6 +414,19 @@ func (m *exitManager) MarkForExit(name string) int {
 	return fwMarkBase + t.idx
 }
 
+// DomainConnectAddr returns the in-tunnel domain-connect address for an
+// exit (its NIC's server address), ok=false when the tunnel is down.
+func (m *exitManager) DomainConnectAddr(name string) (string, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tuns[name]
+	if !ok || t.dev == nil || t.tunIP == "" {
+		return "", false
+	}
+	addr := exit.DomainConnectAddr(t.tunIP)
+	return addr, addr != ""
+}
+
 func ipRule(args ...string) error {
 	out, err := exec.Command("ip", append([]string{"rule"}, args...)...).CombinedOutput()
 	if err != nil && !strings.Contains(string(out), "File exists") && !strings.Contains(string(out), "No such file") {

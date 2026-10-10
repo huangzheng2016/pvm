@@ -12,7 +12,14 @@ Claude Code 等工具的运行环境检测针对的是**容器**与云主机：`
 ## 网络一致性
 
 - `pvm route <vm> --via <exit>` 后，该 VM 全部流量（含 DNS）经隧道从 VPS 出口，fail-closed：隧道断 = VM 断网，不会回退到本地出口造成 IP 跳变。
-- 被代理域名的 DNS 在 VPS 远端解析，本地不发生查询。
+- 被代理域名采用**域名直达（domain-egress）**：网关对代理域名不执行任何 DNS 解析（本机/本地网络对访问的域名零可见），域名经隧道内 domain-connect 通道送到 exit-agent，由它在 VPS 上解析并拨号。
+
+## 内网 DNS 分流
+
+- `pvm route add internal --domain-suffix corp.example --dns 10.0.0.53`：匹配后缀的域名**只**往指定的内网 DNS 转发；非匹配查询物理隔离，绝不发往这些服务器。
+- 内网域名的解析流量与流量本体都只走直连、不进隧道；`--via <exit>` 的 VM 上内网查询同样不进隧道。
+- 内网域名不命中时返回 NODATA，不回落默认上行。
+- 直连规则（`route add direct`）域名仍走网关本地上行解析——直连意味着流量本就经本地出口。
 
 ## 环境信号对齐（地区画像）
 

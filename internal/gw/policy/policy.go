@@ -75,7 +75,8 @@ func (e *Engine) DecideFlow(domain string, dstIP net.IP, vmID string) Decision {
 		domain, _ = e.pool.Lookup(dstIP)
 	}
 	if d, ok := e.rules.Match(domain, dstIP); ok {
-		if d.Internal || d.Action == rules.Direct {
+		if d.Internal || d.Action == rules.Direct || d.Action == rules.Internal {
+			// internal-rule traffic goes direct like its DNS path
 			return Decision{Route: Direct}
 		}
 		return Decision{Route: Proxy, Exit: d.Exit}

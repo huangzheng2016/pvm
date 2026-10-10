@@ -29,6 +29,9 @@ type Action string
 const (
 	Direct Action = "direct"
 	Proxy  Action = "proxy"
+	// Internal resolves the name only via the rule's designated internal
+	// DNS server; the traffic itself goes direct (never through a tunnel).
+	Internal Action = "internal"
 )
 
 type Rule struct {
@@ -36,12 +39,14 @@ type Rule struct {
 	Pattern string `json:"pattern"`
 	Action  Action `json:"action"`
 	Exit    string `json:"exit,omitempty"`
+	DNS     string `json:"dns,omitempty"` // internal action: designated resolver host[:port]
 }
 
 type Decision struct {
 	Action   Action
 	Exit     string
-	Internal bool // matched a built-in internal suffix, never leaves the cluster
+	Internal bool   // matched a built-in internal suffix, never leaves the cluster
+	DNS      string // Internal action: designated resolver
 }
 
 type entry struct {
@@ -146,7 +151,7 @@ func (e *Engine) Match(domain string, ip net.IP) (Decision, bool) {
 				continue
 			}
 			if matchDomain(en.Type, en.Pattern, domain) {
-				return Decision{Action: en.Action, Exit: en.Exit}, true
+				return Decision{Action: en.Action, Exit: en.Exit, DNS: en.DNS}, true
 			}
 		}
 	}

@@ -192,6 +192,25 @@ func (s *Server) Start() (string, error) {
 	}
 	log.Printf("nat backend: %s", s.nat.name())
 
+	// domain-connect listeners, one per tunnel NIC server address
+	for _, t := range s.tr {
+		dcAddr := net.JoinHostPort(t.serverIP, itoa(DomainConnectPort))
+		if s.nat.name() == NATUserspace {
+			// no OS address exists; the netstack forwarder intercepts it
+			if ub, ok := s.nat.(*userspaceBackend); ok {
+				ub.Intercept(dcAddr, func(c net.Conn) { handleDomainConn(c, nil) })
+			}
+			continue
+		}
+		ln, err := net.Listen("tcp", dcAddr)
+		if err != nil {
+			s.Close()
+			return "", fmt.Errorf("domain-connect %s: %w", dcAddr, err)
+		}
+		go serveDomainConnect(ln, nil)
+	}
+	log.Printf("domain-connect: listening on each tunnel NIC (port %d)", DomainConnectPort)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
 	mux.HandleFunc("POST /v1/enroll", s.withAuth(s.handleEnroll))
