@@ -133,6 +133,11 @@ func CmdCreate(args []string) int {
 	mem := fs.Int("mem", 0, "memory MB")
 	disk := fs.Int("disk", 0, "disk GB")
 	noStart := fs.Bool("no-start", false, "create but do not start")
+	tz := fs.String("tz", "", "guest timezone (IANA, e.g. America/Los_Angeles; default UTC)")
+	locale := fs.String("locale", "", "guest locale (default en_US.UTF-8)")
+	gitEmail := fs.String("git-email", "", "git user.email in the guest (never copied from the host)")
+	gitName := fs.String("git-name", "", "git user.name in the guest")
+	smbiosSpoof := fs.Bool("smbios-spoof", false, "present commodity PC hardware in DMI instead of QEMU defaults")
 	var mounts multiFlag
 	fs.Var(&mounts, "mount", "extra /host:/guest mount (repeatable)")
 	if err := fs.Parse(args); err != nil {
@@ -158,6 +163,21 @@ func CmdCreate(args []string) int {
 		"name": *name, "image": *imageSpec, "user": *user,
 		"cpus": *cpus, "mem_mb": *mem, "disk_gb": *disk,
 		"mounts": []string(mounts), "start": !*noStart,
+	}
+	if *tz != "" {
+		body["tz"] = *tz
+	}
+	if *locale != "" {
+		body["locale"] = *locale
+	}
+	if *gitEmail != "" {
+		body["git_email"] = *gitEmail
+	}
+	if *gitName != "" {
+		body["git_name"] = *gitName
+	}
+	if *smbiosSpoof {
+		body["smbios_spoof"] = true
 	}
 	var out vmInfoView
 	if err := c.Post("/v1/vms", body, &out); err != nil {
