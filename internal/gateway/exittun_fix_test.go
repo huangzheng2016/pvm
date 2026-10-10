@@ -70,6 +70,14 @@ func TestLearnedBypassSurvivesSync(t *testing.T) {
 	if !m.bypass["203.0.113.9/32"] {
 		t.Fatal("learned bypass missing from state after Sync")
 	}
+	// The slirp uplink subnet is always bypassed to main: exit-routed VMs
+	// must be able to answer host port-map (DNAT) connections.
+	if !log.has("add", "to 10.0.2.0/24", "main") {
+		t.Fatalf("slirp bypass rule not installed: %v", log.calls)
+	}
+	if !m.bypass["10.0.2.0/24"] {
+		t.Fatal("slirp bypass missing from state after Sync")
+	}
 }
 
 func TestLearnedBypassCap(t *testing.T) {

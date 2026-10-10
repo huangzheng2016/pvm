@@ -109,7 +109,7 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 	s.deskMu.Lock()
 	defer s.deskMu.Unlock()
 
-	if out, err := s.sshRun(spec, "command -v vncserver websockify"); err != nil || strings.Count(strings.TrimSpace(out), "/") < 2 {
+	if out, err := s.sshRun(spec, "command -v vncserver >/dev/null && command -v websockify >/dev/null && echo HAVE_DESKTOP"); err != nil || !strings.Contains(out, "HAVE_DESKTOP") {
 		writeErr(w, 400, fmt.Errorf("desktop packages missing in %s; create the vm from a golden image built with desktop support (pvm image build)", name))
 		return
 	}
@@ -124,7 +124,7 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 	// Session down or state lost: (re)create. A lost state means we cannot
 	// recover the old password, so the session is restarted fresh.
 	if running {
-		_, _ = s.sshRun(spec, fmt.Sprintf("vncserver -kill %s >/dev/null 2>&1; pkill -f 'websockify.*:%d' >/dev/null 2>&1", desktopVNCDisplay, desktopWebPort))
+		_, _ = s.sshRun(spec, fmt.Sprintf("vncserver -kill %s >/dev/null 2>&1; fuser -k %d/tcp >/dev/null 2>&1 || true", desktopVNCDisplay, desktopWebPort))
 	}
 
 	st = &desktopState{Password: randHex(8), Size: size}
@@ -182,7 +182,7 @@ func (s *Server) handleDesktopStop(w http.ResponseWriter, r *http.Request) {
 	s.deskMu.Lock()
 	defer s.deskMu.Unlock()
 	if st, err := s.instance(spec).Running(); err == nil && st != nil {
-		_, _ = s.sshRun(spec, fmt.Sprintf("vncserver -kill %s >/dev/null 2>&1; pkill -f 'websockify.*:%d' >/dev/null 2>&1", desktopVNCDisplay, desktopWebPort))
+		_, _ = s.sshRun(spec, fmt.Sprintf("vncserver -kill %s >/dev/null 2>&1; fuser -k %d/tcp >/dev/null 2>&1 || true", desktopVNCDisplay, desktopWebPort))
 	}
 	if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
 		for _, m := range cl.Maps {
@@ -202,10 +202,11 @@ func desktopURL(st *desktopState) string {
 }
 
 // desktopSessionRunning reports whether Xtigervnc for our display and a
-// websockify for our web port are both alive in the guest.
+// websockify for our web port are both alive in the guest. The bracket
+// trick keeps pgrep from matching the very shell that runs the check.
 func (s *Server) desktopSessionRunning(spec *vm.Spec) bool {
 	out, err := s.sshRun(spec, fmt.Sprintf(
-		"pgrep -f 'Xtigervnc.*%s' >/dev/null && pgrep -f 'websockify.*:%d' >/dev/null && echo UP", desktopVNCDisplay, desktopWebPort))
+		"pgrep -f '[X]tigervnc %s' >/dev/null && pgrep -f '[w]ebsockify -D' >/dev/null && echo UP", desktopVNCDisplay))
 	return err == nil && strings.Contains(out, "UP")
 }
 
@@ -226,10 +227,11 @@ chmod +x "$HOME/.vnc/xstartup"
 printf '%%s' %s | vncpasswd -f > "$HOME/.vnc/passwd"
 chmod 600 "$HOME/.vnc/passwd"
 vncserver -kill %s >/dev/null 2>&1 || true
-pkill -f 'websockify.*:%d' >/dev/null 2>&1 || true
+fuser -k %d/tcp >/dev/null 2>&1 || true
 vncserver %s -geometry %s -depth 24 -SecurityTypes VncAuth -localhost yes
+for i in $(seq 1 15); do fuser %d/tcp >/dev/null 2>&1 || break; sleep 1; done
 nohup websockify -D --web /usr/share/novnc %d 127.0.0.1:%d >/dev/null 2>&1
-`, xstartup, shellQuote(st.Password), desktopVNCDisplay, desktopWebPort, desktopVNCDisplay, st.Size, desktopWebPort, desktopVNCPort)
+`, xstartup, shellQuote(st.Password), desktopVNCDisplay, desktopWebPort, desktopVNCDisplay, st.Size, desktopWebPort, desktopWebPort, desktopVNCPort)
 	if out, err := s.sshRun(spec, script); err != nil {
 		return fmt.Errorf("start desktop session: %v\n%s", err, out)
 	}
