@@ -48,7 +48,9 @@ func (s *Server) ensureCluster(id int) (*cluster.Cluster, error) {
 		}
 	}
 	inst := s.instance(spec)
-	if inst.Running() == nil {
+	if st, err := inst.Running(); err != nil {
+		return nil, err
+	} else if st == nil {
 		if err := inst.Start(); err != nil {
 			return nil, fmt.Errorf("start gateway: %w", err)
 		}
@@ -69,7 +71,13 @@ func (s *Server) onGatewayStarted(cl *cluster.Cluster) {
 			continue
 		}
 		spec, err := s.getSpec(vn.Name)
-		if err != nil || s.instance(spec).Running() == nil {
+		if err != nil {
+			continue
+		}
+		if st, rerr := s.instance(spec).Running(); rerr != nil {
+			log.Printf("inspect vm %s state: %v", vn.Name, rerr)
+			continue
+		} else if st == nil {
 			continue
 		}
 		if err := s.repairClientLink(cl, spec); err != nil {
@@ -186,7 +194,9 @@ func (s *Server) ensureLink(cl *cluster.Cluster, vmName string) error {
 		return err
 	}
 	gwInst := s.instance(gwSpec)
-	if gwInst.Running() == nil {
+	if st, err := gwInst.Running(); err != nil {
+		return err
+	} else if st == nil {
 		return fmt.Errorf("gateway %s not running", cl.Gateway)
 	}
 	q, err := qemu.DialQMP(filepath.Join(s.P.VMDir(cl.Gateway), "qmp.sock"))
@@ -227,7 +237,7 @@ func (s *Server) removeLink(cl *cluster.Cluster, vmName string) error {
 	if err != nil {
 		return nil // gateway gone already
 	}
-	if s.instance(gwSpec).Running() == nil {
+	if st, err := s.instance(gwSpec).Running(); err != nil || st == nil {
 		return nil
 	}
 	q, err := qemu.DialQMP(filepath.Join(s.P.VMDir(cl.Gateway), "qmp.sock"))

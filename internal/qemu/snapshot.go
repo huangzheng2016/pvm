@@ -14,10 +14,11 @@ import (
 )
 
 // RAM snapshot layout inside the VM directory:
-//   state.snapshot.zst  RAM + device state, zstd compressed
-//   disk.snap.qcow2     flattened standalone base captured at snapshot time
-//   disk.restore.qcow2  per-restore overlay backed by disk.snap.qcow2
-//   snapshot.json       manifest
+//
+//	state.snapshot.zst  RAM + device state, zstd compressed
+//	disk.snap.qcow2     flattened standalone base captured at snapshot time
+//	disk.restore.qcow2  per-restore overlay backed by disk.snap.qcow2
+//	snapshot.json       manifest
 //
 // Two platform bugs are deliberately not repeated:
 //  1. any failure after QMP stop resumes the guest with cont (defer);
@@ -85,7 +86,14 @@ func (m *SnapshotManifest) checkMatch(c *VMConfig) error {
 			m.Arch, m.CPUs, m.MemMB, c.Arch, c.CPUs, c.MemMB)
 	}
 	if m.Accel != c.Accel {
-		return fmt.Errorf("snapshot accel %s != current %s; refusing heterogeneous restore", m.Accel, c.Accel)
+		fallback, ok := m.Accel.Fallback()
+		if !ok || fallback != c.Accel {
+			return fmt.Errorf("snapshot accel %s is incompatible with current %s; refusing heterogeneous restore", m.Accel, c.Accel)
+		}
+		// Restore with the accelerator recorded in the snapshot; Start may
+		// still perform its normal early-failure fallback to that same
+		// value, so an hvf snapshot on a tcg host is a valid restore.
+		c.Accel = m.Accel
 	}
 	return nil
 }
@@ -106,7 +114,10 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 
-	st := in.Running()
+	st, err := in.Running()
+	if err != nil {
+		return fmt.Errorf("cannot snapshot vm safely: %w", err)
+	}
 	if st == nil {
 		return fmt.Errorf("vm %s is not running", in.Cfg.Name)
 	}

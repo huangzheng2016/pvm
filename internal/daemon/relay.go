@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"fmt"
-	"io"
 	"net"
 	"sync"
 	"time"
@@ -90,12 +89,12 @@ func proxyTCP(src net.Conn, poolPort int) {
 	}
 	// bidirectional copy preserving half-close semantics
 	go func() {
-		io.Copy(dst, src)
+		copyWithIdleTimeout(dst, src, relayIdleTimeout)
 		if tc, ok := dst.(*net.TCPConn); ok {
 			tc.CloseWrite()
 		}
 	}()
-	io.Copy(src, dst)
+	copyWithIdleTimeout(src, dst, relayIdleTimeout)
 	src.Close()
 	dst.Close()
 }

@@ -3,7 +3,6 @@ package gateway
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"sync"
@@ -202,7 +201,7 @@ func relay(a, b net.Conn) {
 	}
 	done := make(chan struct{}, 2)
 	cp := func(to, from net.Conn) {
-		io.Copy(to, from)
+		copyWithIdleTimeout(to, from, relayIdleTimeout)
 		if tc, ok := from.(*net.TCPConn); ok {
 			tc.CloseRead()
 		}

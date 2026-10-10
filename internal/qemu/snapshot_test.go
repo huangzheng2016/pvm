@@ -53,12 +53,27 @@ func TestCheckMatch(t *testing.T) {
 		{Arch: "amd64", CPUs: 2, MemMB: 2048, Accel: AccelHVF},
 		{Arch: "arm64", CPUs: 4, MemMB: 2048, Accel: AccelHVF},
 		{Arch: "arm64", CPUs: 2, MemMB: 4096, Accel: AccelHVF},
-		{Arch: "arm64", CPUs: 2, MemMB: 2048, Accel: AccelTCG},
 	}
 	for i := range cases {
 		if err := m.checkMatch(&cases[i]); err == nil {
 			t.Fatalf("case %d: expected mismatch error", i)
 		}
+	}
+}
+
+func TestCheckMatchAccelFallback(t *testing.T) {
+	m := &SnapshotManifest{Arch: "arm64", CPUs: 2, MemMB: 2048, Accel: AccelHVF}
+	c := &VMConfig{Arch: "arm64", CPUs: 2, MemMB: 2048, Accel: AccelTCG}
+	if err := m.checkMatch(c); err != nil {
+		t.Fatalf("hvf snapshot must be restorable on tcg host: %v", err)
+	}
+	if c.Accel != m.Accel {
+		t.Fatalf("restore accel = %s, want snapshot accel %s", c.Accel, m.Accel)
+	}
+	m.Accel = AccelTCG
+	c.Accel = AccelHVF
+	if err := m.checkMatch(c); err == nil {
+		t.Fatal("tcg snapshot on hvf host must remain incompatible")
 	}
 }
 
