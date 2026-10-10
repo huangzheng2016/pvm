@@ -13,14 +13,14 @@ func TestPeerStoreAllocateAndPersist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p1, err := s.Allocate("key-a", "host-a", "udp")
+	p1, _, err := s.Allocate("key-a", "host-a", "udp")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if p1.IP != "10.99.0.2" {
 		t.Fatalf("first udp peer = %s, want 10.99.0.2", p1.IP)
 	}
-	p2, err := s.Allocate("key-b", "host-b", "udp")
+	p2, _, err := s.Allocate("key-b", "host-b", "udp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +28,7 @@ func TestPeerStoreAllocateAndPersist(t *testing.T) {
 		t.Fatalf("second udp peer = %s, want 10.99.0.3", p2.IP)
 	}
 	// tcp pool is a separate subnet
-	p3, err := s.Allocate("key-a", "host-a", "tcp")
+	p3, _, err := s.Allocate("key-a", "host-a", "tcp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestPeerStoreAllocateAndPersist(t *testing.T) {
 		t.Fatalf("first tcp peer = %s, want 10.99.1.2", p3.IP)
 	}
 	// re-enroll is idempotent
-	again, err := s.Allocate("key-a", "host-a", "udp")
+	again, _, err := s.Allocate("key-a", "host-a", "udp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestPeerStoreAllocateAndPersist(t *testing.T) {
 	if _, ok, err := s2.Remove("10.99.0.3"); err != nil || !ok {
 		t.Fatalf("remove: ok=%v err=%v", ok, err)
 	}
-	p4, err := s2.Allocate("key-c", "host-c", "udp")
+	p4, _, err := s2.Allocate("key-c", "host-c", "udp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestPeerStoreRejectsBadTransport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Allocate("k", "h", "gre"); err == nil || !strings.Contains(err.Error(), "unknown transport") {
+	if _, _, err := s.Allocate("k", "h", "gre"); err == nil || !strings.Contains(err.Error(), "unknown transport") {
 		t.Fatalf("want unknown transport error, got %v", err)
 	}
 }

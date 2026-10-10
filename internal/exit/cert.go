@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"log"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -26,11 +27,14 @@ import (
 func EnsureCert(dir string) (tls.Certificate, string, error) {
 	certPath := filepath.Join(dir, "server-cert.pem")
 	keyPath := filepath.Join(dir, "server-key.pem")
-	if b, err := os.ReadFile(certPath); err == nil {
-		if cert, err := tls.LoadX509KeyPair(certPath, keyPath); err == nil {
+	if _, err := os.Stat(certPath); err == nil {
+		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+		if err == nil {
 			return cert, fingerprintDER(cert.Certificate[0]), nil
 		} else {
-			_ = b
+			// rotating the cert invalidates every pinned client; never do
+			// it silently.
+			log.Printf("warning: existing cert/key unusable (%v); regenerating — pinned clients will need re-pinning", err)
 		}
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

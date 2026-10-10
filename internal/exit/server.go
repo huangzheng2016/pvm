@@ -1,6 +1,7 @@
 package exit
 
 import (
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -10,8 +11,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/huangzheng2016/pvm/internal/tunnel"
 	"golang.zx2c4.com/wireguard/device"
@@ -30,7 +33,10 @@ type ServerConfig struct {
 	NAT            string // auto | nft | iptables | userspace
 	TunPrefix      string // OS TUN name prefix (default "pvmexit")
 	SubnetBase     int    // tunnel subnet octet, 10.<base>.0/1.0/24 (default 99)
-	Verbose        bool
+	// DomainAllow lists CIDRs the domain-connect service may dial even
+	// though they fall inside blocked private/link-local space.
+	DomainAllow []string
+	Verbose     bool
 
 	// TunFactory overrides OS TUN creation (tests); when set, system
 	// network configuration (ip/nft/sysctl) is skipped.
@@ -76,17 +82,18 @@ type transportRT struct {
 
 // Server is the VPS-side exit agent.
 type Server struct {
-	cfg    ServerConfig
-	store  *PeerStore
-	priv   string // base64 wg private key (shared by both transports)
-	pub    string
-	sugTZ  string // suggested client timezone (enroll response)
-	nat    natBackend
-	tr     map[string]*transportRT
-	http   *http.Server
-	ln     net.Listener
-	closed chan struct{}
-	once   sync.Once
+	cfg     ServerConfig
+	store   *PeerStore
+	priv    string // base64 wg private key (shared by both transports)
+	pub     string
+	sugTZ   string // suggested client timezone (enroll response)
+	nat     natBackend
+	dcAllow []*net.IPNet
+	tr      map[string]*transportRT
+	http    *http.Server
+	ln      net.Listener
+	closed  chan struct{}
+	once    sync.Once
 }
 
 func NewServer(cfg ServerConfig) (*Server, error) {
@@ -100,6 +107,13 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 	s := &Server{cfg: cfg, tr: map[string]*transportRT{}, nat: nat, closed: make(chan struct{})}
 	s.sugTZ = DetectSuggestedTZ(cfg.StateDir)
+	for _, c := range cfg.DomainAllow {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			return nil, fmt.Errorf("--domain-allow-cidr %q: %w", c, err)
+		}
+		s.dcAllow = append(s.dcAllow, n)
+	}
 
 	base := cfg.SubnetBase
 	if base == 0 {
@@ -193,12 +207,13 @@ func (s *Server) Start() (string, error) {
 	log.Printf("nat backend: %s", s.nat.name())
 
 	// domain-connect listeners, one per tunnel NIC server address
+	dc := newDCServer(s.dcAllow)
 	for _, t := range s.tr {
 		dcAddr := net.JoinHostPort(t.serverIP, itoa(DomainConnectPort))
 		if s.nat.name() == NATUserspace {
 			// no OS address exists; the netstack forwarder intercepts it
 			if ub, ok := s.nat.(*userspaceBackend); ok {
-				ub.Intercept(dcAddr, func(c net.Conn) { handleDomainConn(c, nil) })
+				ub.Intercept(dcAddr, dc.handle)
 			}
 			continue
 		}
@@ -207,9 +222,13 @@ func (s *Server) Start() (string, error) {
 			s.Close()
 			return "", fmt.Errorf("domain-connect %s: %w", dcAddr, err)
 		}
-		go serveDomainConnect(ln, nil)
+		go dc.serve(ln)
 	}
 	log.Printf("domain-connect: listening on each tunnel NIC (port %d)", DomainConnectPort)
+
+	// drop registrations whose tunnel has been silent for too long,
+	// otherwise the /24 pool slowly fills with dead peers.
+	go s.reapIdlePeers()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
@@ -219,6 +238,11 @@ func (s *Server) Start() (string, error) {
 	s.http = &http.Server{
 		Addr:    s.cfg.Listen,
 		Handler: mux,
+		// the control plane listens on the public internet; without
+		// timeouts a slowloris trickle pins one goroutine+fd per conn.
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 		TLSConfig: &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS12,
@@ -295,9 +319,10 @@ func (s *Server) startTransport(name string) error {
 }
 
 func (s *Server) withAuth(h http.HandlerFunc) http.HandlerFunc {
+	want := "Bearer " + s.cfg.Token
 	return func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
-		if auth != "Bearer "+s.cfg.Token {
+		if subtle.ConstantTimeCompare([]byte(auth), []byte(want)) != 1 {
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}
@@ -327,7 +352,7 @@ type enrollResponse struct {
 
 func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	var req enrollRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&req); err != nil {
 		http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
 		return
 	}
@@ -343,14 +368,18 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"bad wg_pubkey"}`, http.StatusBadRequest)
 		return
 	}
-	peer, err := s.store.Allocate(req.PubKey, req.Hostname, req.Transport)
+	peer, created, err := s.store.Allocate(req.PubKey, req.Hostname, req.Transport)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":%q}`, err.Error()), http.StatusInternalServerError)
 		return
 	}
 	pubHex, _ := tunnel.Hex(req.PubKey)
 	if err := t.dev.IpcSet(fmt.Sprintf("public_key=%s\nallowed_ip=%s/32\n", pubHex, peer.IP)); err != nil {
-		s.store.Remove(peer.IP)
+		// only roll back peers this call actually created; removing an
+		// existing registration would desync store and device.
+		if created {
+			_, _, _ = s.store.Remove(peer.IP)
+		}
 		http.Error(w, `{"error":"configure peer"}`, http.StatusInternalServerError)
 		return
 	}
@@ -384,18 +413,28 @@ func itoa(i int) string {
 
 func (s *Server) handleDeletePeer(w http.ResponseWriter, r *http.Request) {
 	ip := r.PathValue("ip")
-	peer, ok, err := s.store.Remove(ip)
-	if err != nil {
-		http.Error(w, `{"error":"store"}`, http.StatusInternalServerError)
-		return
-	}
+	peer, ok := s.store.Get(ip)
 	if !ok {
 		http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
 		return
 	}
+	// device first: only when the key is actually off the wireguard device
+	// is it safe to drop the registration; otherwise the peer stays
+	// connectable while the API claims it is gone.
 	if t, ok := s.tr[peer.Transport]; ok {
-		pubHex, _ := tunnel.Hex(peer.PubKey)
-		_ = t.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex))
+		pubHex, err := tunnel.Hex(peer.PubKey)
+		if err != nil {
+			http.Error(w, `{"error":"device remove peer"}`, http.StatusInternalServerError)
+			return
+		}
+		if err := t.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex)); err != nil {
+			http.Error(w, `{"error":"device remove peer"}`, http.StatusInternalServerError)
+			return
+		}
+	}
+	if _, _, err := s.store.Remove(ip); err != nil {
+		http.Error(w, `{"error":"store"}`, http.StatusInternalServerError)
+		return
 	}
 	writeJSON(w, map[string]any{"removed": ip})
 }
@@ -431,4 +470,93 @@ func (s *Server) Close() {
 			_ = s.nat.cleanup()
 		}
 	})
+}
+
+const (
+	peerReapInterval = 10 * time.Minute
+	peerIdleMax      = 2 * time.Hour
+)
+
+// reapIdlePeers periodically removes registrations whose tunnel has been
+// silent for peerIdleMax (or that never handshook within that window), so
+// the /24 tunnel-IP pool cannot fill with dead peers over time.
+func (s *Server) reapIdlePeers() {
+	tick := time.NewTicker(peerReapInterval)
+	defer tick.Stop()
+	for {
+		select {
+		case <-s.closed:
+			return
+		case <-tick.C:
+			s.reapIdleOnce()
+		}
+	}
+}
+
+func (s *Server) reapIdleOnce() {
+	for _, p := range s.store.List() {
+		t, ok := s.tr[p.Transport]
+		if !ok {
+			continue
+		}
+		hs, err := peerLastHandshake(t.dev, p.PubKey)
+		if err != nil {
+			continue
+		}
+		idle := time.Since(hs)
+		if hs.IsZero() {
+			idle = time.Since(p.CreatedAt)
+		}
+		if idle < peerIdleMax {
+			continue
+		}
+		pubHex, err := tunnel.Hex(p.PubKey)
+		if err != nil {
+			continue
+		}
+		if err := t.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex)); err != nil {
+			log.Printf("reap peer %s: device remove: %v", p.IP, err)
+			continue
+		}
+		if _, _, err := s.store.Remove(p.IP); err == nil {
+			log.Printf("reaped idle peer %s (%s, idle %v)", p.IP, p.Hostname, idle.Round(time.Minute))
+		}
+	}
+}
+
+// peerLastHandshake parses the device's IpcGet dump for one peer's
+// last_handshake_time_sec; zero time means never handshook / absent.
+func peerLastHandshake(dev *device.Device, pubkey string) (time.Time, error) {
+	out, err := dev.IpcGet()
+	if err != nil {
+		return time.Time{}, err
+	}
+	wantHex, err := tunnel.Hex(pubkey)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return parseIpcLastHandshake(out, wantHex), nil
+}
+
+// parseIpcLastHandshake finds last_handshake_time_sec for wantHex in an
+// IpcGet dump; zero when the peer is absent or never shook hands.
+func parseIpcLastHandshake(out, wantHex string) time.Time {
+	cur := ""
+	for _, line := range strings.Split(out, "\n") {
+		if k, ok := strings.CutPrefix(line, "public_key="); ok {
+			cur = k
+			continue
+		}
+		if cur != wantHex {
+			continue
+		}
+		if v, ok := strings.CutPrefix(line, "last_handshake_time_sec="); ok {
+			sec, _ := strconv.ParseInt(v, 10, 64)
+			if sec <= 0 {
+				return time.Time{}
+			}
+			return time.Unix(sec, 0)
+		}
+	}
+	return time.Time{}
 }

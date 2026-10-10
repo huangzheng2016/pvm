@@ -8,6 +8,9 @@ import (
 	"log"
 	"net"
 	"strconv"
+	"strings"
+	"sync"
+	"syscall"
 	"time"
 )
 
@@ -28,6 +31,12 @@ const (
 
 	dcMaxDomain = 253
 	dcMaxMsg    = 1024
+
+	// dcIdleTimeout closes relays with no traffic in either direction;
+	// long-lived proxied connections (SSH etc.) stay up while active.
+	dcIdleTimeout = 2 * time.Hour
+	// dcMaxPerPeer caps concurrent relays per tunnel peer.
+	dcMaxPerPeer = 128
 )
 
 // DomainConnectAddr maps a client tunnel IP (10.<base>.<t>.<n>) to the
@@ -79,23 +88,140 @@ func WriteDomainConnect(conn net.Conn, domain string, port int) error {
 	return conn.SetDeadline(time.Time{})
 }
 
-// serveDomainConnect accepts on ln until Close; dialFn may be nil (then
-// plain net.Dial to the VPS's egress is used).
-func serveDomainConnect(ln net.Listener, dialFn func(network, address string) (net.Conn, error)) {
+// dcServer is the server side of domain-connect with egress policy
+// (no loopback/link-local/RFC1918/metadata unless explicitly allowed),
+// per-peer relay caps and idle timeouts. Without these the service is
+// an authenticated open proxy able to reach VPS-local services.
+type dcServer struct {
+	allow []*net.IPNet // extra CIDRs exempt from the private-egress block
+	// dial is replaceable in tests; nil uses restrictedDial.
+	dial func(network, address string) (net.Conn, error)
+
+	mu     sync.Mutex
+	active map[string]int // peer IP -> active relay count
+}
+
+func newDCServer(allow []*net.IPNet) *dcServer {
+	return &dcServer{allow: allow, active: map[string]int{}}
+}
+
+// serve accepts on ln until it is closed.
+func (d *dcServer) serve(ln net.Listener) {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		go func() {
-			defer conn.Close()
-			handleDomainConn(conn, dialFn)
-		}()
+		go d.handle(conn)
 	}
 }
 
-// handleDomainConn parses one connect frame, dials, answers and relays.
-func handleDomainConn(conn net.Conn, dialFn func(network, address string) (net.Conn, error)) {
+func (d *dcServer) enter(peer string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.active[peer] >= dcMaxPerPeer {
+		return false
+	}
+	d.active[peer]++
+	return true
+}
+
+func (d *dcServer) leave(peer string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.active[peer] > 0 {
+		d.active[peer]--
+	}
+}
+
+// blockedEgressIP reports whether ip may not be dialed by domain-connect:
+// loopback, link-local (incl. cloud metadata 169.254.169.254), RFC1918,
+// multicast/reserved and non-IPv4 addresses.
+func blockedEgressIP(ip net.IP) bool {
+	v4 := ip.To4()
+	if v4 == nil {
+		return true
+	}
+	switch {
+	case v4[0] == 0 || v4[0] >= 224:
+		return true
+	case v4[0] == 127:
+		return true
+	case v4[0] == 169 && v4[1] == 254:
+		return true
+	case v4[0] == 10:
+		return true
+	case v4[0] == 172 && v4[1]&0xf0 == 16:
+		return true
+	case v4[0] == 192 && v4[1] == 168:
+		return true
+	}
+	return false
+}
+
+// validConnectDomain allows only DNS-shaped names, never IP literals
+// (an IP literal would skip the resolve-and-check dial path's domain
+// semantics; private-IP destinations are blocked at dial time anyway).
+func validConnectDomain(d string) bool {
+	if len(d) == 0 || len(d) > dcMaxDomain || net.ParseIP(d) != nil {
+		return false
+	}
+	for _, label := range strings.Split(strings.TrimSuffix(d, "."), ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			ok := c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-' || c == '_'
+			if !ok {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// restrictedDial refuses blocked destinations at connect time (after
+// resolution, before the socket connects — no DNS-rebinding window),
+// unless the address is inside an operator-allowed CIDR.
+func (d *dcServer) restrictedDial(network, address string) (net.Conn, error) {
+	dialer := &net.Dialer{
+		Timeout: 15 * time.Second,
+		Control: func(_, addr string, _ syscall.RawConn) error {
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				return err
+			}
+			ip := net.ParseIP(host)
+			if ip == nil {
+				return fmt.Errorf("unresolved dial address %s", host)
+			}
+			for _, n := range d.allow {
+				if n.Contains(ip) {
+					return nil
+				}
+			}
+			if blockedEgressIP(ip) {
+				return fmt.Errorf("egress to %s refused by exit policy", ip)
+			}
+			return nil
+		},
+	}
+	return dialer.Dial(network, address)
+}
+
+func (d *dcServer) handle(conn net.Conn) {
+	defer conn.Close()
+	peer := "unknown"
+	if a, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
+		peer = a.IP.String()
+	}
+	if !d.enter(peer) {
+		log.Printf("domain-connect: too many relays from %s, refusing", peer)
+		return
+	}
+	defer d.leave(peer)
+
 	_ = conn.SetDeadline(time.Now().Add(20 * time.Second))
 	reply := func(status byte, msg string) {
 		if len(msg) > dcMaxMsg {
@@ -121,22 +247,45 @@ func handleDomainConn(conn net.Conn, dialFn func(network, address string) (net.C
 	if _, err := io.ReadFull(conn, buf); err != nil {
 		return
 	}
-	domain := string(buf[:dlen])
+	domain := strings.ToLower(string(buf[:dlen]))
 	port := int(binary.BigEndian.Uint16(buf[dlen:]))
-	addr := net.JoinHostPort(domain, strconv.Itoa(port))
-	if dialFn == nil {
-		dialFn = func(network, address string) (net.Conn, error) {
-			return net.DialTimeout(network, address, 15*time.Second)
-		}
+	if !validConnectDomain(domain) {
+		reply(1, "invalid or disallowed domain")
+		return
 	}
-	up, err := dialFn("tcp", addr)
+	dialFn := d.dial
+	if dialFn == nil {
+		dialFn = d.restrictedDial
+	}
+	up, err := dialFn("tcp", net.JoinHostPort(domain, strconv.Itoa(port)))
 	if err != nil {
 		reply(1, err.Error())
 		return
 	}
+	defer up.Close()
 	reply(0, "")
-	_ = conn.SetDeadline(time.Time{})
-	_ = up.SetDeadline(time.Time{})
-	log.Printf("domain-connect: %s relay established", addr)
-	proxyTCP(conn, up)
+	log.Printf("domain-connect: %s:%d relay established for %s", domain, port, peer)
+	proxyTCP(
+		&idleTimeoutConn{Conn: conn, d: dcIdleTimeout},
+		&idleTimeoutConn{Conn: up, d: dcIdleTimeout},
+	)
+}
+
+// idleTimeoutConn refreshes the connection deadline on every read/write,
+// so relays die only after a full idle period with no traffic.
+type idleTimeoutConn struct {
+	net.Conn
+	d time.Duration
+}
+
+func (c *idleTimeoutConn) bump() { _ = c.Conn.SetDeadline(time.Now().Add(c.d)) }
+
+func (c *idleTimeoutConn) Read(p []byte) (int, error) {
+	c.bump()
+	return c.Conn.Read(p)
+}
+
+func (c *idleTimeoutConn) Write(p []byte) (int, error) {
+	c.bump()
+	return c.Conn.Write(p)
 }

@@ -105,16 +105,16 @@ func (s *PeerStore) saveLocked() error {
 }
 
 // Allocate assigns a tunnel IP for (pubkey, transport); re-enrolling with an
-// existing pubkey+transport returns the same peer.
-func (s *PeerStore) Allocate(pubkey, hostname, transport string) (Peer, error) {
+// existing pubkey+transport returns the same peer (created=false).
+func (s *PeerStore) Allocate(pubkey, hostname, transport string) (Peer, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, err := subnetOf(s.subnets, transport); err != nil {
-		return Peer{}, err
+		return Peer{}, false, err
 	}
 	for _, p := range s.Peers {
 		if p.PubKey == pubkey && p.Transport == transport {
-			return p, nil
+			return p, false, nil
 		}
 	}
 	cidr, _ := subnetOf(s.subnets, transport)
@@ -131,10 +131,22 @@ func (s *PeerStore) Allocate(pubkey, hostname, transport string) (Peer, error) {
 		if !used[candidate.String()] {
 			p := Peer{IP: candidate.String(), PubKey: pubkey, Hostname: hostname, Transport: transport, CreatedAt: time.Now()}
 			s.Peers = append(s.Peers, p)
-			return p, s.saveLocked()
+			return p, true, s.saveLocked()
 		}
 	}
-	return Peer{}, fmt.Errorf("tunnel IP pool exhausted for %s", transport)
+	return Peer{}, false, fmt.Errorf("tunnel IP pool exhausted for %s", transport)
+}
+
+// Get returns the peer with the given tunnel IP.
+func (s *PeerStore) Get(ip string) (Peer, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range s.Peers {
+		if p.IP == ip {
+			return p, true
+		}
+	}
+	return Peer{}, false
 }
 
 // Remove deletes the peer with the given tunnel IP. Returns false if absent.

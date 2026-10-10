@@ -54,9 +54,12 @@ func RenderNFT(c *Config, uplink, br string, bypassIPs []string) string {
 	fmt.Fprintf(&b, "    iifname %q tcp dport 53 dnat ip to %s\n", br, c.GwIP)
 	fmt.Fprintf(&b, "    iifname %q udp dport 853 reject\n", br)
 	fmt.Fprintf(&b, "    iifname %q tcp dport 853 reject\n", br)
-	// fake-ip data plane: TCP goes to the local transparent proxy; QUIC
-	// (udp/443) to a fake IP is refused so the client retries over TCP.
-	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 udp dport 443 reject\n", br)
+	// fake-ip data plane: TCP goes to the local transparent proxy. All
+	// UDP to fake IPs is refused (QUIC udp/443 retries over TCP; other
+	// UDP has no proxy path and must fail fast instead of leaking into
+	// the uplink or a tunnel with no reverse route). Bare "udp reject"
+	// is an nft syntax error — match L4 via meta l4proto.
+	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 meta l4proto udp reject\n", br)
 	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 tcp dport != 53 redirect to :%d\n", br, fakeProxyPort)
 	b.WriteString("  }\n")
 	b.WriteString("  chain forward {\n")
