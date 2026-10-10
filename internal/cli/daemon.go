@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/assets"
+	"github.com/huangzheng2016/pvm/internal/cluster"
 	"github.com/huangzheng2016/pvm/internal/config"
 	"github.com/huangzheng2016/pvm/internal/daemon"
 	"github.com/huangzheng2016/pvm/internal/keys"
@@ -109,7 +110,11 @@ func daemonRun(p *paths.Paths) int {
 	if err != nil {
 		return fatalf("ssh key: %v", err)
 	}
-	srv := daemon.NewServer(p, cfg, tc, accel, pub)
+	clusters, err := cluster.LoadStore(p.Clusters)
+	if err != nil {
+		return fatalf("clusters: %v", err)
+	}
+	srv := daemon.NewServer(p, cfg, tc, accel, pub, clusters)
 	fmt.Fprintf(os.Stderr, "pvm daemon: qemu=%s accel=%s sock=%s\n", tc.System, accel, p.DaemonSock())
 	if err := daemon.Run(p, srv); err != nil {
 		return fatalf("daemon: %v", err)

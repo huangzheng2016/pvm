@@ -18,12 +18,16 @@ type vmInfoView struct {
 	Spec struct {
 		Name    string `json:"name"`
 		Image   string `json:"image"`
+		Role    string `json:"role"`
 		User    string `json:"user"`
 		SSHPort int    `json:"ssh_port"`
+		IP      string `json:"ip"`
 	} `json:"spec"`
-	Running bool   `json:"running"`
-	PID     int    `json:"pid"`
-	Uptime  string `json:"uptime"`
+	Running     bool   `json:"running"`
+	PID         int    `json:"pid"`
+	Uptime      string `json:"uptime"`
+	GatewaySSH  int    `json:"gw_ssh_port"`
+	GatewayUser string `json:"gw_user"`
 }
 
 func CmdImage(args []string) int {
@@ -109,7 +113,7 @@ func CmdCreate(args []string) int {
 	if err := c.Post("/v1/vms", body, &out); err != nil {
 		return fatalf("create: %v", err)
 	}
-	fmt.Printf("created %s (user=%s ssh=127.0.0.1:%d)\n", out.Spec.Name, out.Spec.User, out.Spec.SSHPort)
+	fmt.Printf("created %s (user=%s ip=%s)\n", out.Spec.Name, out.Spec.User, out.Spec.IP)
 	if !*noStart {
 		fmt.Printf("starting; first boot runs cloud-init (packages, /share mount) and may take a few minutes\n")
 	}
@@ -148,14 +152,22 @@ func CmdList(args []string) int {
 		return fatalf("%v", err)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tIMAGE\tSTATUS\tSSH\tUSER\tUPTIME")
+	fmt.Fprintln(tw, "NAME\tIMAGE\tROLE\tSTATUS\tIP\tUSER\tUPTIME")
 	for _, in := range infos {
 		status := "stopped"
 		if in.Running {
 			status = "running"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t127.0.0.1:%d\t%s\t%s\n",
-			in.Spec.Name, in.Spec.Image, status, in.Spec.SSHPort, in.Spec.User, in.Uptime)
+		ip := in.Spec.IP
+		if ip == "" {
+			ip = "-"
+		}
+		role := in.Spec.Role
+		if role == "" {
+			role = "user"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			in.Spec.Name, in.Spec.Image, role, status, ip, in.Spec.User, in.Uptime)
 	}
 	tw.Flush()
 	return 0
@@ -215,17 +227,28 @@ func CmdSSH(args []string) int {
 
 	sshArgs := []string{
 		"-i", p.SSHKey(),
-		// hostfwd ports are reused across VMs so host keys always
-		// change; keep no persistent known_hosts.
+		// host keys rotate freely (fresh VMs, reused IPs/ports)
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "LogLevel=ERROR",
-		"-p", strconv.Itoa(info.Spec.SSHPort),
+	}
+	target := ""
+	if info.Spec.Role == "gateway" {
+		sshArgs = append(sshArgs, "-p", strconv.Itoa(info.Spec.SSHPort))
+		target = fmt.Sprintf("%s@127.0.0.1", info.Spec.User)
+	} else {
+		// user VMs live behind the cluster gateway. -J would spawn the
+		// hop ssh WITHOUT our flags (default known_hosts, no key), so
+		// build the ProxyCommand by hand.
+		proxy := fmt.Sprintf("ssh -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -W %%h:%%p -p %d %s@127.0.0.1",
+			p.SSHKey(), info.GatewaySSH, info.GatewayUser)
+		sshArgs = append(sshArgs, "-o", "ProxyCommand="+proxy)
+		target = fmt.Sprintf("%s@%s", info.Spec.User, info.Spec.IP)
 	}
 	if len(args) == 1 {
 		sshArgs = append(sshArgs, "-tt")
 	}
-	sshArgs = append(sshArgs, fmt.Sprintf("%s@127.0.0.1", info.Spec.User))
+	sshArgs = append(sshArgs, target)
 	sshArgs = append(sshArgs, args[1:]...)
 
 	cmd := exec.Command("ssh", sshArgs...)

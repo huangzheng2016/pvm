@@ -1,0 +1,127 @@
+// Package gateway implements the in-guest gateway agent: bridge manager,
+// fixed-mapping DHCP server, DNS forwarder and nftables NAT/DNAT. It is
+// config-driven: the host daemon pushes /etc/pvm/gateway.json and the
+// agent converges actual state to it.
+package gateway
+
+import (
+	"encoding/json"
+	"log"
+	"os"
+	"sync"
+	"time"
+)
+
+type VMEntry struct {
+	Name string `json:"name"`
+	MAC  string `json:"mac"`
+	IP   string `json:"ip"`
+}
+
+type MapEntry struct {
+	HostPort  int    `json:"host_port"` // pool port on the gateway uplink
+	VMIP      string `json:"vm_ip"`
+	GuestPort int    `json:"guest_port"`
+	Proto     string `json:"proto"` // tcp | udp
+}
+
+type Config struct {
+	CIDR        string     `json:"cidr"`         // e.g. 192.168.1.0/24
+	GwIP        string     `json:"gw_ip"`        // e.g. 192.168.1.1
+	DNSUpstream string     `json:"dns_upstream"` // slirp DNS, 10.0.2.3
+	VMs         []VMEntry  `json:"vms"`
+	Maps        []MapEntry `json:"maps"`
+}
+
+type Agent struct {
+	configPath string
+
+	mu   sync.Mutex
+	cfg  *Config
+	upl  string // uplink interface name, e.g. enp0s1
+	br   string
+	stop chan struct{}
+}
+
+func New(configPath string) *Agent {
+	return &Agent{configPath: configPath, br: "br0", stop: make(chan struct{})}
+}
+
+func (a *Agent) loadConfig() (*Config, error) {
+	data, err := os.ReadFile(a.configPath)
+	if err != nil {
+		return nil, err
+	}
+	var c Config
+	if err := json.Unmarshal(data, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+// Run blocks, converging system state to the config every few seconds.
+func (a *Agent) Run() error {
+	var (
+		dhcpSrv *DHCPServer
+		dnsSrv  *DNSProxy
+		lastCfg []byte
+	)
+	for {
+		raw, err := os.ReadFile(a.configPath)
+		if err != nil {
+			log.Printf("config: %v (retrying)", err)
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		if string(raw) != string(lastCfg) {
+			var c Config
+			if err := json.Unmarshal(raw, &c); err != nil {
+				log.Printf("config invalid: %v", err)
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			a.mu.Lock()
+			a.cfg = &c
+			a.mu.Unlock()
+
+			if err := a.applyNetwork(&c); err != nil {
+				log.Printf("apply network: %v", err)
+			}
+			if dhcpSrv == nil {
+				dhcpSrv = NewDHCPServer(a.macIPMap(), a.br)
+				if err := dhcpSrv.Start(); err != nil {
+					log.Printf("dhcp: %v", err)
+				}
+			} else {
+				dhcpSrv.UpdateMap(a.macIPMap())
+			}
+			if dnsSrv == nil && c.DNSUpstream != "" {
+				dnsSrv = NewDNSProxy(c.GwIP, c.DNSUpstream)
+				if err := dnsSrv.Start(); err != nil {
+					log.Printf("dns: %v", err)
+				}
+			} else if dnsSrv != nil {
+				dnsSrv.Update(c.GwIP, c.DNSUpstream)
+			}
+			lastCfg = raw
+		}
+		a.reconcileLinks()
+		select {
+		case <-a.stop:
+			return nil
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func (a *Agent) macIPMap() map[string]VMEntry {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := map[string]VMEntry{}
+	if a.cfg != nil {
+		for _, v := range a.cfg.VMs {
+			out[v.MAC] = v
+		}
+	}
+	return out
+}

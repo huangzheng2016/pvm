@@ -1,1 +1,12 @@
-[]
+[
+  {
+    "path": "gateway-linux-amd64",
+    "sha256": "72334d82bbf48a98046cc1997d1351fd18582941f903b30d1dcfa411122fcbc9",
+    "mode": 493
+  },
+  {
+    "path": "gateway-linux-arm64",
+    "sha256": "f0626ef08ee2dd9bcfc51e3ebc9af848c1fc86fe169a99d847377af7068f7d9b",
+    "mode": 493
+  }
+]

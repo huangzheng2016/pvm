@@ -1,5 +1,6 @@
 // Package daemon is the always-resident control plane: HTTP/JSON over a
-// unix socket, owning all VM lifecycle. CLI commands are thin clients.
+// unix socket, owning all VM and cluster lifecycle. CLI commands are
+// thin clients.
 package daemon
 
 import (
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/buildinfo"
+	"github.com/huangzheng2016/pvm/internal/cluster"
 	"github.com/huangzheng2016/pvm/internal/config"
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/qemu"
@@ -31,28 +33,54 @@ type Server struct {
 	Accel  qemu.Accel
 	SSHPub string
 
+	Clusters *cluster.Store
+	relays   *relaySet
+
 	started time.Time
 	mu      sync.Mutex // guards vms cache
 	vms     map[string]*vm.Spec
 }
 
 type vmInfo struct {
-	Spec    *vm.Spec `json:"spec"`
-	Running bool     `json:"running"`
-	PID     int      `json:"pid,omitempty"`
-	Uptime  string   `json:"uptime,omitempty"`
+	Spec        *vm.Spec `json:"spec"`
+	Running     bool     `json:"running"`
+	PID         int      `json:"pid,omitempty"`
+	Uptime      string   `json:"uptime,omitempty"`
+	GatewaySSH  int      `json:"gw_ssh_port,omitempty"`
+	GatewayUser string   `json:"gw_user,omitempty"`
 }
 
-func NewServer(p *paths.Paths, cfg *config.Config, tc *qemu.Toolchain, accel qemu.Accel, sshPub string) *Server {
-	return &Server{P: p, Cfg: cfg, TC: tc, Accel: accel, SSHPub: sshPub, started: time.Now(), vms: map[string]*vm.Spec{}}
+func NewServer(p *paths.Paths, cfg *config.Config, tc *qemu.Toolchain, accel qemu.Accel, sshPub string, clusters *cluster.Store) *Server {
+	return &Server{P: p, Cfg: cfg, TC: tc, Accel: accel, SSHPub: sshPub,
+		Clusters: clusters, relays: newRelaySet(), started: time.Now(), vms: map[string]*vm.Spec{}}
 }
 
 func (s *Server) instance(spec *vm.Spec) *qemu.Instance {
+	var linkSock string
+	poolBase, poolSize := 0, 0
+	if spec.Role == "gateway" {
+		if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
+			poolBase, poolSize = cl.PoolBase, cl.PoolSize
+		} else if cl := s.clustersByGatewayName(spec.Name); cl != nil {
+			poolBase, poolSize = cl.PoolBase, cl.PoolSize
+		}
+	} else if spec.ClusterID > 0 {
+		linkSock = s.Clusters.LinkSock(spec.ClusterID, spec.Name)
+	}
 	return &qemu.Instance{
-		Cfg:       spec.QEMUConfig(s.P, s.Accel),
+		Cfg:       spec.QEMUConfig(s.P, s.Accel, linkSock, poolBase, poolSize),
 		StatePath: filepath.Join(s.P.VMDir(spec.Name), "run.json"),
 		Toolchain: s.TC,
 	}
+}
+
+func (s *Server) clustersByGatewayName(name string) *cluster.Cluster {
+	for _, cl := range s.Clusters.List() {
+		if cl.Gateway == name {
+			return cl
+		}
+	}
+	return nil
 }
 
 func (s *Server) getSpec(name string) (*vm.Spec, error) {
@@ -82,6 +110,10 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/vms/{name}", s.handleDelete)
 	mux.HandleFunc("POST /v1/vms/{name}/start", s.handleStart)
 	mux.HandleFunc("POST /v1/vms/{name}/stop", s.handleStop)
+	mux.HandleFunc("GET /v1/clusters", s.handleClusters)
+	mux.HandleFunc("GET /v1/maps", s.handleMapList)
+	mux.HandleFunc("POST /v1/maps", s.handleMapAdd)
+	mux.HandleFunc("DELETE /v1/maps/{port}/{proto}", s.handleMapRemove)
 	mux.HandleFunc("POST /v1/shutdown", s.handleShutdown)
 	return mux
 }
@@ -99,14 +131,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, map[string]any{
-		"version":  buildinfo.Version,
-		"pid":      os.Getpid(),
-		"uptime":   time.Since(s.started).Round(time.Second).String(),
-		"vms":      len(specs),
-		"running":  running,
-		"accel":    s.Accel,
-		"qemu":     s.TC.System,
-		"bundled":  s.TC.Bundled,
+		"version": buildinfo.Version,
+		"pid":     os.Getpid(),
+		"uptime":  time.Since(s.started).Round(time.Second).String(),
+		"vms":     len(specs),
+		"running": running,
+		"accel":   s.Accel,
+		"qemu":    s.TC.System,
+		"bundled": s.TC.Bundled,
 	})
 }
 
@@ -115,6 +147,14 @@ func (s *Server) collectInfos() []vmInfo {
 	infos := make([]vmInfo, 0, len(specs))
 	for _, sp := range specs {
 		info := vmInfo{Spec: sp}
+		if sp.Role != "gateway" && sp.ClusterID > 0 {
+			if cl := s.Clusters.Get(sp.ClusterID); cl != nil {
+				if gw, err := s.getSpec(cl.Gateway); err == nil {
+					info.GatewaySSH = gw.SSHPort
+					info.GatewayUser = gw.User
+				}
+			}
+		}
 		if st := s.instance(sp).Running(); st != nil {
 			info.Running = true
 			info.PID = st.PID
@@ -142,6 +182,10 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, vmInfo{Spec: spec})
+}
+
+func (s *Server) handleClusters(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, s.Clusters.List())
 }
 
 type createRequest struct {
@@ -182,12 +226,6 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		req.User = "pvm"
 	}
 
-	port, err := vm.AllocSSHPort(vm.UsedSSHPorts(s.P), vm.SSHPortBase)
-	if err != nil {
-		writeErr(w, 500, err)
-		return
-	}
-
 	mounts, err := parseMounts(req.Mounts)
 	if err != nil {
 		writeErr(w, 400, err)
@@ -195,13 +233,31 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	base := filepath.Join(s.P.Images, fmt.Sprintf("%s-%s.qcow2", imageFileStem(req.Image), runtime.GOARCH))
+	if _, err := os.Stat(base); err != nil {
+		writeErr(w, 400, fmt.Errorf("base image for %s not found; run `pvm image fetch %s`", req.Image, req.Image))
+		return
+	}
+
+	cl, err := s.Clusters.Ensure(cluster.DefaultClusterID)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	vnet, err := s.Clusters.AddVM(cl.ID, req.Name)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+
 	spec := &vm.Spec{
-		Name: req.Name, Image: req.Image, User: req.User, Arch: runtime.GOARCH,
+		Name: req.Name, Image: req.Image, Role: "user", User: req.User, Arch: runtime.GOARCH,
 		GuestUID: os.Getuid(),
 		CPUs:     req.CPUs, MemMB: req.MemMB, DiskGB: req.DiskGB,
-		SSHPort: port, BaseDisk: base, Mounts: mounts,
+		BaseDisk: base, Mounts: mounts,
+		ClusterID: cl.ID, IP: vnet.IP, MAC: vnet.MAC,
 	}
 	if err := vm.Create(s.P, s.TC, spec, s.SSHPub); err != nil {
+		s.Clusters.RemoveVM(cl.ID, req.Name)
 		writeErr(w, 500, err)
 		return
 	}
@@ -210,12 +266,44 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	if req.Start {
-		if err := s.instance(spec).Start(); err != nil {
+		if err := s.startVM(spec); err != nil {
 			writeErr(w, 500, fmt.Errorf("created but start failed: %w", err))
 			return
 		}
 	}
 	writeJSON(w, 201, vmInfo{Spec: spec, Running: req.Start})
+}
+
+// startVM ensures the cluster gateway and link are up before starting a
+// cluster-attached VM, then starts QEMU. Starting a gateway schedules
+// cluster link recovery for its VMs.
+func (s *Server) startVM(spec *vm.Spec) error {
+	if spec.Role == "gateway" {
+		if err := s.instance(spec).Start(); err != nil {
+			return err
+		}
+		if cl := s.clustersByGatewayName(spec.Name); cl != nil {
+			go s.onGatewayStarted(cl)
+		}
+		return nil
+	}
+	if spec.ClusterID > 0 {
+		cl, err := s.ensureCluster(spec.ClusterID)
+		if err != nil {
+			return err
+		}
+		if err := s.ensureLink(cl, spec.Name); err != nil {
+			return err
+		}
+		go s.deployClusterAgent(cl) // binary+config push is best-effort async
+	}
+	return s.instance(spec).Start()
+}
+
+func (s *Server) deployClusterAgent(cl *cluster.Cluster) {
+	if err := s.deployGatewayAgent(cl); err != nil {
+		log.Printf("deploy gateway agent: %v", err)
+	}
 }
 
 func imageFileStem(imageSpec string) string {
@@ -265,7 +353,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 	lock := qemu.LockVM(spec.Name)
 	lock.Lock()
 	defer lock.Unlock()
-	if err := s.instance(spec).Start(); err != nil {
+	if err := s.startVM(spec); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
@@ -300,6 +388,13 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	defer lock.Unlock()
 	if err := s.instance(spec).Stop(); err != nil {
 		log.Printf("stop %s before delete: %v", name, err)
+	}
+	if spec.Role != "gateway" && spec.ClusterID > 0 {
+		if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
+			s.removeLink(cl, name)
+			s.Clusters.RemoveVM(cl.ID, name)
+			s.pushGatewayConfig(cl)
+		}
 	}
 	if err := vm.Delete(s.P, name); err != nil {
 		writeErr(w, 500, err)
@@ -336,6 +431,34 @@ func (s *Server) StopAllVMs() {
 	}
 }
 
+// recoverClusters restores gateways, links, port-map relays and agent
+// configs after a daemon (re)start.
+func (s *Server) recoverClusters() {
+	for _, cl := range s.Clusters.List() {
+		if _, err := s.ensureCluster(cl.ID); err != nil {
+			log.Printf("recover cluster %d: %v", cl.ID, err)
+			continue
+		}
+		for _, vn := range cl.VMs {
+			spec, err := s.getSpec(vn.Name)
+			if err != nil {
+				continue
+			}
+			if s.instance(spec).Running() != nil {
+				if err := s.ensureLink(cl, vn.Name); err != nil {
+					log.Printf("recover link %s: %v", vn.Name, err)
+				}
+			}
+		}
+		for _, m := range cl.Maps {
+			if err := s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort); err != nil {
+				log.Printf("recover relay %s/%d: %v", m.Proto, m.HostPort, err)
+			}
+		}
+		go s.deployClusterAgent(cl)
+	}
+}
+
 // Run starts the unix-socket HTTP server and blocks until shutdown.
 func Run(p *paths.Paths, srv *Server) error {
 	sock := p.DaemonSock()
@@ -352,6 +475,7 @@ func Run(p *paths.Paths, srv *Server) error {
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpSrv.Serve(ln) }()
+	go srv.recoverClusters()
 
 	select {
 	case <-sigCh:

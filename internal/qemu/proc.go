@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 )
+
 // ProcIdentity pins down a process beyond its PID so a recycled PID is
 // never signalled by mistake (same defence as the platform supervisor).
 type ProcIdentity struct {
