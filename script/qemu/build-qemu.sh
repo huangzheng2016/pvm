@@ -13,18 +13,12 @@ set -euo pipefail
 
 QEMU_VERSION="${QEMU_VERSION:-11.1.2}"
 PREFIX="${1:?usage: build-qemu.sh <output-prefix>}"
-HOSTARCH="$(go env GOARCH 2>/dev/null || true)"
-if [ -z "$HOSTARCH" ]; then
-  case "$(uname -m)" in
-    arm64|aarch64) HOSTARCH=arm64 ;;
-    x86_64|amd64) HOSTARCH=amd64 ;;
-    *) echo "unsupported host arch: $(uname -m)" >&2; exit 1 ;;
-  esac
-fi
-case "$HOSTARCH" in
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$SCRIPT_DIR/../lib/native.sh"
+pvm_native_target
+case "$PVM_HOSTARCH" in
   arm64) TARGET=aarch64-softmmu; SYSTEM=qemu-system-aarch64 ;;
   amd64) TARGET=x86_64-softmmu; SYSTEM=qemu-system-x86_64 ;;
-  *) echo "unsupported GOARCH: $HOSTARCH" >&2; exit 1 ;;
 esac
 SRC="${SRC_DIR:-/tmp/pvm-qemu-src}/qemu-${QEMU_VERSION}"
 
@@ -59,6 +53,7 @@ export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfi
   --enable-slirp --enable-capstone --enable-hvf \
   --prefix="$PREFIX"
 cd build
-ninja -j"$(sysctl -n hw.ncpu)" "$SYSTEM" qemu-img
+CPUS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)
+ninja -j"$CPUS" "$SYSTEM" qemu-img
 ninja install
 echo "bundled qemu installed to $PREFIX"
