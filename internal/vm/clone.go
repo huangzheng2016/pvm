@@ -35,6 +35,9 @@ func CloneSpec(src *Spec, newName, ip, mac string) *Spec {
 // and does not re-run — identity reset happens over ssh after boot).
 // The source VM must be stopped: converting a live disk is unsafe.
 func CloneDisk(p *paths.Paths, tc *qemu.Toolchain, src, dst *Spec) error {
+	if err := validateNativeArch(dst.Arch); err != nil {
+		return err
+	}
 	dir := filepath.Join(p.VMs, dst.Name)
 	if _, err := os.Stat(dir); err == nil {
 		return fmt.Errorf("vm %q already exists", dst.Name)

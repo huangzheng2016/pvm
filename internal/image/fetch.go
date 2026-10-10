@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -26,7 +27,11 @@ type Ref struct {
 }
 
 // Resolve maps "ubuntu:24.04" / "debian:13" + GOARCH to download URLs.
+// Only the host's native architecture is accepted.
 func Resolve(spec, arch string) (*Ref, error) {
+	if arch != runtime.GOARCH {
+		return nil, fmt.Errorf("unsupported image architecture %q (host is %s)", arch, runtime.GOARCH)
+	}
 	distro, version, ok := strings.Cut(spec, ":")
 	if !ok {
 		return nil, fmt.Errorf("image spec must be distro:version, got %q", spec)
