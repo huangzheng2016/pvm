@@ -65,6 +65,7 @@ pvm kasm dev1
 ```
 
 - golden 镜像已预拉 `kasmweb/core-ubuntu-jammy`，不用等下载。core 是 KasmVNC + 最小桌面环境，按需安装应用。
+- 容器启动时会注入 VM 当前时区（`-e TZ`），浏览器读到的时区与地区画像/出口地理一致；每次 `pvm kasm` 重建容器都会刷新。
 - 需要浏览器自动化时，用本机浏览器打开该 URL；页面走 daemon 回环反代注入凭据，不要尝试绕过反代直连底层端口。
 - Claude Code 等需要避免环境特征的工具，**跑在 VM 主用户态，不要跑在 Kasm/Docker 容器里**；容器内的 `/.dockerenv` 是可探测信号。
 
@@ -130,7 +131,7 @@ pvm daemon stop && pvm daemon start
 - 保持同一服务/账号的出口一致，不要在 direct 和 VPS 出口之间频繁切换。
 - 不要把宿主机 `~/.gitconfig`、`~/.ssh` 或个人文件复制进 VM；pvm 专用密钥与宿主 SSH 是隔离的。
 - VM 时区、locale 应与出口地理一致，正常使用 Ubuntu/Debian 和官方镜像源，避免国内镜像与中文环境特征。
-- 要全新的设备身份，就新建 VM 或 clone 后让首启清洗生效；快照恢复代表同一台设备。
+- 要全新的设备身份，就新建 VM 或 clone（clone 首启清洗会重建 hostname/machine-id/SSH host key，并清除 `~/.claude.json` 与 `~/.claude/`——克隆体与源机在服务端不是同一台设备）；快照恢复代表同一台设备。
 
 ## 新增出口（仅在用户明确要求时）
 
