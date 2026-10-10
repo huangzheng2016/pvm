@@ -58,9 +58,13 @@ func main() {
 		code = cli.CmdRm(args)
 	case "ssh":
 		code = cli.CmdSSH(args)
+	case "exit":
+		code = cli.CmdExit(args)
+	case "exit-agent":
+		code = cli.CmdExitAgent(args)
 	case "version", "--version", "-v":
 		fmt.Println(buildinfo.Version)
-	case "map", "exit", "route", "dns", "kasm", "agent", "gateway", "exit-agent":
+	case "map", "route", "dns", "kasm", "agent", "gateway":
 		fmt.Printf("%s: not implemented yet (M2+)\n", os.Args[1])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])
