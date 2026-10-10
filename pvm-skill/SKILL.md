@@ -7,6 +7,10 @@ description: 使用 pvm 创建和管理隔离的 Linux 开发虚拟机，并把�
 
 pvm 是本机的 QEMU 虚拟机系统（Go 单二进制）。daemon 默认常驻，CLI 在 daemon 未运行时会自动拉起。所有操作通过 `pvm` 完成，不需要直接操作 QEMU。
 
+## 架构边界
+
+pvm 仅支持宿主原生架构：darwin/arm64 只运行 arm64 VM，linux/amd64 只运行 amd64 VM。构建产物也只包含当前宿主架构的 guest 与 QEMU 运行时，不提供其他架构的模拟或分发包。
+
 ## 使用前提
 
 - 仓库内使用 `cd ~/pvm && ./pvm ...`；若 pvm 已加入 PATH，直接用 `pvm ...`。
