@@ -109,6 +109,9 @@ func CmdImage(args []string) int {
 }
 
 func cmdImageBuild(p *paths.Paths, spec string, keep bool, cpus, mem, disk int) int {
+	if strings.HasPrefix(spec, "alpine:") {
+		return fatalf("image build for alpine is not supported; use the official nocloud image directly")
+	}
 	tc, err := qemu.Find(p.Runtime)
 	if err != nil {
 		return fatalf("%v", err)
@@ -122,6 +125,7 @@ func cmdImageBuild(p *paths.Paths, spec string, keep bool, cpus, mem, disk int) 
 		Spec: spec, P: p, TC: tc, Accel: accel,
 		SSHKey: p.SSHKey(), SSHPub: pub, Out: os.Stderr,
 		KeepVM: keep, BuildCPUs: cpus, BuildMem: mem, BuildDisk: disk,
+		Proxy: image.ProxyConfigFromEnv(),
 	})
 	if err != nil {
 		return fatalf("image build: %v", err)
@@ -131,9 +135,37 @@ func cmdImageBuild(p *paths.Paths, spec string, keep bool, cpus, mem, disk int) 
 	return 0
 }
 
+func resolveImageSpec(image, distro, version string) (string, error) {
+	if distro != "" {
+		if image == "" {
+			image = distro
+		} else if strings.SplitN(image, ":", 2)[0] != distro {
+			return "", fmt.Errorf("conflicting --image %q and --distro %q", image, distro)
+		}
+	}
+	if version != "" {
+		if image == "" {
+			return "", fmt.Errorf("--version requires --image or --distro")
+		}
+		current := ""
+		if i := strings.Index(image, ":"); i >= 0 {
+			current = image[i+1:]
+		}
+		if current != "" && current != version {
+			return "", fmt.Errorf("conflicting --image %q and --version %q", image, version)
+		}
+		if current == "" {
+			image += ":" + version
+		}
+	}
+	return image, nil
+}
+
 func CmdCreate(args []string) int {
-	fs := newFlagSet("create", "--image ubuntu:24.04 --name dev1 [--user U] [--cpus 2] [--mem 4096] [--disk 20] [--mount /host:/guest]... [--no-start]")
-	imageSpec := fs.String("image", "", "image spec, e.g. ubuntu:24.04")
+	fs := newFlagSet("create", "--image alpine:3.20 | --distro alpine --version 3.20 --name dev1 [--user U] [--cpus 2] [--mem 4096] [--disk 20] [--mount /host:/guest]... [--no-start]")
+	imageSpec := fs.String("image", "", "image spec, e.g. ubuntu:24.04 or alpine:3.20")
+	distro := fs.String("distro", "", "distro alias for --image (e.g. alpine)")
+	version := fs.String("version", "", "version alias for --image (e.g. 3.20)")
 	name := fs.String("name", "", "vm name")
 	user := fs.String("user", "", "guest username (interactive prompt if empty)")
 	cpus := fs.Int("cpus", 0, "vcpus")
@@ -151,7 +183,11 @@ func CmdCreate(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *imageSpec == "" || *name == "" {
+	spec, err := resolveImageSpec(*imageSpec, *distro, *version)
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	if spec == "" || *name == "" {
 		fs.Usage()
 		return 2
 	}
@@ -168,7 +204,7 @@ func CmdCreate(args []string) int {
 		return fatalf("%v", err)
 	}
 	body := map[string]any{
-		"name": *name, "image": *imageSpec, "user": *user,
+		"name": *name, "image": spec, "user": *user,
 		"cpus": *cpus, "mem_mb": *mem, "disk_gb": *disk,
 		"mounts": []string(mounts), "start": !*noStart,
 	}
@@ -188,7 +224,7 @@ func CmdCreate(args []string) int {
 		body["smbios_spoof"] = true
 	}
 	var out vmInfoView
-	describeImage(*imageSpec, p)
+	describeImage(spec, p)
 	start := time.Now()
 	if err := c.Post("/v1/vms", body, &out); err != nil {
 		return fatalf("create: %v", err)
