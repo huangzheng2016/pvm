@@ -425,7 +425,13 @@ func (s *Server) startVM(spec *vm.Spec) (*qemu.Instance, *qemu.SnapshotManifest,
 		if err := s.ensureLink(cl, spec.Name); err != nil {
 			return nil, nil, err
 		}
-		go s.deployClusterAgent(cl) // binary+config push is best-effort async
+		// The DHCP mapping must be in place before the guest's first
+		// DHCP request: the async deploy races the boot and fast-give-up
+		// clients (alpine udhcpc) never get an offer.
+		if err := s.pushGatewayConfigRetry(cl); err != nil {
+			return nil, nil, err
+		}
+		go s.deployClusterAgent(cl) // binary push is best-effort async
 	}
 	inst := s.instance(spec)
 	man, err := inst.PrepareRestore(s.P.VMDir(spec.Name))
