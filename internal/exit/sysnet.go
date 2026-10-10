@@ -12,6 +12,19 @@ import (
 
 const nftTable = "pvm_exit"
 
+// nftTableFor namespaces the table by tun prefix so coexisting instances
+// (e.g. a test instance with --tun-prefix) never delete each other's rules.
+func nftTableFor(tunNames []string) string {
+	prefix := "pvmexit"
+	if len(tunNames) > 0 {
+		prefix = strings.TrimRight(tunNames[0], "0123456789")
+	}
+	if prefix == "pvmexit" {
+		return nftTable
+	}
+	return nftTable + "_" + prefix
+}
+
 func nftRuleset(tunNames []string, cidrs []string) string {
 	var ifSet, cidrSet string
 	if len(tunNames) > 0 {
@@ -27,7 +40,7 @@ func nftRuleset(tunNames []string, cidrs []string) string {
 
 	// chain names must avoid nftables keywords (e.g. "fwd" is reserved).
 	var b strings.Builder
-	b.WriteString("table inet " + nftTable + " {\n")
+	b.WriteString("table inet " + nftTableFor(tunNames) + " {\n")
 	b.WriteString("  chain pvm_forward {\n")
 	b.WriteString("    type filter hook forward priority 0; policy accept;\n")
 	if ifSet != "" {
@@ -52,13 +65,13 @@ func nftRuleset(tunNames []string, cidrs []string) string {
 // NFTInstall creates/replaces our table. Best-effort cleanup of any
 // previous version first.
 func NFTInstall(tunNames []string, cidrs []string) error {
-	_ = NFTRemove()
+	_ = NFTRemove(tunNames)
 	return runNFT(nftRuleset(tunNames, cidrs))
 }
 
 // NFTRemove deletes our table only.
-func NFTRemove() error {
-	_, err := exec.Command("nft", "delete", "table", "inet", nftTable).CombinedOutput()
+func NFTRemove(tunNames []string) error {
+	_, err := exec.Command("nft", "delete", "table", "inet", nftTableFor(tunNames)).CombinedOutput()
 	if err != nil && !strings.Contains(string(errOutput(err)), "No such file") {
 		return fmt.Errorf("nft delete table: %w", err)
 	}

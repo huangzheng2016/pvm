@@ -155,7 +155,7 @@ func (u *userspaceBackend) setup(_ []string, _ []string) error {
 	return nil
 }
 
-func (u *userspaceBackend) cleanup() error {
+func (u *userspaceBackend) cleanup(_ []string, _ []string) error {
 	u.once.Do(func() {
 		for _, p := range u.pumps {
 			p.Close()
