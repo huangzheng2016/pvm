@@ -24,11 +24,23 @@ func CmdExitAgent(args []string) int {
 	state := fs.String("state", "/var/lib/pvm-exit", "state directory (cert, wg key, peers)")
 	pub := fs.String("public-endpoint", "", "host[:port] announced to clients (default: derive from request)")
 	transports := fs.String("transport", "both", "udp | tcp | both")
+	nat := fs.String("nat", "auto", "nat backend: auto | nft | iptables | userspace")
+	tunPrefix := fs.String("tun-prefix", "pvmexit", "OS TUN name prefix (change when running multiple agents)")
+	subnetBase := fs.Int("subnet-base", 99, "tunnel subnet octet: 10.<base>.0/1.0/24 (change when running multiple agents)")
+	status := fs.Bool("status", false, "print the effective nat backend and exit")
 	udpPort := fs.Int("udp-port", 18443, "wireguard UDP port")
 	tcpPort := fs.Int("tcp-port", 18444, "wireguard TCP port")
 	verbose := fs.Bool("v", false, "verbose wireguard logging")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+	if *status {
+		b, err := exit.ResolveNATName(*nat)
+		if err != nil {
+			return fatalf("%v", err)
+		}
+		fmt.Println(b)
+		return 0
 	}
 	if *token == "" {
 		return fatalf("--token is required")
@@ -41,6 +53,9 @@ func CmdExitAgent(args []string) int {
 		UDPPort:        *udpPort,
 		TCPPort:        *tcpPort,
 		Transports:     *transports,
+		NAT:            *nat,
+		TunPrefix:      *tunPrefix,
+		SubnetBase:     *subnetBase,
 		Verbose:        *verbose,
 	})
 	if err != nil {

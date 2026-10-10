@@ -27,6 +27,9 @@ type ServerConfig struct {
 	UDPPort        int    // WireGuard-over-UDP port
 	TCPPort        int    // WireGuard-over-TCP port
 	Transports     string // both | udp | tcp
+	NAT            string // auto | nft | iptables | userspace
+	TunPrefix      string // OS TUN name prefix (default "pvmexit")
+	SubnetBase     int    // tunnel subnet octet, 10.<base>.0/1.0/24 (default 99)
 	Verbose        bool
 
 	// TunFactory overrides OS TUN creation (tests); when set, system
@@ -77,6 +80,7 @@ type Server struct {
 	store  *PeerStore
 	priv   string // base64 wg private key (shared by both transports)
 	pub    string
+	nat    natBackend
 	tr     map[string]*transportRT
 	http   *http.Server
 	ln     net.Listener
@@ -89,10 +93,17 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.Token == "" {
 		return nil, errors.New("--token is required")
 	}
-	s := &Server{cfg: cfg, tr: map[string]*transportRT{}, closed: make(chan struct{})}
+	nat, err := resolveNAT(cfg.NAT)
+	if err != nil {
+		return nil, err
+	}
+	s := &Server{cfg: cfg, tr: map[string]*transportRT{}, nat: nat, closed: make(chan struct{})}
 
-	var err error
-	s.store, err = LoadPeerStore(filepath.Join(cfg.StateDir, "peers.json"))
+	base := cfg.SubnetBase
+	if base == 0 {
+		base = defaultSubnetBase
+	}
+	s.store, err = LoadPeerStoreWithBase(filepath.Join(cfg.StateDir, "peers.json"), base)
 	if err != nil {
 		return nil, err
 	}
@@ -167,19 +178,17 @@ func (s *Server) Start() (string, error) {
 	}
 
 	if s.cfg.TunFactory == nil {
-		if err := EnableIPForward(); err != nil {
-			log.Printf("warning: %v", err)
-		}
 		var ifs, cidrs []string
 		for _, t := range s.tr {
 			ifs = append(ifs, t.tunName)
 			cidrs = append(cidrs, t.subnet)
 		}
-		if err := NFTInstall(ifs, cidrs); err != nil {
+		if err := s.nat.setup(ifs, cidrs); err != nil {
 			s.Close()
-			return "", fmt.Errorf("nftables: %w", err)
+			return "", fmt.Errorf("nat %s: %w", s.nat.name(), err)
 		}
 	}
+	log.Printf("nat backend: %s", s.nat.name())
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/health", s.handleHealth)
@@ -209,11 +218,11 @@ func (s *Server) Start() (string, error) {
 }
 
 func (s *Server) startTransport(name string) error {
-	subnet, err := SubnetFor(name)
+	subnet, err := subnetOf(s.store.subnets, name)
 	if err != nil {
 		return err
 	}
-	serverIP, err := ServerIP(name)
+	serverIP, err := serverIPOf(s.store.subnets, name)
 	if err != nil {
 		return err
 	}
@@ -222,16 +231,21 @@ func (s *Server) startTransport(name string) error {
 		port = s.cfg.TCPPort
 	}
 	mtu := MTUFor(name)
-	tunName := "pvmexit0"
+	prefix := s.cfg.TunPrefix
+	if prefix == "" {
+		prefix = "pvmexit"
+	}
+	tunName := prefix + "0"
 	if name == "tcp" {
-		tunName = "pvmexit1"
+		tunName = prefix + "1"
 	}
 
 	var td tun.Device
-	if s.cfg.TunFactory != nil {
+	switch {
+	case s.cfg.TunFactory != nil:
 		td, err = s.cfg.TunFactory(tunName, mtu)
-	} else {
-		td, err = tun.CreateTUN(tunName, mtu)
+	default:
+		td, err = s.nat.newTun(tunName, mtu)
 	}
 	if err != nil {
 		return fmt.Errorf("create tun: %w", err)
@@ -249,7 +263,7 @@ func (s *Server) startTransport(name string) error {
 		return fmt.Errorf("configure device: %w", err)
 	}
 
-	if s.cfg.TunFactory == nil {
+	if s.cfg.TunFactory == nil && s.nat.name() != NATUserspace {
 		if err := ConfigureTUN(gotName, serverIP+"/"+strings.Split(subnet, "/")[1]); err != nil {
 			dev.Close()
 			return err
@@ -271,7 +285,7 @@ func (s *Server) withAuth(h http.HandlerFunc) http.HandlerFunc {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, map[string]any{"ok": true, "version": "1"})
+	writeJSON(w, map[string]any{"ok": true, "version": "1", "nat": s.nat.name()})
 }
 
 type enrollRequest struct {
@@ -378,7 +392,7 @@ func (s *Server) ControlAddr() string {
 	return s.ln.Addr().String()
 }
 
-// Close tears down the control plane, devices, and our nftables table.
+// Close tears down the control plane, devices, and the NAT backend.
 func (s *Server) Close() {
 	s.once.Do(func() {
 		close(s.closed)
@@ -389,7 +403,7 @@ func (s *Server) Close() {
 			t.dev.Close()
 		}
 		if s.cfg.TunFactory == nil {
-			_ = NFTRemove()
+			_ = s.nat.cleanup()
 		}
 	})
 }
