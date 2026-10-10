@@ -92,6 +92,7 @@ type Server struct {
 	tr      map[string]*transportRT
 	http    *http.Server
 	ln      net.Listener
+	speed   []*http.Server
 	closed  chan struct{}
 	once    sync.Once
 }
@@ -205,6 +206,27 @@ func (s *Server) Start() (string, error) {
 		}
 	}
 	log.Printf("nat backend: %s", s.nat.name())
+
+	// speed-test endpoints, one per tunnel NIC server address
+	if s.cfg.TunFactory == nil {
+		for _, t := range s.tr {
+			spAddr := net.JoinHostPort(t.serverIP, itoa(SpeedPort))
+			if s.nat.name() == NATUserspace {
+				if ub, ok := s.nat.(*userspaceBackend); ok {
+					ub.Intercept(spAddr, serveSpeedConn)
+				}
+				continue
+			}
+			srv := &http.Server{Handler: speedHandler()}
+			ln, err := net.Listen("tcp", spAddr)
+			if err != nil {
+				s.Close()
+				return "", fmt.Errorf("speed endpoint %s: %w", spAddr, err)
+			}
+			s.speed = append(s.speed, srv)
+			go srv.Serve(ln)
+		}
+	}
 
 	// domain-connect listeners, one per tunnel NIC server address
 	dc := newDCServer(s.dcAllow)
@@ -343,6 +365,7 @@ type enrollRequest struct {
 type enrollResponse struct {
 	ServerPubKey string `json:"server_pubkey"`
 	TunnelIP     string `json:"tunnel_ip"`
+	ServerIP     string `json:"server_ip"` // tunnel-side .1 address (speed/ping endpoint)
 	MTU          int    `json:"mtu"`
 	Endpoint     string `json:"endpoint"`
 	// SuggestedTZ is the exit's public-geo timezone (IANA), detected at
@@ -386,6 +409,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, enrollResponse{
 		ServerPubKey: s.pub,
 		TunnelIP:     peer.IP,
+		ServerIP:     t.serverIP,
 		MTU:          MTUFor(req.Transport),
 		Endpoint:     s.publicEndpoint(r, t),
 		SuggestedTZ:  s.sugTZ,
@@ -462,6 +486,9 @@ func (s *Server) Close() {
 		close(s.closed)
 		if s.http != nil {
 			_ = s.http.Close()
+		}
+		for _, srv := range s.speed {
+			_ = srv.Close()
 		}
 		for _, t := range s.tr {
 			t.dev.Close()
