@@ -37,7 +37,7 @@ AI-service Code 等工具的运行环境检测针对的是**容器**与云主机
 ## 身份卫生
 
 - **git 身份**：AI-service Code 的会话上下文（gitStatus）携带 `git config user.name/user.email` 上行。pvm **绝不读取或传播宿主 `~/.gitconfig`**；需要时用 `pvm create --git-email/--git-name` 显式设置。gitStatus 的内容面不止用户名/邮箱：分支名、`git status` 文件名、近 5 条提交标题与账号邮箱同样随每次请求上行——VM 内仓库避免中文分支/提交/文件名。
-- **设备身份**：真正上行的设备指纹是 `~/.ai-service.json` 的随机 userID（deviceId）——它随每个遥测事件和每次 API 请求上行，任何遥测开关都关不掉。每台新建 VM 都有全新 deviceId。machine-id / ssh host key 不上行（读取后被客户端丢弃），golden 对它们的清洗属纵深防御。**clone 不会重置 deviceId**：clone 一台用过 AI-service 的 VM，两台在服务端仍是同一台设备；要全新身份请新建 VM。RAM 快照会把设备身份一起冻结——同一 VM 快照恢复后仍是"同一台设备"，这是预期行为。
+- **设备身份**：真正上行的设备指纹是 `~/.ai-service.json` 的随机 userID（deviceId）——它随每个遥测事件和每次 API 请求上行，任何遥测开关都关不掉。每台新建 VM 都有全新 deviceId。machine-id / ssh host key 不上行（读取后被客户端丢弃），golden 对它们的清洗属纵深防御。clone 是完整磁盘复制：机器码会重建，但用户文件原样继承——源机跑过 AI-service 再 clone，两台在服务端仍是同一台设备；正确姿势是先 clone 再装 AI-service，或克隆后自行删除 `~/.ai-service.json`。RAM 快照会把设备身份一起冻结——同一 VM 快照恢复后仍是"同一台设备"，这是预期行为。
 - **主机名**：trusted_devices 的 display_name 会带 hostname，VM 名保持中性即可。
 - **SMBIOS**：`pvm create --smbios-spoof` 让 DMI 呈现为常见 PC 硬件（Dell Inspiron）而非 QEMU 默认值。当前证据显示该类字段不上行，默认关闭。
 - **字体取舍**：golden 预装 `fonts-noto-cjk` 是为正确渲染中文内容。它是纯本地信号、遥测不可见，但若走 Kasm 浏览器路线，CJK 字体集可被网站字体指纹侧面探测，与"融入美国桌面用户"的画像有张力——按实际用途取舍。

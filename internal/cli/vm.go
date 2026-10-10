@@ -445,10 +445,14 @@ func CmdSSH(args []string) int {
 		// failures just propagate their exit code.
 		if isSSHConnFailure(err, errBuf.String()) {
 			fmt.Fprintf(os.Stderr, "ssh unreachable (%s), using agent channel\n", firstLine(errBuf.String()))
-			execArgs := append([]string{args[0]}, args[1:]...)
-			if len(execArgs) == 1 {
+			var execArgs []string
+			if len(args) > 1 {
+				// The agent channel execs argv directly without a shell;
+				// wrap like ssh does so compound commands keep working.
+				execArgs = []string{args[0], "sh", "-c", strings.Join(args[1:], " ")}
+			} else {
 				fmt.Fprintln(os.Stderr, "note: agent channel has no TTY; starting a line-based bash")
-				execArgs = append(execArgs, "bash", "-l")
+				execArgs = []string{args[0], "bash", "-l"}
 			}
 			return CmdExec(execArgs)
 		}

@@ -70,6 +70,7 @@ pvm kasm dev1
 ```
 
 - kasm 要求 VM 来自 **golden 镜像**（docker 已预装、镜像已预拉 `kasmweb/core-ubuntu-jammy:1.16.0`，秒开不用等下载）。基础镜像和 Alpine VM 没有 docker，`pvm kasm` 会直接报错。core 是 KasmVNC + 最小桌面环境，按需安装应用。
+- 容器启动时会注入 VM 当前时区（`-e TZ`），浏览器读到的时区与地区画像/出口地理一致；每次 `pvm kasm` 重建容器都会刷新。
 - 需要浏览器自动化时，用本机浏览器打开该 URL；页面走 daemon 回环反代注入凭据，不要尝试绕过反代直连底层端口。
 - Claude Code 等需要避免环境特征的工具，**跑在 VM 主用户态，不要跑在 Kasm/Docker 容器里**；容器内的 `/.dockerenv` 是可探测信号。
 
@@ -144,7 +145,7 @@ pvm daemon stop && pvm daemon start
 - 不要把宿主机 `~/.gitconfig`、`~/.ssh` 或个人文件复制进 VM；pvm 专用密钥与宿主 SSH 是隔离的。
 - VM 时区、locale 应与出口地理一致，正常使用 Ubuntu/Debian 和官方镜像源，避免国内镜像与中文环境特征。
 - gitStatus 随每次请求上行：除 `user.name/email` 外，分支名、`git status` 文件名、近 5 条提交标题也在其中——VM 内仓库避免中文分支/提交/文件名。
-- 要全新的设备身份就新建 VM（每台新 VM 有全新的 `~/.claude.json` deviceId）；**clone 不会重置 deviceId**，clone 一台用过 Claude 的 VM 与源在服务端仍是同一台设备；快照恢复代表同一台设备。
+- 要全新的设备身份就新建 VM（每台新 VM 有全新的 `~/.claude.json` deviceId）。clone 是完整磁盘复制：机器码（hostname/machine-id/SSH host key）会重建，但用户文件原样继承——源机跑过 Claude 再 clone，两台机器在服务端仍是同一台设备；正确姿势是先 clone 再装 Claude，或克隆后自行删除 `~/.claude.json`。快照恢复代表同一台设备。
 
 ## 新增出口（仅在用户明确要求时）
 

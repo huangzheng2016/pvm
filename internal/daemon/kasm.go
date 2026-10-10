@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/image"
+	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
 const (
@@ -46,10 +47,11 @@ func (s *Server) handleKasm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	pw := randHex(8)
+	tz := s.guestTimezone(spec)
 	run := fmt.Sprintf(
 		`docker rm -f %[1]s >/dev/null 2>&1; `+
-			`docker run -d --name %[1]s --shm-size=512m -e VNC_PW=%[2]s -p %[3]d:%[3]d %[4]s >/dev/null && echo STARTED`,
-		kasmContainer, pw, kasmPort, image.KasmImage)
+			`docker run -d --name %[1]s --shm-size=512m -e VNC_PW=%[2]s -e TZ=%[3]s -p %[4]d:%[4]d %[5]s >/dev/null && echo STARTED`,
+		kasmContainer, pw, tz, kasmPort, image.KasmImage)
 	out, err := s.sshRun(spec, run)
 	if err != nil {
 		writeErr(w, 500, fmt.Errorf("start kasm container: %v\n%s", err, out))
@@ -122,4 +124,30 @@ func randHex(n int) string {
 		panic(err)
 	}
 	return hex.EncodeToString(b)
+}
+
+// guestTimezone reads the VM's current timezone so the kasm container (and
+// any browser running in it) presents the same zone as the VM's region
+// profile — a mismatch between browser timeZone and exit geography is one
+// of the most common fingerprint tells. Falls back to UTC.
+func (s *Server) guestTimezone(spec *vm.Spec) string {
+	out, err := s.sshRun(spec, "timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true")
+	if err != nil {
+		return "UTC"
+	}
+	return sanitizeTZ(out)
+}
+
+func sanitizeTZ(out string) string {
+	tz := ""
+	for line := range strings.Lines(out) {
+		tz = strings.TrimSpace(line)
+		if tz != "" {
+			break
+		}
+	}
+	if err := vm.ValidateTZ(tz); err != nil {
+		return "UTC"
+	}
+	return tz
 }
