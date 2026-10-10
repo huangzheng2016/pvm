@@ -56,12 +56,20 @@ func (p *Paths) Ensure() error {
 	return os.Chmod(p.Share, 0o755)
 }
 
-func (p *Paths) ConfigFile() string      { return filepath.Join(p.Home, "config.yaml") }
-func (p *Paths) DaemonSock() string      { return filepath.Join(p.Run, "daemon.sock") }
-func (p *Paths) DaemonLock() string      { return filepath.Join(p.Run, "daemon.lock") }
-func (p *Paths) DaemonStopMark() string  { return filepath.Join(p.Run, "daemon.stopped") }
-func (p *Paths) DaemonLog() string       { return filepath.Join(p.Run, "daemon.log") }
-func (p *Paths) SSHKey() string          { return filepath.Join(p.Keys, "id_ed25519") }
-func (p *Paths) SSHPubKey() string       { return p.SSHKey() + ".pub" }
-func (p *Paths) KnownHosts() string      { return filepath.Join(p.Keys, "known_hosts") }
+func (p *Paths) ConfigFile() string       { return filepath.Join(p.Home, "config.yaml") }
+func (p *Paths) DaemonSock() string       { return filepath.Join(p.Run, "daemon.sock") }
+func (p *Paths) DaemonLock() string       { return filepath.Join(p.Run, "daemon.lock") }
+func (p *Paths) DaemonStopMark() string   { return filepath.Join(p.Run, "daemon.stopped") }
+func (p *Paths) DaemonLog() string        { return filepath.Join(p.Run, "daemon.log") }
+func (p *Paths) SSHKey() string           { return filepath.Join(p.Keys, "id_ed25519") }
+func (p *Paths) SSHPubKey() string        { return p.SSHKey() + ".pub" }
+func (p *Paths) KnownHosts() string       { return filepath.Join(p.Keys, "known_hosts") }
 func (p *Paths) VMDir(name string) string { return filepath.Join(p.VMs, name) }
+func (p *Paths) AgentSock(name string) string {
+	return filepath.Join(p.VMDir(name), "agent.sock")
+}
+
+// AgentBin returns the unpacked guest agent binary for a linux guest arch.
+func (p *Paths) AgentBin(goarch string) string {
+	return filepath.Join(p.Runtime, "agent-linux-"+goarch)
+}
