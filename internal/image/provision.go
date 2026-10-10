@@ -20,7 +20,7 @@ var GoldenPackages = []string{
 // build VM. The script is self-terminating: it deletes the build user at
 // the end, so nothing may ssh into the VM afterwards (poweroff is done
 // via QMP, not ssh).
-func renderProvision(distro, buildUser string) (string, error) {
+func renderProvision(distro, buildUser string, proxy ProxyConfig) (string, error) {
 	switch distro {
 	case "ubuntu", "debian":
 	default:
@@ -38,6 +38,11 @@ export DEBIAN_FRONTEND=noninteractive
 cloud-init status --wait >/dev/null 2>&1 || true
 while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
 
+` + func() string {
+		var b strings.Builder
+		proxy.writeProvisionEnv(&b)
+		return b.String()
+	}() + `
 apt-get update
 apt-get -y upgrade
 apt-get -y install ` + strings.Join(GoldenPackages, " ") + `
@@ -75,7 +80,11 @@ sync
 
 # last: drop the build user (it holds the host uid which clones reuse).
 # After this no further ssh is possible; shutdown happens via QMP.
-userdel -rf ` + buildUser + ` || true
+` + func() string {
+		var b strings.Builder
+		proxy.writeCleanup(&b)
+		return b.String()
+	}() + `userdel -rf ` + buildUser + ` || true
 sync
 `)
 	return b.String(), nil
