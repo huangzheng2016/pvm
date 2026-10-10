@@ -5,7 +5,7 @@
 #
 #   ./script/qemu/pack-runtime.sh [qemu-version] [dest]
 #
-# Defaults: version = brew's installed qemu, dest = ~/.pvm/runtime/qemu/aarch64.
+# Defaults: version = brew's installed qemu, dest = ~/.pvm/runtime/qemu/<native-qemu-arch>.
 # Writes SHA256SUMS alongside the binaries as the integrity record.
 set -euo pipefail
 
