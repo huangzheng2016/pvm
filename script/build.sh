@@ -1,25 +1,17 @@
 #!/usr/bin/env bash
-# build.sh: cross-compile guest binaries (gateway + agent), pack assets,
-# then build the host pvm binary with embedded assets.
+# build.sh: build the native host's guest binaries (gateway + agent),
+# pack assets, then build the host pvm binary with embedded assets.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 HOSTARCH=$(go env GOARCH)
-if [ "${PVM_ALL_ARCH:-0}" = "1" ]; then
-  ARCHES="amd64 arm64"
-else
-  ARCHES="$HOSTARCH"
-fi
 
-# Remove stale raw/compressed guests so a native build never embeds the other
-# architecture left over from an earlier PVM_ALL_ARCH build.
+# Remove stale raw/compressed guests from previous builds.
 rm -f internal/assets/packed/gateway-linux-* internal/assets/packed/agent-linux-*
 
-echo "== guest binaries ($ARCHES)"
-for arch in $ARCHES; do
-  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "internal/assets/packed/gateway-linux-$arch" ./cmd/gateway
-  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "internal/assets/packed/agent-linux-$arch" ./cmd/pvm
-done
+echo "== guest binaries ($HOSTARCH)"
+CGO_ENABLED=0 GOOS=linux GOARCH="$HOSTARCH" go build -trimpath -ldflags='-s -w' -o "internal/assets/packed/gateway-linux-$HOSTARCH" ./cmd/gateway
+CGO_ENABLED=0 GOOS=linux GOARCH="$HOSTARCH" go build -trimpath -ldflags='-s -w' -o "internal/assets/packed/agent-linux-$HOSTARCH" ./cmd/pvm
 
 echo "== assetpack"
 go run ./cmd/assetpack
@@ -29,7 +21,7 @@ rm -f internal/assets/packed/gateway-linux-* internal/assets/packed/agent-linux-
 
 echo "== pvm"
 go build -tags embedassets -buildvcs=false -trimpath -ldflags "-s -w -buildid=" -o pvm ./cmd/pvm
-echo "built ./pvm (with embedded guest assets: $ARCHES)"
+echo "built ./pvm (with embedded guest assets: $HOSTARCH)"
 
 if [ "${PVM_PACK_QEMU:-1}" = "1" ] && [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
   echo "== bundled qemu ($HOSTARCH)"

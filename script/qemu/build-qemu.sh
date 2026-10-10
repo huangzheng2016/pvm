@@ -1,5 +1,5 @@
 #!/bin/bash
-# build-qemu.sh — pvm bundled QEMU recipe (macOS arm64 first).
+# build-qemu.sh — pvm bundled QEMU recipe for the native host.
 #
 # QEMU >= 11.1.0 already carries the upstream darwin/arm64 HVF
 # live-restore fix (06fd39e426), so no source patches are needed
@@ -13,6 +13,19 @@ set -euo pipefail
 
 QEMU_VERSION="${QEMU_VERSION:-11.1.2}"
 PREFIX="${1:?usage: build-qemu.sh <output-prefix>}"
+HOSTARCH="$(go env GOARCH 2>/dev/null || true)"
+if [ -z "$HOSTARCH" ]; then
+  case "$(uname -m)" in
+    arm64|aarch64) HOSTARCH=arm64 ;;
+    x86_64|amd64) HOSTARCH=amd64 ;;
+    *) echo "unsupported host arch: $(uname -m)" >&2; exit 1 ;;
+  esac
+fi
+case "$HOSTARCH" in
+  arm64) TARGET=aarch64-softmmu; SYSTEM=qemu-system-aarch64 ;;
+  amd64) TARGET=x86_64-softmmu; SYSTEM=qemu-system-x86_64 ;;
+  *) echo "unsupported GOARCH: $HOSTARCH" >&2; exit 1 ;;
+esac
 SRC="${SRC_DIR:-/tmp/pvm-qemu-src}/qemu-${QEMU_VERSION}"
 
 mkdir -p "$(dirname "$SRC")"
@@ -40,12 +53,12 @@ fi
 
 export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig:${PKG_CONFIG_PATH:-}"
 [ -d build ] || ./configure \
-  --target-list=aarch64-softmmu,x86_64-softmmu \
+  --target-list="$TARGET" \
   --disable-gtk --disable-sdl --disable-cocoa --disable-docs \
   --disable-guest-agent --disable-user \
   --enable-slirp --enable-capstone --enable-hvf \
   --prefix="$PREFIX"
 cd build
-ninja -j"$(sysctl -n hw.ncpu)" qemu-system-aarch64 qemu-system-x86_64 qemu-img
+ninja -j"$(sysctl -n hw.ncpu)" "$SYSTEM" qemu-img
 ninja install
 echo "bundled qemu installed to $PREFIX"
