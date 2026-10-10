@@ -1,0 +1,133 @@
+---
+name: pvm
+description: 使用 pvm 创建和管理隔离的 Linux 开发虚拟机，并把指定 VM 的全部流量经 VPS exit-node 出口。需要一台干净/可丢弃的开发机、隔离设备或网络指纹、让某个环境只经指定 VPS 出口、开网页桌面、做端口映射/快照/克隆时使用本 skill。
+---
+
+# pvm：隔离开发机与出口管理
+
+pvm 是本机的 QEMU 虚拟机系统（Go 单二进制）。daemon 默认常驻，CLI 在 daemon 未运行时会自动拉起。所有操作通过 `pvm` 完成，不需要直接操作 QEMU。
+
+## 使用前提
+
+- 仓库内使用 `cd ~/pvm && ./pvm ...`；若 pvm 已加入 PATH，直接用 `pvm ...`。
+- 先跑 `pvm daemon status` 确认 daemon 正常；`pvm list` 查看现有 VM。
+- 本机已注册出口 `us`（WG over UDP）和 `us-tcp`（WG over TCP），指向 203.0.113.10。用 `pvm exit ls` 确认，不要重复 add 同名出口。
+- VPS 上的 `pvm-exit-agent.service` 必须保持运行。不要停它，除非你明确要测试 kill-switch 或进行升级。
+
+## 核心工作流
+
+### 1. 创建并进入开发机
+
+```bash
+pvm create --image ubuntu:24.04 --name dev1 --user dev
+pvm list
+pvm ssh dev1 'whoami && ls /share'
+```
+
+- `--user` 必须显式给出，否则 create 会交互询问用户名，非交互环境会卡住。
+- create 默认进入跟随模式，显示镜像、磁盘、启动、cloud-init 进度；`--no-wait` 可后台创建。
+- golden 镜像已预装 Docker、常用开发工具和 Kasm 桌面镜像。`/share` 默认挂载宿主机 `~/.pvm/share`，用于和宿主机交换文件。
+- SSH 使用 pvm 专用密钥，无需密码。`pvm ssh dev1 bash` 进入交互 shell；`pvm ssh dev1 '<cmd>'` 执行单条命令。SSH 不可达时会自动经 virtio-serial agent 通道兜底。
+
+### 2. 把 VM 全部流量切到 VPS 出口
+
+```bash
+pvm exit ls
+pvm route dev1 --via us          # UDP，优先
+pvm route dev1 --via us-tcp      # TCP 后备
+pvm ssh dev1 'curl -s ipinfo.io'
+```
+
+- `ipinfo.io` 的 IP、城市、时区应和 VPS 所在地一致；地区画像会自动把 VM 时区/locale 切到出口地区（`en_US.UTF-8`）。
+- 恢复本机出口：`pvm route dev1 --via direct`。
+- **fail-closed**：出口隧道断开时，绑定出口的 VM 会完全断网，这是防止流量泄漏的预期行为，不要用 direct 绕过排查；恢复 VPS 服务后应自动回连。
+- 代理域名的 DNS 在 VPS 远端解析，网关本地不解析；不要把它当成故障。
+
+### 3. 网页桌面（Kasm）
+
+```bash
+pvm kasm dev1
+# 输出 http://127.0.0.1:<port>/，浏览器直接打开即可，无登录页、无密码
+```
+
+- golden 镜像已预拉 `kasmweb/core-ubuntu-jammy`，不用等下载。core 是 KasmVNC + 最小桌面环境，按需安装应用。
+- 需要浏览器自动化时，用本机浏览器打开该 URL；页面走 daemon 回环反代注入凭据，不要尝试绕过反代直连底层端口。
+- Claude Code 等需要避免环境特征的工具，**跑在 VM 主用户态，不要跑在 Kasm/Docker 容器里**；容器内的 `/.dockerenv` 是可探测信号。
+
+### 4. 端口映射
+
+```bash
+pvm map dev1 8080:80
+curl http://127.0.0.1:8080/
+pvm map ls
+```
+
+- 宿主机只监听回环地址，链路为宿主机 relay → 网关 → VM。
+- 删除 VM 会连带清理 relay/kasm/agent 连接。
+
+### 5. DNS 与分流规则
+
+```bash
+# 内网域名：默认用宿主机 DNS 解析且流量直连
+pvm route add internal --domain-suffix corp.internal
+# 可选指定专用内网 DNS
+pvm route add internal --domain-suffix corp.internal --dns 10.0.0.53
+# 普通直连规则
+pvm route add direct --domain-suffix example.com
+pvm route add direct --cidr 10.0.0.0/8
+pvm route ls
+pvm dns ls
+```
+
+- 未匹配到 internal/direct 的域名走 fake-ip + 出口，网关不本地解析。
+- 规则热生效，但已建立的连接不会 retroactive 切换。
+
+### 6. 停止、删除与克隆
+
+```bash
+pvm stop dev1
+pvm start dev1
+pvm rm dev1 -y
+pvm clone dev1 dev2             # 源 VM 必须 stopped
+```
+
+- `pvm rm` 有二次确认：交互输入 y 才删；**非交互/脚本环境必须加 `-y`**，否则命令会拒绝执行。
+- clone 默认继承挂载、CPU/内存、用户、时区、SMBIOS 等配置；出口路由不继承；端口映射默认不继承，可交互选择是否继承及改配端口（`--inherit-ports` / `--no-inherit-ports`）。
+- clone 首启会自动重建 hostname、machine-id、SSH host key，避免两台 VM 身份混同。
+
+### 7. 快照与排障
+
+```bash
+pvm snapshot create dev1        # 保存 RAM+磁盘状态并停机
+pvm start dev1                  # 检测到快照时快速恢复，进程原样存活
+pvm logs dev1 --follow
+pvm daemon status
+pvm daemon stop && pvm daemon start
+```
+
+- 快照适合挂起多日不用的机器或高风险操作前 checkpoint。
+- daemon 重启会停掉用户 VM（gateway 会自动恢复）；需要时手动 `pvm start <name>`。
+- 网关 pvm-gw1 若出现高 CPU 且 SSH 长时间不就绪，可 `pvm stop pvm-gw1 && pvm start pvm-gw1` 恢复。不要删除 pvm-gw1。
+- daemon 是单实例锁；看到 `another pvm daemon is already running` 时先确认是否已有 daemon，不要再起第二个。
+
+## 安全与身份姿态（防风控）
+
+- 不要设置 `DISABLE_TELEMETRY`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` 等关闭遥测的环境变量；关闭动作本身和付费功能降级都是风险。
+- 保持同一服务/账号的出口一致，不要在 direct 和 VPS 出口之间频繁切换。
+- 不要把宿主机 `~/.gitconfig`、`~/.ssh` 或个人文件复制进 VM；pvm 专用密钥与宿主 SSH 是隔离的。
+- VM 时区、locale 应与出口地理一致，正常使用 Ubuntu/Debian 和官方镜像源，避免国内镜像与中文环境特征。
+- 要全新的设备身份，就新建 VM 或 clone 后让首启清洗生效；快照恢复代表同一台设备。
+
+## 新增出口（仅在用户明确要求时）
+
+```bash
+# VPS 上手动启动（生产已有 us/us-tcp，不要重复部署）
+pvm exit-agent --listen :18443 --token <随机强 token>
+
+# 本机注册（指纹建议带外核对）
+pvm exit add <name> --server <vps>:18443 --token <token> --transport udp
+pvm exit add <name> --server <vps>:18443 --token <token> --transport tcp --fingerprint <sha256>
+```
+
+- 控制面 HTTPS + Bearer token + TOFU 指纹 pin；数据面 WireGuard，UDP 优先、TCP 后备。
+- exit-agent 支持 `nft` / `iptables` / `userspace` NAT 后端；userspace 不需要 root，但不转发 ICMP ping。

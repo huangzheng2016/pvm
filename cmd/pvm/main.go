@@ -21,6 +21,15 @@ vm:
   ssh           ssh into a vm: pvm ssh dev1 [cmd...]
   snapshot      ram snapshots: create <name> | ls [name] | rm <name>
   exec          run a command via the guest agent (no network needed): pvm exec dev1 cmd...
+  logs          stream a vm console: pvm logs dev1 [--follow] [--tail N]
+  kasm          open a vm's web desktop: pvm kasm dev1 [--open]
+
+network:
+  map           map ports: pvm map dev1 8080:80 [--udp] | ls | rm <port>
+  route         route vm/direct/internal rules: pvm route dev1 --via us|direct
+  dns           inspect fake-ip mappings: pvm dns ls
+  exit          manage exit nodes: add | set | ls | rm | test
+  exit-agent    run the vps exit agent: pvm exit-agent --listen :18443 --token <tok>
 
 image:
   image fetch   download a base image (ubuntu:24.04, debian:13)
@@ -34,8 +43,6 @@ daemon:
 
 other:
   version       print version
-
-planned (M2+): map, exit, route, dns, kasm, agent, gateway, exit-agent
 `
 
 func main() {
