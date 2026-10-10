@@ -14,6 +14,14 @@ pvm 是本机的 QEMU 虚拟机系统（Go 单二进制）。daemon 默认常驻
 - 本机已注册出口 `us`（WG over UDP）和 `us-tcp`（WG over TCP），指向 203.0.113.10。用 `pvm exit ls` 确认，不要重复 add 同名出口。
 - VPS 上的 `pvm-exit-agent.service` 必须保持运行。不要停它，除非你明确要测试 kill-switch 或进行升级。
 
+## 常用选择
+
+- **镜像**：`ubuntu:24.04`、`ubuntu:22.04`、`debian:13`、`debian:12`
+- **出口传输**：`udp`（默认、性能优先）/ `tcp`（受限网络后备）
+- **exit-agent NAT 后端**：`auto`（自动探测）/ `nft` / `iptables` / `userspace`（免 root、无 ICMP）
+- **出口路由**：`direct`（本机出口）或 `<exit-name>`（本机现有 `us`、`us-tcp`）
+- **create 常用参数**：`--image`、`--name`、`--user`、`--cpus`、`--mem`、`--disk`、`--mount`、`--tz`、`--locale`、`--git-email`、`--git-name`、`--smbios-spoof`、`--no-start`、`--no-wait`
+
 ## 核心工作流
 
 ### 1. 创建并进入开发机
