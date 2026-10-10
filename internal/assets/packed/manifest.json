@@ -1,22 +1,22 @@
 [
   {
     "path": "agent-linux-amd64",
-    "sha256": "a24d16f26064d0e977d0f9ef9729a4fa789f0a747aa5e4c22b2da9a63c2e85fd",
+    "sha256": "0e47d3d1ff873a3e33344de6f567e6b07d96a2a7ab90cf9839b05bede4656171",
     "mode": 493
   },
   {
     "path": "agent-linux-arm64",
-    "sha256": "0feca1dcd691dad74b11195aaf117b9714c5f507900e37e60f6e0c9bb23a1a3e",
+    "sha256": "ed6ca1878e2dd160121748c67914224c5ebc503506885a245d28be32e56f0764",
     "mode": 493
   },
   {
     "path": "gateway-linux-amd64",
-    "sha256": "538e59fc34fe78aea4134bc7d01c0e3efd0f0019841335f93d2cfade7bf1e9c3",
+    "sha256": "af0f5e1cabbc4c74c35c1454e078b7d395dd1c98327bc0a744fd0eb92ef8f177",
     "mode": 493
   },
   {
     "path": "gateway-linux-arm64",
-    "sha256": "9891e87c4836c883b9efb13bd2c6c85b50903422fd29a1162f1bd6656b03cf3f",
+    "sha256": "67dfea1654688da5d257723c1135ded1cba24e84b7f2c8698d961a4aab03dae1",
     "mode": 493
   }
 ]
