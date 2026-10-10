@@ -16,17 +16,17 @@ type GuestMount struct {
 
 func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 	fstab := []string{
-		"pvmshare /share 9p trans=virtio,version=9p2000.L,msize=262144,rw,_netdev,nofail 0 0",
+		"pvmshare /share 9p trans=virtio,version=9p2000.L,msize=262144,access=any,rw,_netdev,nofail 0 0",
 	}
 	runcmd := []string{
 		"mkdir -p /share",
-		"mountpoint -q /share || mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144 pvmshare /share",
+		"mountpoint -q /share || mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,access=any pvmshare /share",
 	}
 	for _, m := range mounts {
-		fstab = append(fstab, fmt.Sprintf("%s %s 9p trans=virtio,version=9p2000.L,msize=262144,rw,_netdev,nofail 0 0", m.Tag, m.Guest))
+		fstab = append(fstab, fmt.Sprintf("%s %s 9p trans=virtio,version=9p2000.L,msize=262144,access=any,rw,_netdev,nofail 0 0", m.Tag, m.Guest))
 		runcmd = append(runcmd,
 			"mkdir -p "+m.Guest,
-			fmt.Sprintf("mountpoint -q %s || mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144 %s %s", m.Guest, m.Tag, m.Guest),
+			fmt.Sprintf("mountpoint -q %s || mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,access=any %s %s", m.Guest, m.Tag, m.Guest),
 		)
 	}
 
@@ -43,6 +43,7 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 			"shell":               "/bin/bash",
 			"sudo":                "ALL=(ALL) NOPASSWD:ALL",
 			"lock_passwd":         true,
+			"uid":                 spec.GuestUID,
 			"ssh_authorized_keys": []string{strings.TrimSpace(sshPub)},
 		}},
 		"write_files": []map[string]any{{

@@ -5,7 +5,6 @@ import (
 	"strconv"
 	"strings"
 )
-
 // ProcIdentity pins down a process beyond its PID so a recycled PID is
 // never signalled by mistake (same defence as the platform supervisor).
 type ProcIdentity struct {
@@ -34,12 +33,15 @@ func IdentityOf(pid int) (*ProcIdentity, error) {
 }
 
 // Alive reports whether a process matching this identity still exists.
+// Comparison is pid + exact start time + exact comm: macOS truncates
+// comm to 16 bytes so a "contains qemu" test would fail, but a recycled
+// PID can never share both start time and comm.
 func (id *ProcIdentity) Alive() bool {
 	cur, err := IdentityOf(id.PID)
 	if err != nil {
 		return false
 	}
-	return cur.Started == id.Started && strings.Contains(cur.Comm, "qemu")
+	return cur.Started == id.Started && cur.Comm == id.Comm
 }
 
 type errT string

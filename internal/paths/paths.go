@@ -39,12 +39,18 @@ func New(home string) *Paths {
 }
 
 func (p *Paths) Ensure() error {
-	for _, d := range []string{p.Home, p.Images, p.VMs, p.Clusters, p.Share, p.Keys, p.Run, p.Runtime} {
+	for _, d := range []string{p.Home, p.Images, p.VMs, p.Clusters, p.Keys, p.Run, p.Runtime} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return err
 		}
 	}
-	return nil
+	// The share dir is exported into guests via 9p security_model=none:
+	// guests see host mode bits as-is, so it must be world-traversable
+	// for non-root guest users.
+	if err := os.MkdirAll(p.Share, 0o755); err != nil {
+		return err
+	}
+	return os.Chmod(p.Share, 0o755)
 }
 
 func (p *Paths) ConfigFile() string      { return filepath.Join(p.Home, "config.yaml") }

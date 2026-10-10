@@ -31,7 +31,7 @@ func TestBuildArgsARM64HVF(t *testing.T) {
 		"if=pflash,format=raw,file=/d/vars.fd",
 		"hostfwd=tcp:127.0.0.1:10022-:22",
 		"mount_tag=pvmshare", "mount_tag=pvm0",
-		"security_model=mapped-xattr",
+		"security_model=none",
 		"-qmp unix:/d/qmp.sock,server=on,wait=off",
 	} {
 		if !strings.Contains(j, want) {

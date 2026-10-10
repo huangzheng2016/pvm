@@ -215,8 +215,10 @@ func CmdSSH(args []string) int {
 
 	sshArgs := []string{
 		"-i", p.SSHKey(),
+		// hostfwd ports are reused across VMs so host keys always
+		// change; keep no persistent known_hosts.
 		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=" + p.KnownHosts(),
+		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "LogLevel=ERROR",
 		"-p", strconv.Itoa(info.Spec.SSHPort),
 	}

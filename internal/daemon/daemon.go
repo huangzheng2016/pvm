@@ -197,7 +197,8 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	base := filepath.Join(s.P.Images, fmt.Sprintf("%s-%s.qcow2", imageFileStem(req.Image), runtime.GOARCH))
 	spec := &vm.Spec{
 		Name: req.Name, Image: req.Image, User: req.User, Arch: runtime.GOARCH,
-		CPUs: req.CPUs, MemMB: req.MemMB, DiskGB: req.DiskGB,
+		GuestUID: os.Getuid(),
+		CPUs:     req.CPUs, MemMB: req.MemMB, DiskGB: req.DiskGB,
 		SSHPort: port, BaseDisk: base, Mounts: mounts,
 	}
 	if err := vm.Create(s.P, s.TC, spec, s.SSHPub); err != nil {

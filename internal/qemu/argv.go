@@ -73,11 +73,12 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 	fs = append(fs, c.ExtraMounts...)
 	for i, m := range fs {
 		id := fmt.Sprintf("fs%d", i)
-		// mapped-xattr records guest uid/gid in host xattrs so guest chown
-		// works without qemu running as root and host files stay owned by
-		// the invoking user.
+		// security_model=none: server does all host I/O as the qemu
+		// process user; guest-side enforcement is disabled by mounting
+		// with access=any (see cloud-init). mapped-xattr was tried and
+		// rejects even root readdir on macOS hosts.
 		args = append(args,
-			"-fsdev", fmt.Sprintf("local,id=%s,path=%s,security_model=mapped-xattr", id, m.HostPath),
+			"-fsdev", fmt.Sprintf("local,id=%s,path=%s,security_model=none", id, m.HostPath),
 			"-device", fmt.Sprintf("virtio-9p-pci,fsdev=%s,mount_tag=%s", id, m.Tag),
 		)
 	}

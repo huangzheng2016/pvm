@@ -21,6 +21,9 @@ type Spec struct {
 	Name     string `json:"name"`
 	Image    string `json:"image"` // e.g. ubuntu:24.04
 	User     string `json:"user"`
+	// GuestUID pins the guest user's uid to the host user's uid so 9p
+	// shares behave sanely (same trick as lima/docker-desktop).
+	GuestUID int    `json:"guest_uid"`
 	Arch     string `json:"arch"`
 	CPUs     int    `json:"cpus"`
 	MemMB    int    `json:"mem_mb"`
