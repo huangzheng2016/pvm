@@ -144,8 +144,13 @@ func (s *Server) answerHost(req, resp *mdns.Msg, name string, qtype uint16) {
 	if d, ok := s.Rules().Match(name, nil); ok && !d.Internal {
 		switch d.Action {
 		case rules.Internal:
-			// internal-rule names resolve ONLY via their designated
-			// resolver; everything else must never reach that server.
+			if d.DNS == "" {
+				// no designated resolver: internal names take the
+				// default uplink (host DNS resolves corp/VPN names)
+				s.forward(req, resp)
+				return
+			}
+			// designated resolver: ONLY that server ever sees the name
 			s.forwardInternal(req, resp, d.DNS)
 			return
 		case rules.Direct:
@@ -226,11 +231,11 @@ func (s *Server) forward(req, resp *mdns.Msg) {
 	resp.Id = req.Id
 }
 
-// forwardInternal resolves via the internal rule's designated resolver.
-// An empty address means "unresolvable here" (NODATA), never fall back
-// to the default upstream.
+// forwardInternal resolves via the internal rule's designated resolver;
+// only names matching the rule may ever reach that server.
 func (s *Server) forwardInternal(req, resp *mdns.Msg, addr string) {
 	if addr == "" {
+		resp.Rcode = mdns.RcodeServerFailure
 		return
 	}
 	if _, _, err := net.SplitHostPort(addr); err != nil {

@@ -94,23 +94,44 @@ func TestInternalRuleResolvesViaDesignatedServerOnly(t *testing.T) {
 	def.mu.Unlock()
 }
 
-func TestInternalRuleEmptyDNSYieldsNODATA(t *testing.T) {
+// An internal rule without --dns resolves via the default uplink (host
+// DNS), and other suffixes stay on their own paths.
+func TestInternalRuleNoDNSUsesDefaultUpstream(t *testing.T) {
 	pool, err := NewPool("198.18.0.0/16", 16)
 	if err != nil {
 		t.Fatal(err)
 	}
 	def := &stubUpstream{}
+	rec := &internalStub{}
 	eng := newInternalRuleEngine(t, "corp.test", "")
 	srv := NewServer(def, eng, pool)
+	srv.NewInternalUpstream = rec.exchange
 
 	resp := query(t, srv, "www.corp.test.", mdns.TypeA)
-	if len(resp.Answer) != 0 {
-		t.Fatalf("empty dns: want NODATA, got %v", resp.Answer)
+	if len(resp.Answer) != 1 {
+		t.Fatalf("no-dns internal: want default-upstream answer, got %v", resp.Answer)
+	}
+	def.mu.Lock()
+	if len(def.queries) != 1 || def.queries[0] != "www.corp.test." {
+		t.Fatalf("default upstream should see the internal name: %v", def.queries)
+	}
+	def.mu.Unlock()
+	rec.mu.Lock()
+	if len(rec.seen) != 0 {
+		t.Fatalf("designated resolver must not exist here: %v", rec.seen)
+	}
+	rec.mu.Unlock()
+
+	// unmatched suffixes still get fake-ip, upstream untouched beyond the one
+	resp = query(t, srv, "other.example.", mdns.TypeA)
+	a, ok := resp.Answer[0].(*mdns.A)
+	if !ok || !pool.Contains(a.A) {
+		t.Fatalf("unmatched: want fake-ip, got %v", resp.Answer[0])
 	}
 	def.mu.Lock()
 	defer def.mu.Unlock()
-	if len(def.queries) != 0 {
-		t.Fatalf("empty dns must never fall back to default upstream: %v", def.queries)
+	if len(def.queries) != 1 {
+		t.Fatalf("fake-ip names must not hit the default upstream: %v", def.queries)
 	}
 }
 

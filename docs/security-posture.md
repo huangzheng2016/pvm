@@ -16,10 +16,10 @@ AI-service Code 等工具的运行环境检测针对的是**容器**与云主机
 
 ## 内网 DNS 分流
 
-- `pvm route add internal --domain-suffix corp.example --dns 10.0.0.53`：匹配后缀的域名**只**往指定的内网 DNS 转发；非匹配查询物理隔离，绝不发往这些服务器。
+- `pvm route add internal --domain-suffix corp.example`：内网域名默认经**宿主机原本的 DNS** 解析（slirp 上行，宿主在办公网/VPN 里自然能解析），无需单独配置。
+- `--dns 10.0.0.53` 为可选覆盖：匹配后缀**只**往指定服务器转发，非匹配查询物理隔离，绝不发往该服务器。
 - 内网域名的解析流量与流量本体都只走直连、不进隧道；`--via <exit>` 的 VM 上内网查询同样不进隧道。
-- 内网域名不命中时返回 NODATA，不回落默认上行。
-- 直连规则（`route add direct`）域名仍走网关本地上行解析——直连意味着流量本就经本地出口。
+- 直连规则（`route add direct`）域名同样走默认上行解析——直连意味着流量本就经本地出口。
 
 ## 环境信号对齐（地区画像）
 
