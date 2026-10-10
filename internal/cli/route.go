@@ -84,10 +84,14 @@ func CmdRoute(args []string) int {
 		if *via == "" {
 			return routeUsage()
 		}
-		if err := c.Post("/v1/vms/"+args[0]+"/route", map[string]string{"via": *via}, nil); err != nil {
+		var resp map[string]any
+		if err := c.Post("/v1/vms/"+args[0]+"/route", map[string]string{"via": *via}, &resp); err != nil {
 			return fatalf("%v", err)
 		}
 		fmt.Printf("%s: default route -> %s\n", args[0], *via)
+		if note, _ := resp["note"].(string); note != "" {
+			fmt.Println(note)
+		}
 		return 0
 	}
 }

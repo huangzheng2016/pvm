@@ -252,6 +252,12 @@ type createRequest struct {
 	DiskGB int      `json:"disk_gb"`
 	Mounts []string `json:"mounts"` // "/host:/guest"
 	Start  bool     `json:"start"`
+	// Region/identity profile (all optional).
+	TZ          string `json:"tz,omitempty"`
+	Locale      string `json:"locale,omitempty"`
+	GitEmail    string `json:"git_email,omitempty"`
+	GitName     string `json:"git_name,omitempty"`
+	SmbiosSpoof bool   `json:"smbios_spoof,omitempty"`
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -311,12 +317,29 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.TZ != "" {
+		if err := vm.ValidateTZ(req.TZ); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+	}
+	if req.Locale != "" {
+		l, err := vm.NormalizeLocale(req.Locale)
+		if err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		req.Locale = l
+	}
 	spec := &vm.Spec{
 		Name: req.Name, Image: req.Image, Role: "user", User: req.User, Arch: runtime.GOARCH,
 		GuestUID: os.Getuid(),
 		CPUs:     req.CPUs, MemMB: req.MemMB, DiskGB: req.DiskGB,
 		BaseDisk: base, Mounts: mounts, Golden: goldenVer,
 		ClusterID: cl.ID, IP: vnet.IP, MAC: vnet.MAC,
+		TZ: req.TZ, Locale: req.Locale,
+		GitEmail: req.GitEmail, GitName: req.GitName,
+		SmbiosSpoof: req.SmbiosSpoof,
 	}
 	if err := vm.Create(s.P, s.TC, spec, s.SSHPub); err != nil {
 		s.Clusters.RemoveVM(cl.ID, req.Name)

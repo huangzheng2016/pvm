@@ -77,6 +77,7 @@ type Server struct {
 	store  *PeerStore
 	priv   string // base64 wg private key (shared by both transports)
 	pub    string
+	sugTZ  string // suggested client timezone (enroll response)
 	tr     map[string]*transportRT
 	http   *http.Server
 	ln     net.Listener
@@ -90,6 +91,7 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		return nil, errors.New("--token is required")
 	}
 	s := &Server{cfg: cfg, tr: map[string]*transportRT{}, closed: make(chan struct{})}
+	s.sugTZ = DetectSuggestedTZ(cfg.StateDir)
 
 	var err error
 	s.store, err = LoadPeerStore(filepath.Join(cfg.StateDir, "peers.json"))
@@ -285,6 +287,9 @@ type enrollResponse struct {
 	TunnelIP     string `json:"tunnel_ip"`
 	MTU          int    `json:"mtu"`
 	Endpoint     string `json:"endpoint"`
+	// SuggestedTZ is the exit's public-geo timezone (IANA), detected at
+	// agent startup; empty means "treat as UTC".
+	SuggestedTZ string `json:"suggested_tz,omitempty"`
 }
 
 func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
@@ -321,6 +326,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		TunnelIP:     peer.IP,
 		MTU:          MTUFor(req.Transport),
 		Endpoint:     s.publicEndpoint(r, t),
+		SuggestedTZ:  s.sugTZ,
 	})
 }
 

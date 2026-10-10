@@ -121,3 +121,23 @@ func TestNetArgsCluster(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildArgsSmbiosSpoof(t *testing.T) {
+	c := testCfg("arm64", AccelHVF)
+	c.SmbiosSpoof = true
+	args, err := BuildArgs(&Toolchain{FirmwareDir: "/fw"}, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := joined(args)
+	if !strings.Contains(j, "-smbios type=1,manufacturer=Dell Inc.,product=Inspiron 15 5510") {
+		t.Errorf("spoof args missing: %s", j)
+	}
+	args, err = BuildArgs(&Toolchain{FirmwareDir: "/fw"}, testCfg("arm64", AccelHVF))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(joined(args), "-smbios") {
+		t.Error("smbios must stay at QEMU defaults unless spoofing is requested")
+	}
+}

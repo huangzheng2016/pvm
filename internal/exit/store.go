@@ -24,7 +24,14 @@ type Entry struct {
 	TunnelIP     string    `json:"tunnel_ip"`
 	MTU          int       `json:"mtu"`
 	Endpoint     string    `json:"endpoint"` // wireguard data-plane host:port
-	CreatedAt    time.Time `json:"created_at"`
+	// Region profile: applied to VMs routed via this exit so their
+	// environment matches the exit's geography. TZ is the manual
+	// override (exit set --tz); AutoTZ is learned from the exit-agent's
+	// enroll response and used when TZ is empty.
+	TZ        string    `json:"tz,omitempty"`
+	AutoTZ    string    `json:"auto_tz,omitempty"`
+	Locale    string    `json:"locale,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 func entryPath(dir, name string) string {

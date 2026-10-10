@@ -42,6 +42,17 @@ type Spec struct {
 
 	CreatedAt time.Time    `json:"created_at"`
 	Mounts    []GuestMount `json:"mounts,omitempty"`
+
+	// Region/identity profile. TZ/Locale are applied by cloud-init at
+	// first boot; PrevTZ/PrevLocale remember the pre-route values so
+	// `route --via direct` can restore them.
+	TZ          string `json:"tz,omitempty"`
+	Locale      string `json:"locale,omitempty"`
+	GitEmail    string `json:"git_email,omitempty"`
+	GitName     string `json:"git_name,omitempty"`
+	SmbiosSpoof bool   `json:"smbios_spoof,omitempty"`
+	PrevTZ      string `json:"prev_tz,omitempty"`
+	PrevLocale  string `json:"prev_locale,omitempty"`
 }
 
 var nameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
@@ -130,6 +141,7 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 		ShareDir:     p.Share,
 		ExtraMounts:  mounts,
 		Accel:        accel,
+		SmbiosSpoof:  s.SmbiosSpoof,
 	}
 }
 
