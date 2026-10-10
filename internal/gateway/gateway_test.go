@@ -109,8 +109,11 @@ func TestRenderNFT(t *testing.T) {
 	}
 }
 
-// The kill-switch must exempt bypass destinations or direct rules are
-// dead for proxied VMs; the accept must precede the drop.
+// The forward chain is default-deny for br0 -> uplink: bypass
+// destinations pass for every VM (or direct rules are dead for proxied
+// VMs), direct VMs pass on their registered DHCP MAC/IP pair, and
+// exit-routed VMs match neither. The bypass accept must precede the
+// final drop.
 func TestRenderNFTBypassBeforeDrop(t *testing.T) {
 	cfg := &Config{
 		CIDR: "192.168.1.0/24", GwIP: "192.168.1.1",
@@ -121,21 +124,23 @@ func TestRenderNFTBypassBeforeDrop(t *testing.T) {
 	for _, want := range []string{
 		"set bypass4 {",
 		"elements = { 10.0.0.0/8, 104.20.23.154/32 }",
+		`iifname "br0" oifname "enp0s1" ip daddr @bypass4 accept`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("ruleset missing %q\n%s", want, out)
 		}
 	}
-	accept := strings.Index(out, `ip saddr 192.168.1.10 ether saddr 52:54:00:00:00:10 oifname "enp0s1" ip daddr @bypass4 accept`)
-	drop := strings.Index(out, `ip saddr 192.168.1.10 ether saddr 52:54:00:00:00:10 oifname "enp0s1" drop`)
+	accept := strings.Index(out, `ip daddr @bypass4 accept`)
+	drop := strings.Index(out, `iifname "br0" oifname "enp0s1" drop`)
 	if accept < 0 || drop < 0 {
-		t.Fatalf("missing bypass accept or kill-switch drop\n%s", out)
+		t.Fatalf("missing bypass accept or final drop\n%s", out)
 	}
 	if accept > drop {
-		t.Errorf("bypass accept must precede the kill-switch drop\n%s", out)
+		t.Errorf("bypass accept must precede the final drop\n%s", out)
 	}
-	if !strings.Contains(out, "ether saddr 52:54:00:00:00:10") {
-		t.Errorf("kill-switch must bind the DHCP MAC/IP pair\n%s", out)
+	// exit-routed VMs get no registered-pair accept at all
+	if strings.Contains(out, "52:54:00:00:00:10") {
+		t.Errorf("exit-routed VM must not get a registered-pair accept\n%s", out)
 	}
 	// sets are only legal at table level: bypass4 must be declared
 	// before the first chain or nft -f rejects the whole render
@@ -144,13 +149,54 @@ func TestRenderNFTBypassBeforeDrop(t *testing.T) {
 	if setIdx < 0 || chainIdx < 0 || setIdx > chainIdx {
 		t.Errorf("set bypass4 must be declared at table level before chains\n%s", out)
 	}
-	// VM without an exit route stays untouched
-	cfg2 := &Config{
+}
+
+// Direct VMs keep uplink access via their registered DHCP MAC/IP pair;
+// the default-deny drop closes everything else (spoofed/unregistered).
+func TestRenderNFTDirectVMRegisteredPair(t *testing.T) {
+	cfg := &Config{
 		CIDR: "192.168.1.0/24", GwIP: "192.168.1.1",
-		VMs: []VMEntry{{Name: "dev2", MAC: "52:54:00:00:00:11", IP: "192.168.1.11"}},
+		VMs: []VMEntry{
+			{Name: "dev1", MAC: "52:54:00:00:00:10", IP: "192.168.1.10"},
+			{Name: "dev2", MAC: "52:54:00:00:00:11", IP: "192.168.1.11"},
+		},
+		VMExits: map[string]string{"dev2": "us"},
 	}
-	out2 := RenderNFT(cfg2, "enp0s1", "br0", nil)
-	if strings.Contains(out2, "192.168.1.11 oifname") {
-		t.Errorf("direct VM must not get kill-switch rules\n%s", out2)
+	out := RenderNFT(cfg, "enp0s1", "br0", nil)
+	if !strings.Contains(out, `iifname "br0" ether saddr 52:54:00:00:00:10 ip saddr 192.168.1.10 oifname "enp0s1" accept`) {
+		t.Errorf("direct VM missing registered-pair accept\n%s", out)
+	}
+	if strings.Contains(out, "52:54:00:00:00:11") {
+		t.Errorf("exit-routed VM must not get a registered-pair accept\n%s", out)
+	}
+	if !strings.Contains(out, `iifname "br0" oifname "enp0s1" drop`) {
+		t.Errorf("default-deny drop missing\n%s", out)
+	}
+}
+
+// DoH/DoQ to well-known public resolvers is rejected on 443 while
+// plain DNS (:53) to the same IPs is still hijacked onto the gateway.
+func TestRenderNFTDoHBlock(t *testing.T) {
+	cfg := &Config{CIDR: "192.168.1.0/24", GwIP: "192.168.1.1"}
+	out := RenderNFT(cfg, "enp0s1", "br0", nil)
+	for _, ip := range []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"} {
+		if !strings.Contains(out, ip) {
+			t.Errorf("resolver %s missing from DoH block set\n%s", ip, out)
+		}
+	}
+	if !strings.Contains(out, `tcp dport 443 reject`) || !strings.Contains(out, `udp dport 443 reject`) {
+		t.Errorf("DoH rejects for 443 missing\n%s", out)
+	}
+	if !strings.Contains(out, `udp dport 53 dnat`) {
+		t.Errorf("plain-DNS hijack must remain\n%s", out)
+	}
+}
+
+// IPv6 never reaches the uplink (the cluster and kill-switch are v4).
+func TestRenderNFTIPv6Drop(t *testing.T) {
+	cfg := &Config{CIDR: "192.168.1.0/24", GwIP: "192.168.1.1"}
+	out := RenderNFT(cfg, "enp0s1", "br0", nil)
+	if !strings.Contains(out, `iifname "br0" oifname "enp0s1" meta nfproto ipv6 drop`) {
+		t.Errorf("ipv6 uplink drop missing\n%s", out)
 	}
 }
