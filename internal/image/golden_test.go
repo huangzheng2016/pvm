@@ -79,8 +79,7 @@ func TestRenderProvision(t *testing.T) {
 	}
 	for _, want := range []string{
 		"apt-get -y install docker.io qemu-guest-agent",
-		"kasmweb/desktop:1.16.0",
-		"kasmweb/core-ubuntu-jammy:1.16.0",
+		"core-ubuntu-jammy:1.16.0", // present on every arch's candidate list
 		"/etc/pvm-preinstalled-images",
 		"cloud-init clean",
 		"fonts-noto-cjk",
