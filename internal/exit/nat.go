@@ -28,8 +28,9 @@ type natBackend interface {
 	newTun(tunName string, mtu int) (tun.Device, error)
 	// setup runs after all transports exist; nil tunNames when userspace.
 	setup(tunNames []string, cidrs []string) error
-	// cleanup removes whatever setup installed.
-	cleanup() error
+	// cleanup removes whatever setup installed, scoped to this instance's
+	// tun names and cidrs so coexisting instances are not affected.
+	cleanup(tunNames []string, cidrs []string) error
 }
 
 // resolveNAT picks the effective backend. auto probes nft → iptables →

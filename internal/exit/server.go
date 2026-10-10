@@ -494,7 +494,12 @@ func (s *Server) Close() {
 			t.dev.Close()
 		}
 		if s.cfg.TunFactory == nil {
-			_ = s.nat.cleanup()
+			var ifs, cidrs []string
+			for _, t := range s.tr {
+				ifs = append(ifs, t.tunName)
+				cidrs = append(cidrs, t.subnet)
+			}
+			_ = s.nat.cleanup(ifs, cidrs)
 		}
 	})
 }

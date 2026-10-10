@@ -24,8 +24,14 @@ func (nftBackend) setup(tunNames []string, cidrs []string) error {
 	return NFTInstall(tunNames, cidrs)
 }
 
-func (nftBackend) cleanup() error {
-	return NFTRemove()
+func (nftBackend) cleanup(tunNames []string, _ []string) error {
+	if len(tunNames) == 0 {
+		// setup never ran (e.g. startup failed before transports existed):
+		// nothing is ours to remove, and deleting the default table would
+		// clobber a coexisting production instance.
+		return nil
+	}
+	return NFTRemove(tunNames)
 }
 
 // iptablesBackend installs MASQUERADE + FORWARD accepts, every rule tagged
@@ -78,18 +84,21 @@ func (iptablesBackend) setup(tunNames []string, cidrs []string) error {
 	return nil
 }
 
-func (iptablesBackend) cleanup() error {
-	return iptablesRemoveMarked(iptablesComment)
+func (iptablesBackend) cleanup(tunNames []string, cidrs []string) error {
+	if len(tunNames) == 0 && len(cidrs) == 0 {
+		return nil
+	}
+	return iptablesRemoveMarked(iptablesComment, tunNames, cidrs)
 }
 
 // iptablesRemoveMarked deletes every rule carrying our comment, parsed from
 // iptables-save so removal matches whatever is actually installed.
-func iptablesRemoveMarked(comment string) error {
+func iptablesRemoveMarked(comment string, tunNames, cidrs []string) error {
 	out, err := exec.Command("iptables-save").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("iptables-save: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	for _, d := range parseMarkedDeletes(string(out), comment) {
+	for _, d := range parseMarkedDeletes(string(out), comment, tunNames, cidrs) {
 		if err := runIptables(d...); err != nil {
 			return err
 		}
@@ -99,7 +108,20 @@ func iptablesRemoveMarked(comment string) error {
 
 // parseMarkedDeletes turns iptables-save output into delete command argument
 // vectors for rules carrying the comment.
-func parseMarkedDeletes(saveOutput, comment string) [][]string {
+func parseMarkedDeletes(saveOutput, comment string, tunNames, cidrs []string) [][]string {
+	ours := func(spec string) bool {
+		for _, n := range tunNames {
+			if strings.Contains(spec, "-i "+n) || strings.Contains(spec, "-o "+n) {
+				return true
+			}
+		}
+		for _, c := range cidrs {
+			if strings.Contains(spec, "-s "+c) {
+				return true
+			}
+		}
+		return false
+	}
 	var out [][]string
 	table := ""
 	for line := range strings.Lines(saveOutput) {
@@ -115,7 +137,7 @@ func parseMarkedDeletes(saveOutput, comment string) [][]string {
 		// iptables-save quotes comments ("pvm-exit"); strip quotes for
 		// matching and for the delete argument vector
 		spec = strings.ReplaceAll(spec, `"`, "")
-		if !strings.Contains(spec, "--comment "+comment) {
+		if !strings.Contains(spec, "--comment "+comment) || !ours(spec) {
 			continue
 		}
 		fields := strings.Fields(spec)

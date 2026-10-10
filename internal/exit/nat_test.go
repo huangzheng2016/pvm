@@ -86,16 +86,18 @@ func TestParseMarkedDeletes(t *testing.T) {
 :PREROUTING ACCEPT [0:0]
 :POSTROUTING ACCEPT [0:0]
 -A POSTROUTING -s 10.99.0.0/24 -m comment --comment "pvm-exit" -j MASQUERADE
+-A POSTROUTING -s 10.97.0.0/24 -m comment --comment "pvm-exit" -j MASQUERADE
 -A POSTROUTING -s 10.99.1.0/24 -m comment --comment "other" -j MASQUERADE
 COMMIT
 *filter
 :FORWARD ACCEPT [0:0]
 -A FORWARD -i pvmexit0 -m comment --comment "pvm-exit" -j ACCEPT
+-A FORWARD -i pvmsp0 -m comment --comment "pvm-exit" -j ACCEPT
 COMMIT
 `
-	deletes := parseMarkedDeletes(save, "pvm-exit")
+	deletes := parseMarkedDeletes(save, "pvm-exit", []string{"pvmexit0", "pvmexit1"}, []string{"10.99.0.0/24", "10.99.1.0/24"})
 	if len(deletes) != 2 {
-		t.Fatalf("got %d deletes, want 2: %v", len(deletes), deletes)
+		t.Fatalf("got %d deletes, want 2 (other instances' rules untouched): %v", len(deletes), deletes)
 	}
 	first := strings.Join(deletes[0], " ")
 	if first != "-t nat -D POSTROUTING -s 10.99.0.0/24 -m comment --comment pvm-exit -j MASQUERADE" {
