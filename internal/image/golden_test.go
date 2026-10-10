@@ -91,8 +91,8 @@ func TestRenderProvision(t *testing.T) {
 	}
 	for _, want := range []string{
 		"apt-get -y install docker.io qemu-guest-agent",
-		"core-ubuntu-jammy:1.16.0", // present on every arch's candidate list
-		"/etc/pvm-preinstalled-images",
+		"tigervnc-standalone-server",
+		"novnc websockify",
 		"cloud-init clean",
 		"fonts-noto-cjk",
 		"rm -f /etc/ssh/ssh_host_*",
@@ -105,7 +105,7 @@ func TestRenderProvision(t *testing.T) {
 		}
 	}
 	if strings.Contains(s, "docker system prune -af") {
-		t.Error("provision script would prune the kasm image it just pulled")
+		t.Error("provision script must not nuke the docker images it just pulled")
 	}
 	if _, err := renderProvision("alpine", "baker", ProxyConfig{}); err == nil {
 		t.Error("expected error for alpine")
@@ -158,21 +158,6 @@ func TestFetchUsesDefaultTransport(t *testing.T) {
 	}
 	if http.DefaultTransport.(*http.Transport).Proxy == nil {
 		t.Fatal("default transport no longer uses ProxyFromEnvironment")
-	}
-}
-
-func TestParsePreinstalled(t *testing.T) {
-	log := "+ docker pull kasmweb/core-ubuntu-jammy:1.16.0\n" +
-		"PVM_PREINSTALLED_BEGIN\n" +
-		"kasmweb/core-ubuntu-jammy:1.16.0\n" +
-		"PVM_PREINSTALLED_END\n" +
-		"+ apt-get clean\n"
-	got := parsePreinstalled(log)
-	if len(got) != 1 || got[0] != "kasmweb/core-ubuntu-jammy:1.16.0" {
-		t.Fatalf("got %v", got)
-	}
-	if parsePreinstalled("no markers here") != nil {
-		t.Fatal("expected nil for missing markers")
 	}
 }
 

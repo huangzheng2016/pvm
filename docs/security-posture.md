@@ -10,8 +10,8 @@ pvm 仅支持宿主原生架构：darwin/arm64 只运行 arm64 VM，linux/amd64 
 
 Claude Code 等工具的运行环境检测针对的是**容器**与云主机：`/.dockerenv`（docker 信号）与 `/sys/hypervisor/uuid`（Xen/EC2 信号）会被映射为 `deployment_environment` 并上行。pvm 的 QEMU VM 两者都没有，在用户态看来就是一台普通 Ubuntu 机器。因此：
 
-- **claude 类工具跑在 VM 主用户态**，不要在 VM 内的 docker/kasm 容器里跑——容器里会出现 `/.dockerenv`。
-- kasm 只作为桌面/浏览器用途。
+- **claude 类工具跑在 VM 主用户态**，不要在 VM 内的 docker 容器里跑——容器里会出现 `/.dockerenv`。
+- `pvm desktop` 是 VM 原生 XFCE 桌面（TigerVNC + noVNC，非容器），桌面环境与 SSH 是同一台机器、同一套文件系统与身份。
 - Alpine/musl 不是典型桌面用户环境，跑 Claude Code 等场景建议用 Ubuntu/Debian；Alpine 定位是精简工具机。
 
 ## 网络一致性
@@ -40,7 +40,7 @@ Claude Code 等工具的运行环境检测针对的是**容器**与云主机：`
 - **设备身份**：真正上行的设备指纹是 `~/.claude.json` 的随机 userID（deviceId）——它随每个遥测事件和每次 API 请求上行，任何遥测开关都关不掉。每台新建 VM 都有全新 deviceId。machine-id / ssh host key 不上行（读取后被客户端丢弃），golden 对它们的清洗属纵深防御。clone 是完整磁盘复制：机器码会重建，但用户文件原样继承——源机跑过 Claude 再 clone，两台在服务端仍是同一台设备；正确姿势是先 clone 再装 Claude，或克隆后自行删除 `~/.claude.json`。RAM 快照会把设备身份一起冻结——同一 VM 快照恢复后仍是"同一台设备"，这是预期行为。
 - **主机名**：trusted_devices 的 display_name 会带 hostname，VM 名保持中性即可。
 - **SMBIOS**：`pvm create --smbios-spoof` 让 DMI 呈现为常见 PC 硬件（Dell Inspiron）而非 QEMU 默认值。当前证据显示该类字段不上行，默认关闭。
-- **字体取舍**：golden 预装 `fonts-noto-cjk` 是为正确渲染中文内容。它是纯本地信号、遥测不可见，但若走 Kasm 浏览器路线，CJK 字体集可被网站字体指纹侧面探测，与"融入美国桌面用户"的画像有张力——按实际用途取舍。
+- **字体取舍**：golden 预装 `fonts-noto-cjk` 是为正确渲染中文内容。它是纯本地信号、遥测不可见，但浏览器访问的网站可经字体指纹侧面探测 CJK 字体集，与"融入美国桌面用户"的画像有张力——按实际用途取舍。
 - **ssh locale**：OpenSSH 客户端默认 `SendEnv LANG LC_*`，宿主中文 locale 会进入交互会话环境。CLI 遥测不上行 locale（实际风险为零），但 shell 内 `LANG=zh_CN` 与地区画像不一致时，可用 `ssh -o SetEnv=LANG=en_US.UTF-8` 覆盖。
 
 ## 不要做的事
