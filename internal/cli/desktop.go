@@ -33,7 +33,7 @@ func CmdDesktop(args []string) int {
 	}
 	if hasFlag(args[1:], "--stop") {
 		var v map[string]any
-		if err := c.Delete("/v1/vms/" + args[0] + "/desktop", &v); err != nil {
+		if err := c.Delete("/v1/vms/"+args[0]+"/desktop", &v); err != nil {
 			return fatalf("%v", err)
 		}
 		fmt.Printf("desktop stopped: %s\n", args[0])

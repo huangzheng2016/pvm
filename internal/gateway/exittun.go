@@ -93,12 +93,12 @@ type exitManager struct {
 	mu   sync.Mutex
 	tuns map[string]*exitTunnel
 	// desired ip-rule state (reconciled on Sync)
-	vmRules   map[string]int  // vmIP -> exit idx
-	vmDirect  map[string]bool // vmIP -> lookup main (cluster-default override)
-	cidrRules map[string]int  // proxied cidr -> exit idx
-	cluster   string          // cluster cidr with a default exit, "" = none
-	clusterTable string       // its lookup table, re-added on index drift
-	bypass    map[string]bool // direct cidrs/ips -> lookup main
+	vmRules      map[string]int  // vmIP -> exit idx
+	vmDirect     map[string]bool // vmIP -> lookup main (cluster-default override)
+	cidrRules    map[string]int  // proxied cidr -> exit idx
+	cluster      string          // cluster cidr with a default exit, "" = none
+	clusterTable string          // its lookup table, re-added on index drift
+	bypass       map[string]bool // direct cidrs/ips -> lookup main
 	// learned holds runtime-learned bypass /32s indexed by the domain
 	// that produced them (domain -> ip -> last seen). Entries survive
 	// config syncs so cached direct flows are never rerouted mid-TTL,
@@ -114,7 +114,7 @@ type exitManager struct {
 }
 
 const (
-	learnedBypassCap = 4096
+	learnedBypassCap  = 4096
 	defaultLearnedTTL = 24 * time.Hour
 )
 
@@ -194,6 +194,12 @@ func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, 
 		wantCluster = clusterCIDR
 	}
 	wantBypass := map[string]bool{}
+	// The slirp uplink subnet is infrastructure (port-map DNAT answers,
+	// gateway-local services, upstream DNS); without this, replies from
+	// exit-routed VMs to host-forwarded connections are policy-routed
+	// into the tunnel and every port map breaks the moment the VM gets
+	// an exit.
+	wantBypass["10.0.2.0/24"] = true
 	for _, c := range directCIDRs {
 		wantBypass[c] = true
 	}
