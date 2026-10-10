@@ -4,15 +4,17 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 )
 
 // RenderNFT produces the complete `inet pvm` table for the config:
-// MASQUERADE out the uplink, one DNAT per port map, DNS hijack (plain
-// DNS is forced to the gateway resolver, DoT is refused so clients fall
-// back to plain DNS) and the fake-ip REDIRECT into the local transparent
-// proxy. The table is rebuilt atomically on every apply so stale rules
-// can never linger.
+// MASQUERADE out the uplink and out any exit tunnels, one DNAT per port
+// map, DNS hijack (plain DNS is forced to the gateway resolver, DoT is
+// refused so clients fall back to plain DNS), the fake-ip REDIRECT into
+// the local transparent proxy, and a forward kill-switch: VMs routed
+// via an exit may never talk to the uplink directly. The table is
+// rebuilt atomically on every apply so stale rules can never linger.
 func RenderNFT(c *Config, uplink, br string) string {
 	var b strings.Builder
 	b.WriteString("destroy table inet pvm\n")
@@ -20,6 +22,9 @@ func RenderNFT(c *Config, uplink, br string) string {
 	fmt.Fprintf(&b, "  chain postrouting {\n")
 	fmt.Fprintf(&b, "    type nat hook postrouting priority 100; policy accept;\n")
 	fmt.Fprintf(&b, "    oifname %q masquerade\n", uplink)
+	if len(c.Exits) > 0 {
+		fmt.Fprintf(&b, "    oifname { %s } masquerade\n", quotedTunnels(c.Exits))
+	}
 	fmt.Fprintf(&b, "  }\n")
 	b.WriteString("  chain prerouting {\n")
 	b.WriteString("    type nat hook prerouting priority -100; policy accept;\n")
@@ -41,8 +46,36 @@ func RenderNFT(c *Config, uplink, br string) string {
 	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 udp dport 443 reject\n", br)
 	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 tcp dport != 53 redirect to :%d\n", br, fakeProxyPort)
 	b.WriteString("  }\n")
+	b.WriteString("  chain forward {\n")
+	b.WriteString("    type filter hook forward priority 0; policy accept;\n")
+	// kill-switch: exit-routed VMs may never reach the uplink directly;
+	// when the tunnel is down they have no other route (fail closed).
+	for _, v := range c.VMs {
+		exitName, via := c.VMExits[v.Name]
+		if !via || exitName == "" || exitName == "direct" {
+			continue
+		}
+		fmt.Fprintf(&b, "    ip saddr %s oifname %q drop\n", v.IP, uplink)
+	}
+	b.WriteString("  }\n")
 	b.WriteString("}\n")
 	return b.String()
+}
+
+// quotedTunnels renders the tunnel interface set for every configured
+// exit, named by the same sorted-index rule exitManager uses.
+func quotedTunnels(exits map[string]ExitDef) string {
+	names := make([]string, 0, len(exits))
+	for n := range exits {
+		names = append(names, n)
+	}
+	quoted := make([]string, len(names))
+	for i := range names {
+		quoted[i] = fmt.Sprintf("%q", tunnelIfName(i))
+	}
+	// sort the quoted names for stable output
+	sort.Strings(quoted)
+	return strings.Join(quoted, ", ")
 }
 
 // ApplyNFT feeds the ruleset to `nft -f`.

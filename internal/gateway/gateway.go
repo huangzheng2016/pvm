@@ -40,6 +40,9 @@ type Config struct {
 	Maps        []MapEntry        `json:"maps"`
 	Rules       []rules.Rule      `json:"rules,omitempty"`    // routing rules (fake-ip engine)
 	VMExits     map[string]string `json:"vm_exits,omitempty"` // vm name -> exit name; ""/absent = direct
+	// Exits carries the connection defs for every exit referenced by
+	// Rules or VMExits (keyed by exit name).
+	Exits map[string]ExitDef `json:"exits,omitempty"`
 }
 
 type Agent struct {
@@ -49,11 +52,12 @@ type Agent struct {
 	cfg  *Config
 	upl  string // uplink interface name, e.g. enp0s1
 	br   string
+	exits *exitManager
 	stop chan struct{}
 }
 
 func New(configPath string) *Agent {
-	return &Agent{configPath: configPath, br: "br0", stop: make(chan struct{})}
+	return &Agent{configPath: configPath, br: "br0", exits: newExitManager(), stop: make(chan struct{})}
 }
 
 func (a *Agent) loadConfig() (*Config, error) {
@@ -106,7 +110,11 @@ func (a *Agent) Run() error {
 				dhcpSrv.UpdateMap(a.macIPMap())
 			}
 			if fdns == nil && c.DNSUpstream != "" {
-				f, err := newFakeDNS(c.DNSUpstream)
+				f, err := newFakeDNS(c.DNSUpstream, func(domain string, ips []string) {
+					for _, ip := range ips {
+						a.exits.AddBypassIP(ip)
+					}
+				})
 				if err != nil {
 					log.Printf("fake dns init: %v", err)
 				} else if err := f.Start(c.GwIP); err != nil {
@@ -133,8 +141,26 @@ func (a *Agent) Run() error {
 						}
 					}
 					fproxy.SetPolicy(pol)
+					fproxy.markFor = a.exits.MarkForExit
 				}
 			}
+			// exit tunnels + policy routing converge on every apply
+			vmIPs := map[string]string{}
+			for _, v := range c.VMs {
+				vmIPs[v.Name] = v.IP
+			}
+			var proxiedCIDRs, directCIDRs []string
+			for _, r := range c.Rules {
+				if r.Type != rules.CIDR {
+					continue
+				}
+				if r.Action == rules.Proxy && r.Exit != "" {
+					proxiedCIDRs = append(proxiedCIDRs, r.Pattern+"@"+r.Exit)
+				} else {
+					directCIDRs = append(directCIDRs, r.Pattern)
+				}
+			}
+			a.exits.Sync(c.Exits, c.VMExits, vmIPs, proxiedCIDRs, directCIDRs)
 			lastCfg = raw
 		}
 		a.reconcileLinks()

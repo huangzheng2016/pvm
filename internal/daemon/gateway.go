@@ -277,7 +277,7 @@ func (s *Server) pushGatewayConfig(cl *cluster.Cluster) error {
 	if err != nil {
 		return err
 	}
-	cfg := gatewayConfigFromCluster(cl)
+	cfg := gatewayConfigFromCluster(s, cl)
 	tmp, err := os.CreateTemp("", "pvm-gwcfg-*.json")
 	if err != nil {
 		return err

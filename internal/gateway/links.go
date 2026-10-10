@@ -70,7 +70,7 @@ func (a *Agent) reconcileLinks() {
 	known := map[string]bool{"lo": true, upl: true, br: true}
 	sort.Strings(entries)
 	for _, ifname := range entries {
-		if known[ifname] || strings.HasPrefix(ifname, "veth") || strings.HasPrefix(ifname, "docker") {
+		if known[ifname] || strings.HasPrefix(ifname, "veth") || strings.HasPrefix(ifname, "docker") || strings.HasPrefix(ifname, "pvmwg") {
 			continue
 		}
 		master, _ := ifaceMaster(ifname)

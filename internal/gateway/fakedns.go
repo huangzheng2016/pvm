@@ -1,14 +1,18 @@
 package gateway
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+
+	mdns "github.com/miekg/dns"
 
 	gwdns "github.com/huangzheng2016/pvm/internal/gw/dns"
 	"github.com/huangzheng2016/pvm/internal/gw/rules"
@@ -22,12 +26,14 @@ type fakeDNS struct {
 	pool *gwdns.Pool
 	srv  *gwdns.Server
 
+	onRulesSwap func(*rules.Engine)
+
 	mu     sync.Mutex
 	done   chan struct{}
 	closed bool
 }
 
-func newFakeDNS(upstream string) (*fakeDNS, error) {
+func newFakeDNS(upstream string, onDirectIP func(domain string, ips []string)) (*fakeDNS, error) {
 	pool, err := gwdns.NewPool("198.18.0.0/16", 1<<16)
 	if err != nil {
 		return nil, err
@@ -36,8 +42,15 @@ func newFakeDNS(upstream string) (*fakeDNS, error) {
 	if err != nil {
 		return nil, err
 	}
-	srv := gwdns.NewServer(gwdns.UDPUpstream{Addr: upstream + ":53"}, eng, pool)
-	return &fakeDNS{pool: pool, srv: srv, done: make(chan struct{})}, nil
+	up := gwdns.Upstream(gwdns.UDPUpstream{Addr: upstream + ":53"})
+	if onDirectIP != nil {
+		up = &bypassRecorder{inner: up, engine: func() *rules.Engine { return eng }, cb: onDirectIP}
+	}
+	srv := gwdns.NewServer(up, eng, pool)
+	f := &fakeDNS{pool: pool, srv: srv, done: make(chan struct{})}
+	// the recorder must follow rules hot-swaps
+	f.onRulesSwap = func(newEng *rules.Engine) { eng = newEng }
+	return f, nil
 }
 
 func (f *fakeDNS) Start(bindIP string) error {
@@ -67,6 +80,9 @@ func (f *fakeDNS) SetRules(rs []rules.Rule) error {
 		}
 	}
 	f.srv.SetRules(eng)
+	if f.onRulesSwap != nil {
+		f.onRulesSwap(eng)
+	}
 	return nil
 }
 
@@ -119,3 +135,33 @@ func (f *fakeDNS) Close() {
 }
 
 var _ = log.Printf // keep log import if unused in future edits
+
+// bypassRecorder wraps the DNS upstream: A records of direct-rule
+// answers are reported so the routing layer can pin those IPs to the
+// main table (direct domains bypass the tunnel even for proxied VMs).
+type bypassRecorder struct {
+	inner  gwdns.Upstream
+	engine func() *rules.Engine
+	cb     func(domain string, ips []string)
+}
+
+func (b *bypassRecorder) Exchange(ctx context.Context, req *mdns.Msg) (*mdns.Msg, error) {
+	resp, err := b.inner.Exchange(ctx, req)
+	if err != nil || resp == nil || len(req.Question) == 0 {
+		return resp, err
+	}
+	domain := strings.ToLower(strings.TrimSuffix(req.Question[0].Name, "."))
+	if d, ok := b.engine().Match(domain, nil); !ok || d.Action != rules.Direct || d.Internal {
+		return resp, err
+	}
+	var ips []string
+	for _, rr := range resp.Answer {
+		if a, ok := rr.(*mdns.A); ok {
+			ips = append(ips, a.A.String())
+		}
+	}
+	if len(ips) > 0 {
+		b.cb(domain, ips)
+	}
+	return resp, err
+}

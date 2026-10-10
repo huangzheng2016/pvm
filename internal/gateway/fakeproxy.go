@@ -11,6 +11,8 @@ import (
 	"time"
 	"unsafe"
 
+	"golang.org/x/sys/unix"
+
 	gwpolicy "github.com/huangzheng2016/pvm/internal/gw/policy"
 )
 
@@ -18,12 +20,14 @@ import (
 // fake-ip range: the original destination (a fake IP) is recovered with
 // SO_ORIGINAL_DST, mapped back to its domain, routed by policy and
 // dialed out. Direct flows are resolved via the uplink resolver and
-// dialed from the gateway; proxied flows need a tunnel (M4) and are
-// refused for now.
+// dialed from the gateway; proxied flows carry an SO_MARK that policy
+// routing sends into the exit tunnel, and their DNS is resolved through
+// the tunnel at a public resolver (remote-resolve semantics).
 type fakeProxy struct {
 	policy   *gwpolicy.Engine
 	resolver *net.Resolver
 	vmByIP   func(ip net.IP) string // config lookup, nil-safe
+	markFor  func(exitName string) int // SO_MARK selecting the exit's table; -1 = no tunnel
 
 	mu       sync.Mutex
 	ln       *net.TCPListener
@@ -42,6 +46,7 @@ func newFakeProxy(policy *gwpolicy.Engine, upstream string, vmByIP func(net.IP) 
 			},
 		},
 		vmByIP: vmByIP,
+		markFor: func(string) int { return -1 },
 	}
 }
 
@@ -115,9 +120,7 @@ func (p *fakeProxy) handle(src *net.TCPConn) {
 	case gwpolicy.Direct:
 		p.dialDirect(src, domain, dst.Port)
 	default:
-		// proxied flows need the exit tunnel (M4); refuse fast so the
-		// client does not hang on a blackholed connection.
-		log.Printf("fakeproxy: %s wants exit %q but no tunnel yet (M4); refusing", domain, dec.Exit)
+		p.dialProxy(src, domain, dst.Port, dec.Exit)
 	}
 }
 
@@ -135,10 +138,53 @@ func (p *fakeProxy) dialDirect(src *net.TCPConn, domain string, port int) {
 		return
 	}
 	defer up.Close()
-	if tc, ok := up.(*net.TCPConn); ok {
+	relay(src, up)
+}
+
+// dialProxy carries the flow out via the named exit tunnel. Both the
+// DNS lookup and the target dial are marked, so policy routing sends
+// them through the tunnel: the gateway never resolves proxied domains
+// on the local uplink (remote-resolve semantics).
+func (p *fakeProxy) dialProxy(src *net.TCPConn, domain string, port int, exitName string) {
+	mark := p.markFor(exitName)
+	if mark < 0 {
+		log.Printf("fakeproxy: %s wants exit %q but tunnel is down; refusing fast", domain, exitName)
+		return
+	}
+	markedDial := func(ctx context.Context, network, address string) (net.Conn, error) {
+		d := net.Dialer{Timeout: 8 * time.Second, Control: soMark(mark)}
+		return d.DialContext(ctx, network, address)
+	}
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			return markedDial(ctx, "udp", "1.1.1.1:53")
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ips, err := resolver.LookupIP(ctx, "ip4", domain)
+	cancel()
+	if err != nil || len(ips) == 0 {
+		log.Printf("fakeproxy: remote-resolve %s via %s: %v", domain, exitName, err)
+		return
+	}
+	up, err := markedDial(context.Background(), "tcp4", net.JoinHostPort(ips[0].String(), fmt.Sprint(port)))
+	if err != nil {
+		log.Printf("fakeproxy: dial %s (%s:%d) via %s: %v", domain, ips[0], port, exitName, err)
+		return
+	}
+	defer up.Close()
+	relay(src, up)
+}
+
+// relay shuttles bytes both ways, propagating half-closes.
+func relay(a, b net.Conn) {
+	if tc, ok := a.(*net.TCPConn); ok {
 		tc.SetNoDelay(true)
 	}
-	src.SetNoDelay(true)
+	if tc, ok := b.(*net.TCPConn); ok {
+		tc.SetNoDelay(true)
+	}
 	done := make(chan struct{}, 2)
 	cp := func(to, from net.Conn) {
 		io.Copy(to, from)
@@ -150,10 +196,30 @@ func (p *fakeProxy) dialDirect(src *net.TCPConn, domain string, port int) {
 		}
 		done <- struct{}{}
 	}
-	go cp(up, src)
-	go cp(src, up)
+	go cp(a, b)
+	go cp(b, a)
 	<-done
 	<-done
+}
+
+// soMarkOpt is SO_MARK on linux (x/sys/unix does not export it on
+// darwin; this code runs in the linux gateway guest but compiles on the
+// host too).
+const soMarkOpt = 36
+
+// soMark returns a net.Dialer Control hook setting SO_MARK, which the
+// gateway's policy routing (ip rule fwmark) sends into the exit tunnel.
+func soMark(mark int) func(network, address string, c syscall.RawConn) error {
+	return func(network, address string, c syscall.RawConn) error {
+		var serr error
+		err := c.Control(func(fd uintptr) {
+			serr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, soMarkOpt, mark)
+		})
+		if err != nil {
+			return err
+		}
+		return serr
+	}
 }
 
 func (p *fakeProxy) Close() {
