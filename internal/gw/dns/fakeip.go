@@ -118,6 +118,18 @@ func (p *Pool) Len() int {
 	return len(p.dToI)
 }
 
+// Snapshot returns a copy of all domain -> fake-ip mappings (for status
+// dumps like `pvm dns ls`).
+func (p *Pool) Snapshot() map[string]string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make(map[string]string, len(p.dToI))
+	for d, v := range p.dToI {
+		out[d] = uint32ToIP(v).String()
+	}
+	return out
+}
+
 func uint32ToIP(v uint32) net.IP {
 	var b [4]byte
 	binary.BigEndian.PutUint32(b[:], v)

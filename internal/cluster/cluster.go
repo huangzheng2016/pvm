@@ -13,6 +13,7 @@ import (
 	"sync"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
+	"github.com/huangzheng2016/pvm/internal/gw/rules"
 )
 
 const (
@@ -49,6 +50,10 @@ type Cluster struct {
 	PoolSize int               `json:"pool_size"`
 	VMs      map[string]*VMNet `json:"vms"`
 	Maps     []*PortMap        `json:"maps"`
+	// Rules is the routing rule set (fake-ip engine input); VMExits pins
+	// a VM's default route to an exit-node name.
+	Rules   []rules.Rule     `json:"rules,omitempty"`
+	VMExits map[string]string `json:"vm_exits,omitempty"`
 }
 
 type Store struct {
@@ -103,17 +108,52 @@ func (s *Store) Ensure(id int) (*Cluster, error) {
 	if id < 1 || id > 254 {
 		return nil, fmt.Errorf("cluster id %d out of range", id)
 	}
+	poolBase, err := freePoolWindow(poolBasePerCluster+(id-1)*poolStride, PoolSize)
+	if err != nil {
+		return nil, err
+	}
 	c := &Cluster{
 		ID:       id,
 		CIDR:     fmt.Sprintf("192.168.%d.0/24", id),
 		GwIP:     fmt.Sprintf("192.168.%d.1", id),
 		Gateway:  fmt.Sprintf("%s%d", GatewayVMNamePrefix, id),
-		PoolBase: poolBasePerCluster + (id-1)*poolStride,
+		PoolBase: poolBase,
 		PoolSize: PoolSize,
 		VMs:      map[string]*VMNet{},
 	}
 	s.data.Clusters[id] = c
 	return c, s.save()
+}
+
+// freePoolWindow finds a PoolSize-wide window of loopback ports that is
+// currently bindable (tcp+udp), starting at preferred and striding by
+// PoolSize. The gateway's slirp hostfwd binds the whole window, so
+// colliding with another pvm environment's gateway must be detected
+// here rather than at qemu start.
+func freePoolWindow(preferred, size int) (int, error) {
+	for base := preferred; base+size <= 65535; base += size {
+		if poolWindowFree(base, size) {
+			return base, nil
+		}
+	}
+	return 0, fmt.Errorf("no free %d-wide host port window from %d", size, preferred)
+}
+
+func poolWindowFree(base, size int) bool {
+	for p := base; p < base+size; p++ {
+		addr := fmt.Sprintf("127.0.0.1:%d", p)
+		tc, err := net.Listen("tcp", addr)
+		if err != nil {
+			return false
+		}
+		tc.Close()
+		uc, err := net.ListenPacket("udp", addr)
+		if err != nil {
+			return false
+		}
+		uc.Close()
+	}
+	return true
 }
 
 func (s *Store) Get(id int) *Cluster {

@@ -7,10 +7,17 @@ package gateway
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"os"
 	"sync"
 	"time"
+
+	gwpolicy "github.com/huangzheng2016/pvm/internal/gw/policy"
+	"github.com/huangzheng2016/pvm/internal/gw/rules"
 )
+
+// fakeProxyPort receives the fake-ip TCP flows REDIRECTed by nft.
+const fakeProxyPort = 7893
 
 type VMEntry struct {
 	Name string `json:"name"`
@@ -26,11 +33,13 @@ type MapEntry struct {
 }
 
 type Config struct {
-	CIDR        string     `json:"cidr"`         // e.g. 192.168.1.0/24
-	GwIP        string     `json:"gw_ip"`        // e.g. 192.168.1.1
-	DNSUpstream string     `json:"dns_upstream"` // slirp DNS, 10.0.2.3
-	VMs         []VMEntry  `json:"vms"`
-	Maps        []MapEntry `json:"maps"`
+	CIDR        string            `json:"cidr"`         // e.g. 192.168.1.0/24
+	GwIP        string            `json:"gw_ip"`        // e.g. 192.168.1.1
+	DNSUpstream string            `json:"dns_upstream"` // slirp DNS, 10.0.2.3
+	VMs         []VMEntry         `json:"vms"`
+	Maps        []MapEntry        `json:"maps"`
+	Rules       []rules.Rule      `json:"rules,omitempty"`    // routing rules (fake-ip engine)
+	VMExits     map[string]string `json:"vm_exits,omitempty"` // vm name -> exit name; ""/absent = direct
 }
 
 type Agent struct {
@@ -62,9 +71,10 @@ func (a *Agent) loadConfig() (*Config, error) {
 // Run blocks, converging system state to the config every few seconds.
 func (a *Agent) Run() error {
 	var (
-		dhcpSrv *DHCPServer
-		dnsSrv  *DNSProxy
-		lastCfg []byte
+		dhcpSrv  *DHCPServer
+		fdns     *fakeDNS
+		fproxy   *fakeProxy
+		lastCfg  []byte
 	)
 	for {
 		raw, err := os.ReadFile(a.configPath)
@@ -95,13 +105,35 @@ func (a *Agent) Run() error {
 			} else {
 				dhcpSrv.UpdateMap(a.macIPMap())
 			}
-			if dnsSrv == nil && c.DNSUpstream != "" {
-				dnsSrv = NewDNSProxy(c.GwIP, c.DNSUpstream)
-				if err := dnsSrv.Start(); err != nil {
-					log.Printf("dns: %v", err)
+			if fdns == nil && c.DNSUpstream != "" {
+				f, err := newFakeDNS(c.DNSUpstream)
+				if err != nil {
+					log.Printf("fake dns init: %v", err)
+				} else if err := f.Start(c.GwIP); err != nil {
+					log.Printf("fake dns listen: %v", err)
+					f.Close()
+				} else {
+					fdns = f
+					fdns.RunDumpLoop("/run/pvm/fakeip.json", 3*time.Second)
+					fproxy = newFakeProxy(nil, c.DNSUpstream, a.vmNameByIP)
+					if err := fproxy.Start(fakeProxyPort); err != nil {
+						log.Printf("fake proxy listen: %v", err)
+					}
 				}
-			} else if dnsSrv != nil {
-				dnsSrv.Update(c.GwIP, c.DNSUpstream)
+			}
+			if fdns != nil {
+				if err := fdns.SetRules(c.Rules); err != nil {
+					log.Printf("rules: %v", err)
+				}
+				if fproxy != nil {
+					pol := gwpolicy.New(fdns.Rules(), fdns.Pool())
+					for name, exit := range c.VMExits {
+						if exit != "" && exit != "direct" {
+							pol.SetVMExit(name, exit)
+						}
+					}
+					fproxy.SetPolicy(pol)
+				}
 			}
 			lastCfg = raw
 		}
@@ -112,6 +144,22 @@ func (a *Agent) Run() error {
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+// vmNameByIP maps a cluster source IP back to the VM name from config.
+func (a *Agent) vmNameByIP(ip net.IP) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.cfg == nil {
+		return ""
+	}
+	want := ip.String()
+	for _, v := range a.cfg.VMs {
+		if v.IP == want {
+			return v.Name
+		}
+	}
+	return ""
 }
 
 func (a *Agent) macIPMap() map[string]VMEntry {

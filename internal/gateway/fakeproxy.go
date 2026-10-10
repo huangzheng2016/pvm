@@ -1,0 +1,200 @@
+package gateway
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"net"
+	"sync"
+	"syscall"
+	"time"
+	"unsafe"
+
+	gwpolicy "github.com/huangzheng2016/pvm/internal/gw/policy"
+)
+
+// fakeProxy terminates TCP connections the nft rules REDIRECT from the
+// fake-ip range: the original destination (a fake IP) is recovered with
+// SO_ORIGINAL_DST, mapped back to its domain, routed by policy and
+// dialed out. Direct flows are resolved via the uplink resolver and
+// dialed from the gateway; proxied flows need a tunnel (M4) and are
+// refused for now.
+type fakeProxy struct {
+	policy   *gwpolicy.Engine
+	resolver *net.Resolver
+	vmByIP   func(ip net.IP) string // config lookup, nil-safe
+
+	mu       sync.Mutex
+	ln       *net.TCPListener
+	closed   bool
+	wg       sync.WaitGroup
+}
+
+func newFakeProxy(policy *gwpolicy.Engine, upstream string, vmByIP func(net.IP) string) *fakeProxy {
+	return &fakeProxy{
+		policy: policy,
+		resolver: &net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+				d := net.Dialer{Timeout: 5 * time.Second}
+				return d.DialContext(ctx, "udp", upstream+":53")
+			},
+		},
+		vmByIP: vmByIP,
+	}
+}
+
+// SetPolicy swaps the flow policy on config reload.
+func (p *fakeProxy) SetPolicy(eng *gwpolicy.Engine) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.policy = eng
+}
+
+func (p *fakeProxy) curPolicy() *gwpolicy.Engine {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.policy
+}
+
+func (p *fakeProxy) Start(port int) error {
+	ln, err := net.ListenTCP("tcp4", &net.TCPAddr{Port: port})
+	if err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.ln = ln
+	p.mu.Unlock()
+	p.wg.Add(1)
+	go p.serve(ln)
+	return nil
+}
+
+func (p *fakeProxy) serve(ln *net.TCPListener) {
+	defer p.wg.Done()
+	for {
+		conn, err := ln.AcceptTCP()
+		if err != nil {
+			p.mu.Lock()
+			closed := p.closed
+			p.mu.Unlock()
+			if closed {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+			continue
+		}
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			p.handle(conn)
+		}()
+	}
+}
+
+func (p *fakeProxy) handle(src *net.TCPConn) {
+	defer src.Close()
+	dst, err := originalDst(src)
+	if err != nil {
+		log.Printf("fakeproxy: SO_ORIGINAL_DST: %v", err)
+		return
+	}
+	pol := p.curPolicy()
+	domain, ok := pol.LookupByFakeIP(dst.IP)
+	if !ok {
+		log.Printf("fakeproxy: %s not in fake-ip pool (expired?), dropping", dst.IP)
+		return
+	}
+	vmName := ""
+	if p.vmByIP != nil {
+		vmName = p.vmByIP(src.RemoteAddr().(*net.TCPAddr).IP)
+	}
+	dec := pol.DecideFlow(domain, dst.IP, vmName)
+	switch dec.Route {
+	case gwpolicy.Direct:
+		p.dialDirect(src, domain, dst.Port)
+	default:
+		// proxied flows need the exit tunnel (M4); refuse fast so the
+		// client does not hang on a blackholed connection.
+		log.Printf("fakeproxy: %s wants exit %q but no tunnel yet (M4); refusing", domain, dec.Exit)
+	}
+}
+
+func (p *fakeProxy) dialDirect(src *net.TCPConn, domain string, port int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	ips, err := p.resolver.LookupIP(ctx, "ip4", domain)
+	cancel()
+	if err != nil || len(ips) == 0 {
+		log.Printf("fakeproxy: resolve %s: %v", domain, err)
+		return
+	}
+	up, err := net.DialTimeout("tcp4", net.JoinHostPort(ips[0].String(), fmt.Sprint(port)), 10*time.Second)
+	if err != nil {
+		log.Printf("fakeproxy: dial %s (%s:%d): %v", domain, ips[0], port, err)
+		return
+	}
+	defer up.Close()
+	if tc, ok := up.(*net.TCPConn); ok {
+		tc.SetNoDelay(true)
+	}
+	src.SetNoDelay(true)
+	done := make(chan struct{}, 2)
+	cp := func(to, from net.Conn) {
+		io.Copy(to, from)
+		if tc, ok := from.(*net.TCPConn); ok {
+			tc.CloseRead()
+		}
+		if tc, ok := to.(*net.TCPConn); ok {
+			tc.CloseWrite()
+		}
+		done <- struct{}{}
+	}
+	go cp(up, src)
+	go cp(src, up)
+	<-done
+	<-done
+}
+
+func (p *fakeProxy) Close() {
+	p.mu.Lock()
+	p.closed = true
+	ln := p.ln
+	p.mu.Unlock()
+	if ln != nil {
+		ln.Close()
+	}
+	p.wg.Wait()
+}
+
+const soOriginalDst = 80 // SO_ORIGINAL_DST, linux netfilter
+
+// originalDst recovers the NAT destination of a REDIRECTed connection:
+// the fake IP the client actually dialed.
+func originalDst(conn *net.TCPConn) (*net.TCPAddr, error) {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return nil, err
+	}
+	var addr *net.TCPAddr
+	var serr error
+	if err := raw.Control(func(fd uintptr) {
+		var mreq [16]byte
+		size := uint32(len(mreq))
+		// getsockopt(SOL_IP, SO_ORIGINAL_DST) -> sockaddr_in
+		_, _, errno := syscall.Syscall6(syscall.SYS_GETSOCKOPT, fd, 0, soOriginalDst,
+			uintptr(unsafe.Pointer(&mreq[0])), uintptr(unsafe.Pointer(&size)), 0)
+		if errno != 0 {
+			serr = errno
+			return
+		}
+		port := int(mreq[2])<<8 | int(mreq[3])
+		addr = &net.TCPAddr{IP: net.IPv4(mreq[4], mreq[5], mreq[6], mreq[7]), Port: port}
+	}); err != nil {
+		return nil, err
+	}
+	if serr != nil {
+		return nil, serr
+	}
+	return addr, nil
+}

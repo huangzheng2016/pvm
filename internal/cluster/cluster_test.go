@@ -17,7 +17,9 @@ func TestEnsureAndIPAM(t *testing.T) {
 	if c1.CIDR != "192.168.1.0/24" || c1.GwIP != "192.168.1.1" || c1.Gateway != "pvm-gw1" {
 		t.Errorf("cluster fields: %+v", c1)
 	}
-	if c1.PoolBase != 30000 || c1.PoolSize != 100 {
+	// PoolBase depends on host port availability (another pvm gateway may
+	// hold the preferred window), so assert the window shape only.
+	if c1.PoolBase < 30000 || c1.PoolBase%100 != 0 || c1.PoolSize != 100 {
 		t.Errorf("pool: %+v", c1)
 	}
 	v1, _ := s.AddVM(1, "dev1")
@@ -59,11 +61,12 @@ func TestMapPool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m1.PoolPort != 30000 {
-		t.Errorf("pool port: %d", m1.PoolPort)
+	c1, _ := s.Ensure(1)
+	if m1.PoolPort != c1.PoolBase {
+		t.Errorf("pool port: %d (base %d)", m1.PoolPort, c1.PoolBase)
 	}
 	m2, _ := s.AddMap(1, "dev1", "192.168.1.10", 8081, 81, "tcp")
-	if m2.PoolPort != 30001 {
+	if m2.PoolPort != c1.PoolBase+1 {
 		t.Errorf("pool port 2: %d", m2.PoolPort)
 	}
 	if _, err := s.AddMap(1, "dev1", "192.168.1.10", 8080, 90, "tcp"); err == nil {
@@ -73,7 +76,7 @@ func TestMapPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	m3, _ := s.AddMap(1, "dev1", "192.168.1.10", 8082, 82, "tcp")
-	if m3.PoolPort != 30000 {
+	if m3.PoolPort != c1.PoolBase {
 		t.Errorf("pool port not reused: %d", m3.PoolPort)
 	}
 	// udp gets its own pool port (separate dnat rule)

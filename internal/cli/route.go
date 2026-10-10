@@ -1,0 +1,143 @@
+package cli
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"strconv"
+	"text/tabwriter"
+
+	"github.com/huangzheng2016/pvm/internal/daemon"
+)
+
+type ruleView struct {
+	Type    string `json:"type"`
+	Pattern string `json:"pattern"`
+	Action  string `json:"action"`
+	Exit    string `json:"exit,omitempty"`
+}
+
+type routeListView struct {
+	Rules   []ruleView       `json:"rules"`
+	VMExits map[string]string `json:"vm_exits"`
+}
+
+// CmdRoute implements:
+//
+//	pvm route ls
+//	pvm route add direct [--domain-suffix|--domain-prefix|--domain-keyword|--cidr] <value>
+//	pvm route add proxy  [--domain-suffix|...] <value> --via <exit>
+//	pvm route rm <index>
+//	pvm route <vm> --via <exit|direct>
+func CmdRoute(args []string) int {
+	p, err := mustPaths()
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	if len(args) < 1 {
+		return routeUsage()
+	}
+	c, err := daemon.Ensure(p)
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	switch args[0] {
+	case "ls":
+		var v routeListView
+		if err := c.Get("/v1/routes", &v); err != nil {
+			return fatalf("%v", err)
+		}
+		tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+		fmt.Fprintln(tw, "INDEX\tTYPE\tPATTERN\tACTION\tVIA")
+		for i, r := range v.Rules {
+			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", i, r.Type, r.Pattern, r.Action, r.Exit)
+		}
+		if len(v.VMExits) > 0 {
+			fmt.Fprintln(tw, "---\t\t\t\t")
+			for vm, exit := range v.VMExits {
+				fmt.Fprintf(tw, "\tvm\t%s\tproxy\t%s\n", vm, exit)
+			}
+		}
+		tw.Flush()
+		return 0
+	case "add":
+		return routeAdd(c, args[1:])
+	case "rm":
+		if len(args) < 2 {
+			return routeUsage()
+		}
+		if _, err := strconv.Atoi(args[1]); err != nil {
+			return fatalf("index must be a number")
+		}
+		if err := c.Delete("/v1/routes/"+args[1], nil); err != nil {
+			return fatalf("%v", err)
+		}
+		fmt.Printf("removed rule %s\n", args[1])
+		return 0
+	default:
+		// pvm route <vm> --via <exit|direct>
+		fs := flag.NewFlagSet("route", flag.ContinueOnError)
+		via := fs.String("via", "", "exit-node name, or direct")
+		if err := fs.Parse(args[1:]); err != nil {
+			return fatalf("%v", err)
+		}
+		if *via == "" {
+			return routeUsage()
+		}
+		if err := c.Post("/v1/vms/"+args[0]+"/route", map[string]string{"via": *via}, nil); err != nil {
+			return fatalf("%v", err)
+		}
+		fmt.Printf("%s: default route -> %s\n", args[0], *via)
+		return 0
+	}
+}
+
+func routeAdd(c *daemon.Client, args []string) int {
+	if len(args) < 1 || (args[0] != "direct" && args[0] != "proxy") {
+		return routeUsage()
+	}
+	action := args[0]
+	fs := flag.NewFlagSet("route add", flag.ContinueOnError)
+	suffix := fs.String("domain-suffix", "", "match domain suffix (example.com covers a.example.com)")
+	prefix := fs.String("domain-prefix", "", "match domain prefix")
+	keyword := fs.String("domain-keyword", "", "match domain substring")
+	cidr := fs.String("cidr", "", "match destination CIDR (10.0.0.0/8)")
+	via := fs.String("via", "", "exit-node name (required for proxy)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return fatalf("%v", err)
+	}
+	typ, pattern := "", ""
+	for _, e := range []struct{ t, v string }{
+		{"domain-suffix", *suffix}, {"domain-prefix", *prefix},
+		{"domain-keyword", *keyword}, {"cidr", *cidr},
+	} {
+		if e.v != "" {
+			if typ != "" {
+				return fatalf("only one match type per rule")
+			}
+			typ, pattern = e.t, e.v
+		}
+	}
+	if typ == "" {
+		return routeUsage()
+	}
+	if action == "proxy" && *via == "" {
+		return fatalf("proxy rules need --via <exit>")
+	}
+	body := map[string]string{"type": typ, "pattern": pattern, "action": action, "via": *via}
+	var resp map[string]any
+	if err := c.Post("/v1/routes", body, &resp); err != nil {
+		return fatalf("%v", err)
+	}
+	fmt.Printf("rule %v: %s %s -> %s %s\n", resp["index"], typ, pattern, action, *via)
+	return 0
+}
+
+func routeUsage() int {
+	fmt.Fprintln(os.Stderr, `usage:
+  pvm route ls
+  pvm route add direct|proxy [--domain-suffix|--domain-prefix|--domain-keyword|--cidr] <value> [--via <exit>]
+  pvm route rm <index>
+  pvm route <vm> --via <exit|direct>`)
+	return 2
+}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/huangzheng2016/pvm/internal/cluster"
+	"github.com/huangzheng2016/pvm/internal/gw/rules"
 )
 
 // gatewayConfigFromCluster renders the /etc/pvm/gateway.json payload.
@@ -20,13 +21,16 @@ func gatewayConfigFromCluster(cl *cluster.Cluster) []byte {
 		Proto     string `json:"proto"`
 	}
 	doc := struct {
-		CIDR        string     `json:"cidr"`
-		GwIP        string     `json:"gw_ip"`
-		DNSUpstream string     `json:"dns_upstream"`
-		VMs         []vmEntry  `json:"vms"`
-		Maps        []mapEntry `json:"maps"`
+		CIDR        string            `json:"cidr"`
+		GwIP        string            `json:"gw_ip"`
+		DNSUpstream string            `json:"dns_upstream"`
+		VMs         []vmEntry         `json:"vms"`
+		Maps        []mapEntry        `json:"maps"`
+		Rules       []rules.Rule      `json:"rules,omitempty"`
+		VMExits     map[string]string `json:"vm_exits,omitempty"`
 	}{
 		CIDR: cl.CIDR, GwIP: cl.GwIP, DNSUpstream: "10.0.2.3",
+		Rules: cl.Rules, VMExits: cl.VMExits,
 	}
 	for _, v := range cl.VMs {
 		doc.VMs = append(doc.VMs, vmEntry{Name: v.Name, MAC: v.MAC, IP: v.IP})

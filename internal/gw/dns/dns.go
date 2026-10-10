@@ -32,13 +32,13 @@ func (u UDPUpstream) Exchange(ctx context.Context, req *mdns.Msg) (*mdns.Msg, er
 
 type Server struct {
 	upstream Upstream
-	rules    *rules.Engine
 	pool     *Pool
-	static   map[string]net.IP
 	fakeTTL  uint32
 
-	mu   sync.Mutex
-	svrs []*mdns.Server
+	mu     sync.RWMutex
+	rules  *rules.Engine
+	static map[string]net.IP
+	svrs   []*mdns.Server
 }
 
 func NewServer(upstream Upstream, eng *rules.Engine, pool *Pool) *Server {
@@ -49,6 +49,21 @@ func NewServer(upstream Upstream, eng *rules.Engine, pool *Pool) *Server {
 		static:   make(map[string]net.IP),
 		fakeTTL:  5,
 	}
+}
+
+// SetRules hot-swaps the routing rules engine; in-flight queries finish
+// with the old engine.
+func (s *Server) SetRules(eng *rules.Engine) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rules = eng
+}
+
+// Rules returns the current rules engine.
+func (s *Server) Rules() *rules.Engine {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.rules
 }
 
 // SetStatic pins an internal name (e.g. gw.pvm.internal) to a fixed IP.
@@ -112,7 +127,7 @@ func (s *Server) serve(w mdns.ResponseWriter, req *mdns.Msg) {
 }
 
 func (s *Server) answerHost(req, resp *mdns.Msg, name string, qtype uint16) {
-	if s.rules.IsInternal(name) {
+	if s.Rules().IsInternal(name) {
 		// internal names never go upstream: static record or NODATA
 		if ip, ok := s.static[name]; ok && qtype == mdns.TypeA {
 			resp.Answer = append(resp.Answer, &mdns.A{
@@ -122,7 +137,7 @@ func (s *Server) answerHost(req, resp *mdns.Msg, name string, qtype uint16) {
 		}
 		return
 	}
-	if d, ok := s.rules.Match(name, nil); ok && d.Action == rules.Direct && !d.Internal {
+	if d, ok := s.Rules().Match(name, nil); ok && d.Action == rules.Direct && !d.Internal {
 		s.forward(req, resp)
 		return
 	}

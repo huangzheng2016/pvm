@@ -160,6 +160,11 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/maps", s.handleMapList)
 	mux.HandleFunc("POST /v1/maps", s.handleMapAdd)
 	mux.HandleFunc("DELETE /v1/maps/{port}/{proto}", s.handleMapRemove)
+	mux.HandleFunc("GET /v1/routes", s.handleRouteList)
+	mux.HandleFunc("POST /v1/routes", s.handleRouteAdd)
+	mux.HandleFunc("DELETE /v1/routes/{index}", s.handleRouteRemove)
+	mux.HandleFunc("POST /v1/vms/{name}/route", s.handleVMRoute)
+	mux.HandleFunc("GET /v1/dns", s.handleDNSList)
 	mux.HandleFunc("POST /v1/shutdown", s.handleShutdown)
 	return mux
 }
