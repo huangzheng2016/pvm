@@ -26,7 +26,7 @@ WantedBy=multi-user.target
 // ensureAgentAsync pushes the guest agent once ssh is reachable. Runs
 // in the background; failures are logged, never fatal to the VM.
 func (s *Server) ensureAgentAsync(spec *vm.Spec) {
-	bin := s.P.AgentBin(spec.Arch)
+	bin := s.P.AgentBin()
 	if _, err := os.Stat(bin); err != nil {
 		log.Printf("agent: %s not packed (run script/build.sh); skipping agent install for %s", bin, spec.Name)
 		return
