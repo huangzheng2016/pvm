@@ -19,6 +19,7 @@ vm:
   rm            stop and delete a vm
   ssh           ssh into a vm: pvm ssh dev1 [cmd...]
   snapshot      ram snapshots: create <name> | ls [name] | rm <name>
+  exec          run a command via the guest agent (no network needed): pvm exec dev1 cmd...
 
 image:
   image fetch   download a base image (ubuntu:24.04, debian:13)
@@ -70,9 +71,13 @@ func main() {
 		code = cli.CmdSnapshotPipeOut(args)
 	case "__snapshot-pipe-in":
 		code = cli.CmdSnapshotPipeIn(args)
+	case "exec":
+		code = cli.CmdExec(args)
+	case "agent":
+		code = cli.CmdAgent(args)
 	case "version", "--version", "-v":
 		fmt.Println(buildinfo.Version)
-	case "map", "route", "dns", "kasm", "agent", "gateway":
+	case "map", "route", "dns", "kasm", "gateway":
 		fmt.Printf("%s: not implemented yet (M2+)\n", os.Args[1])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])

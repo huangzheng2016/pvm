@@ -1,2 +1,4 @@
 .bin/
+pvm
+internal/assets/packed/*.zst
 .vps-test-env

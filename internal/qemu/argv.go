@@ -22,6 +22,7 @@ type VMConfig struct {
 	ConsoleLog  string
 	QMPSock     string
 	SerialSock  string
+	AgentSock   string // unix socket for the virtio-serial agent channel; empty disables
 	SSHHostPort int
 	ShareDir    string // default ~/.pvm/share mounted at /share
 	ExtraMounts []Mount
@@ -77,6 +78,14 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 	)
 	if c.Incoming != "" {
 		args = append(args, "-incoming", c.Incoming)
+	}
+
+	if c.AgentSock != "" {
+		args = append(args,
+			"-device", "virtio-serial-pci",
+			"-chardev", fmt.Sprintf("socket,id=pvmagent,path=%s,server=on,wait=off", c.AgentSock),
+			"-device", "virtserialport,chardev=pvmagent,name=pvm.agent",
+		)
 	}
 
 	fs := []Mount{{Tag: "pvmshare", HostPath: c.ShareDir}}
