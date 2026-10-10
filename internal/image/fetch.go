@@ -11,9 +11,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
+
+	"github.com/huangzheng2016/pvm/internal/native"
 )
 
 type Ref struct {
@@ -26,35 +27,23 @@ type Ref struct {
 	SumKind string // sha256 | sha512
 }
 
-// Resolve maps "ubuntu:24.04" / "debian:13" + GOARCH to download URLs.
-// Only the host's native architecture is accepted.
-func Resolve(spec, arch string) (*Ref, error) {
-	if arch != runtime.GOARCH {
-		return nil, fmt.Errorf("unsupported image architecture %q (host is %s)", arch, runtime.GOARCH)
-	}
+// Resolve maps "ubuntu:24.04" / "debian:13" to native download URLs.
+func Resolve(spec string) (*Ref, error) {
 	distro, version, ok := strings.Cut(spec, ":")
 	if !ok {
 		return nil, fmt.Errorf("image spec must be distro:version, got %q", spec)
 	}
-	var qarch string
-	switch arch {
-	case "arm64":
-		qarch = "arm64"
-	case "amd64":
-		qarch = "amd64"
-	default:
-		return nil, fmt.Errorf("unsupported arch %q", arch)
-	}
+	qarch := native.Arch
 	switch distro {
 	case "ubuntu":
 		base := fmt.Sprintf("https://cloud-images.ubuntu.com/releases/%s/release", version)
 		file := fmt.Sprintf("ubuntu-%s-server-cloudimg-%s.img", version, qarch)
-		return &Ref{Distro: distro, Version: version, Arch: arch,
+		return &Ref{Distro: distro, Version: version, Arch: native.Arch,
 			URL: base + "/" + file, SumsURL: base + "/SHA256SUMS", SumFile: file, SumKind: "sha256"}, nil
 	case "debian":
 		base := fmt.Sprintf("https://cloud.debian.org/images/cloud/%s/latest", debianCodename(version))
 		file := fmt.Sprintf("debian-%s-generic-%s.qcow2", version, qarch)
-		return &Ref{Distro: distro, Version: version, Arch: arch,
+		return &Ref{Distro: distro, Version: version, Arch: native.Arch,
 			URL: base + "/" + file, SumsURL: base + "/SHA512SUMS", SumFile: file, SumKind: "sha512"}, nil
 	}
 	return nil, fmt.Errorf("unknown distro %q (supported: ubuntu, debian)", distro)

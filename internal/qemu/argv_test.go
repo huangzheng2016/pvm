@@ -1,14 +1,15 @@
 package qemu
 
 import (
-	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/huangzheng2016/pvm/internal/native"
 )
 
-func testCfg(arch string, accel Accel) *VMConfig {
+func testCfg(accel Accel) *VMConfig {
 	return &VMConfig{
-		Name: "t1", Arch: arch, CPUs: 2, MemMB: 2048,
+		Name: "t1", CPUs: 2, MemMB: 2048,
 		DiskPath: "/d/disk.qcow2", SeedPath: "/d/seed.iso", VarsPath: "/d/vars.fd",
 		ConsoleLog: "/d/console.log", QMPSock: "/d/qmp.sock", SerialSock: "/d/serial.sock",
 		Network:     Network{Mode: NetSlirp, SSHHostPort: 10022},
@@ -22,7 +23,7 @@ func joined(args []string) string { return strings.Join(args, " ") }
 
 func TestBuildArgsNativeHVF(t *testing.T) {
 	tc := &Toolchain{FirmwareDir: "/fw"}
-	args, err := BuildArgs(tc, testCfg(runtime.GOARCH, AccelHVF))
+	args, err := BuildArgs(tc, testCfg(AccelHVF))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +35,7 @@ func TestBuildArgsNativeHVF(t *testing.T) {
 		"security_model=none",
 		"-qmp unix:/d/qmp.sock,server=on,wait=off",
 	}
-	if runtime.GOARCH == "arm64" {
+	if native.Arch == "arm64" {
 		want = append(want, "-machine virt", "if=pflash,format=raw,readonly=on,file=/fw/edk2-aarch64-code.fd", "if=pflash,format=raw,file=/d/vars.fd")
 	} else {
 		want = append(want, "-machine q35")
@@ -48,12 +49,12 @@ func TestBuildArgsNativeHVF(t *testing.T) {
 
 func TestBuildArgsNativeTCG(t *testing.T) {
 	tc := &Toolchain{FirmwareDir: "/fw"}
-	args, err := BuildArgs(tc, testCfg(runtime.GOARCH, AccelTCG))
+	args, err := BuildArgs(tc, testCfg(AccelTCG))
 	if err != nil {
 		t.Fatal(err)
 	}
 	j := joined(args)
-	if runtime.GOARCH == "amd64" {
+	if native.Arch == "amd64" {
 		if strings.Contains(j, "pflash") {
 			t.Errorf("amd64 SeaBIOS boot must not use pflash: %s", j)
 		}
@@ -70,21 +71,11 @@ func TestBuildArgsNativeTCG(t *testing.T) {
 	}
 }
 
-func TestBuildArgsRejectsNonNative(t *testing.T) {
-	other := "amd64"
-	if runtime.GOARCH == other {
-		other = "arm64"
-	}
-	if _, err := BuildArgs(&Toolchain{}, testCfg(other, AccelHVF)); err == nil {
-		t.Fatalf("expected non-native architecture %q to be rejected on %s", other, runtime.GOARCH)
-	}
-}
-
 func TestBuildArgsNativeNeedsFirmware(t *testing.T) {
-	if runtime.GOARCH != "arm64" {
+	if native.Arch != "arm64" {
 		t.Skip("UEFI firmware check is arm64-specific")
 	}
-	_, err := BuildArgs(&Toolchain{}, testCfg(runtime.GOARCH, AccelHVF))
+	_, err := BuildArgs(&Toolchain{}, testCfg(AccelHVF))
 	if err == nil {
 		t.Fatal("expected error when firmware dir unknown")
 	}
@@ -112,18 +103,12 @@ func TestParseAccel(t *testing.T) {
 }
 
 func TestQemuArch(t *testing.T) {
-	for _, tc := range []struct{ goarch, want string }{
-		{"amd64", "x86_64"},
-		{"arm64", "aarch64"},
-	} {
-		got, err := QemuArch(tc.goarch)
-		if runtime.GOARCH == tc.goarch {
-			if err != nil || got != tc.want {
-				t.Fatalf("QemuArch(%q) = %q, %v; want %q", tc.goarch, got, err, tc.want)
-			}
-		} else if err == nil {
-			t.Fatalf("QemuArch(%q) must be rejected on %s", tc.goarch, runtime.GOARCH)
-		}
+	want := "x86_64"
+	if native.Arch == "arm64" {
+		want = "aarch64"
+	}
+	if got := QemuArch(); got != want {
+		t.Fatalf("QemuArch() = %q, want %q", got, want)
 	}
 }
 
@@ -158,7 +143,7 @@ func TestNetArgsCluster(t *testing.T) {
 }
 
 func TestBuildArgsSmbiosSpoof(t *testing.T) {
-	c := testCfg(runtime.GOARCH, AccelHVF)
+	c := testCfg(AccelHVF)
 	c.SmbiosSpoof = true
 	args, err := BuildArgs(&Toolchain{FirmwareDir: "/fw"}, c)
 	if err != nil {
@@ -168,7 +153,7 @@ func TestBuildArgsSmbiosSpoof(t *testing.T) {
 	if !strings.Contains(j, "-smbios type=1,manufacturer=Dell Inc.,product=Inspiron 15 5510") {
 		t.Errorf("spoof args missing: %s", j)
 	}
-	args, err = BuildArgs(&Toolchain{FirmwareDir: "/fw"}, testCfg(runtime.GOARCH, AccelHVF))
+	args, err = BuildArgs(&Toolchain{FirmwareDir: "/fw"}, testCfg(AccelHVF))
 	if err != nil {
 		t.Fatal(err)
 	}

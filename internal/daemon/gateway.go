@@ -6,20 +6,19 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/cluster"
+	"github.com/huangzheng2016/pvm/internal/native"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
-// gatewayAgentBinary returns the unpacked guest agent for the host arch.
+// gatewayAgentBinary returns the unpacked native gateway agent.
 func (s *Server) gatewayAgentBinary() (string, error) {
-	arch := runtime.GOARCH
-	p := filepath.Join(s.P.Runtime, "gateway-linux-"+arch)
+	p := filepath.Join(s.P.Runtime, native.GuestBinary("gateway"))
 	if _, err := os.Stat(p); err != nil {
 		return "", fmt.Errorf("gateway agent %s not unpacked; rebuild with script/build.sh", p)
 	}
@@ -167,13 +166,13 @@ func (s *Server) createGatewayVM(cl *cluster.Cluster) (*vm.Spec, error) {
 	if err != nil {
 		return nil, err
 	}
-	base := filepath.Join(s.P.Images, fmt.Sprintf("ubuntu-24.04-%s.qcow2", runtime.GOARCH))
+	base := filepath.Join(s.P.Images, fmt.Sprintf("ubuntu-24.04-%s.qcow2", native.Arch))
 	if _, err := os.Stat(base); err != nil {
 		return nil, fmt.Errorf("gateway needs the ubuntu:24.04 base image; run `pvm image fetch ubuntu:24.04`")
 	}
 	spec := &vm.Spec{
 		Name: cl.Gateway, Image: "ubuntu:24.04", Role: "gateway",
-		User: "pvmgw", GuestUID: os.Getuid(), Arch: runtime.GOARCH,
+		User: "pvmgw", GuestUID: os.Getuid(),
 		CPUs: 1, MemMB: 512, DiskGB: 10,
 		SSHPort: port, BaseDisk: base, ClusterID: cl.ID,
 	}

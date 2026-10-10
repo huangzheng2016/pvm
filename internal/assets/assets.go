@@ -15,11 +15,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/klauspost/compress/zstd"
 
 	"github.com/huangzheng2016/pvm/internal/buildinfo"
+	"github.com/huangzheng2016/pvm/internal/native"
 )
 
 type manifestEntry struct {
@@ -61,8 +61,9 @@ func Unpack(dir string) error {
 	defer dec.Close()
 
 	for _, e := range entries {
-		if !nativeAssetAllowed(e.Path) {
-			return fmt.Errorf("unsupported asset %q for native architecture %s", e.Path, runtime.GOARCH)
+		if e.Path != native.GuestBinary("agent") && e.Path != native.GuestBinary("gateway") {
+			return fmt.Errorf("unsupported embedded asset %q (only native agent/gateway binaries are allowed)", e.Path)
+		}
 		}
 		raw, err := packed.ReadFile("packed/" + e.Path + ".zst")
 		if err != nil {

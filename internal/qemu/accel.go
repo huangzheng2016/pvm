@@ -40,7 +40,7 @@ func Detect(t *Toolchain, goos string) Accel {
 		if t != nil && t.Bundled {
 			return AccelHVF
 		}
-		if probe(t, "-machine", "virt,accel=hvf") || probe(t, "-machine", "q35,accel=hvf") {
+		if probe(t, "-machine", "virt,accel=hvf") {
 			return AccelHVF
 		}
 	case "linux":

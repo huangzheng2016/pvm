@@ -1,7 +1,11 @@
 [
   {
     "path": "agent-linux-arm64",
+<<<<<<< HEAD
     "sha256": "8066922dfe123d99a9672d79dccdcd6f84e7f5b190eeef700cde4b31096b1786",
+=======
+    "sha256": "c15bf287fd0c86d1e14d46a815709467519e47604d82f9de19603b41f5ce556b",
+>>>>>>> wt/native-code
     "mode": 493
   },
   {

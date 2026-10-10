@@ -15,6 +15,7 @@ import (
 	"github.com/huangzheng2016/pvm/internal/daemon"
 	"github.com/huangzheng2016/pvm/internal/image"
 	"github.com/huangzheng2016/pvm/internal/keys"
+	"github.com/huangzheng2016/pvm/internal/native"
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 )
@@ -53,7 +54,7 @@ func CmdImage(args []string) int {
 		if len(args) < 2 {
 			return fatalf("usage: pvm image fetch <distro:version>")
 		}
-		ref, err := image.Resolve(args[1], runtime.GOARCH)
+		ref, err := image.Resolve(args[1])
 		if err != nil {
 			return fatalf("%v", err)
 		}
@@ -108,7 +109,7 @@ func CmdImage(args []string) int {
 }
 
 func cmdImageBuild(p *paths.Paths, spec string, keep bool, cpus, mem, disk int) int {
-	tc, err := qemu.Find(p.Runtime, runtime.GOARCH)
+	tc, err := qemu.Find(p.Runtime)
 	if err != nil {
 		return fatalf("%v", err)
 	}
@@ -218,7 +219,7 @@ func describeImage(spec string, p *paths.Paths) {
 	var size int64
 	distro, version, ok := strings.Cut(spec, ":")
 	if ok {
-		if g := image.LatestGolden(p.Images, distro, version, runtime.GOARCH); g != nil {
+		if g := image.LatestGolden(p.Images, distro, version); g != nil {
 			kind = fmt.Sprintf("golden v%d", g.Version)
 			file = g.File
 			if fi, err := os.Stat(p.Images + "/golden/" + g.File); err == nil {
@@ -227,7 +228,7 @@ func describeImage(spec string, p *paths.Paths) {
 		}
 	}
 	if file == "" {
-		stem := strings.ReplaceAll(spec, ":", "-") + "-" + runtime.GOARCH + ".qcow2"
+		stem := strings.ReplaceAll(spec, ":", "-") + "-" + native.Arch + ".qcow2"
 		file = stem
 		if fi, err := os.Stat(p.Images + "/" + stem); err == nil {
 			size = fi.Size()

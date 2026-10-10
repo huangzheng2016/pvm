@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
+	"github.com/huangzheng2016/pvm/internal/native"
 )
 
 // RAM snapshot layout inside the VM directory:
@@ -81,9 +82,9 @@ func (m *SnapshotManifest) save(vmDir string) error {
 // checkMatch verifies a manifest against the VM config it would restore
 // into; a heterogeneous restore is refused outright.
 func (m *SnapshotManifest) checkMatch(c *VMConfig) error {
-	if m.Arch != c.Arch || m.CPUs != c.CPUs || m.MemMB != c.MemMB {
+	if m.Arch != native.Arch || m.CPUs != c.CPUs || m.MemMB != c.MemMB {
 		return fmt.Errorf("snapshot mismatch: snap %s/%dc/%dMB vs vm %s/%dc/%dMB; delete the snapshot or recreate the vm identically",
-			m.Arch, m.CPUs, m.MemMB, c.Arch, c.CPUs, c.MemMB)
+			m.Arch, m.CPUs, m.MemMB, native.Arch, c.CPUs, c.MemMB)
 	}
 	if m.Accel != c.Accel {
 		fallback, ok := m.Accel.Fallback()
@@ -205,7 +206,7 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 
 	m := &SnapshotManifest{
 		Name:       in.Cfg.Name,
-		Arch:       in.Cfg.Arch,
+		Arch:       native.Arch,
 		CPUs:       in.Cfg.CPUs,
 		MemMB:      in.Cfg.MemMB,
 		Accel:      st.Accel,
@@ -259,7 +260,7 @@ func (in *Instance) PrepareRestore(vmDir string) (*SnapshotManifest, error) {
 	if err := m.checkMatch(&in.Cfg); err != nil {
 		return nil, err
 	}
-	if in.Toolchain != nil && in.Toolchain.BrokenLiveRestore(in.Cfg.Arch, in.Cfg.Accel) {
+	if in.Toolchain != nil && in.Toolchain.BrokenLiveRestore(in.Cfg.Accel) {
 		return nil, fmt.Errorf("qemu 11.0.0 has an hvf/arm64 live-restore regression; upgrade QEMU to >= 11.1.1 (brew upgrade qemu) or use the bundled runtime")
 	}
 	sp := SnapPaths(vmDir)

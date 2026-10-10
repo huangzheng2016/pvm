@@ -13,14 +13,14 @@ import (
 
 func TestBrokenLiveRestoreUnknownVersion(t *testing.T) {
 	tc := &Toolchain{Version: [3]int{0, 0, 0}}
-	if !tc.BrokenLiveRestore("arm64", AccelHVF) {
+	if !tc.BrokenLiveRestore(AccelHVF) {
 		t.Fatal("unparseable version must be treated as unknown and refused (fail closed)")
 	}
-	if tc.BrokenLiveRestore("amd64", AccelHVF) || tc.BrokenLiveRestore("arm64", AccelTCG) {
-		t.Fatal("non-arm64 or non-hvf must not be flagged")
+	if tc.BrokenLiveRestore(AccelTCG) {
+		t.Fatal("non-hvf must not be flagged")
 	}
 	tc.Bundled = true
-	if tc.BrokenLiveRestore("arm64", AccelHVF) {
+	if tc.BrokenLiveRestore(AccelHVF) {
 		t.Fatal("bundled runtime must be exempt")
 	}
 }

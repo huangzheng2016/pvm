@@ -9,7 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
+
+	"github.com/huangzheng2016/pvm/internal/native"
 )
 
 type Toolchain struct {
@@ -41,36 +42,19 @@ func probeVersion(system string) [3]int {
 // pvm's own known-good builds and are always exempt. An unparseable
 // version ({0,0,0}) is treated as unknown and refused too — the restore
 // crash is worse than a false positive.
-func (t *Toolchain) BrokenLiveRestore(arch string, accel Accel) bool {
-	if t.Bundled || arch != "arm64" || accel != AccelHVF {
+func (t *Toolchain) BrokenLiveRestore(accel Accel) bool {
+	if t.Bundled || native.Arch != "arm64" || accel != AccelHVF {
 		return false
 	}
 	return t.Version == [3]int{11, 0, 0} || t.Version == [3]int{0, 0, 0}
 }
 
-// QemuArch maps the host GOARCH to the qemu-system suffix. Guests are
-// intentionally limited to the native architecture; any other arch is an
-// error rather than an emulation fallback.
-func QemuArch(goarch string) (string, error) {
-	if goarch != runtime.GOARCH {
-		return "", fmt.Errorf("unsupported guest architecture %q (host is %s)", goarch, runtime.GOARCH)
-	}
-	switch goarch {
-	case "amd64":
-		return "x86_64", nil
-	case "arm64":
-		return "aarch64", nil
-	default:
-		return "", fmt.Errorf("unsupported host architecture %q", goarch)
-	}
-}
+// QemuArch returns the native QEMU system target.
+func QemuArch() string { return native.QemuArch() }
 
-// Find locates qemu-system-<goarch> and qemu-img for the given GOARCH.
-func Find(runtimeDir, goarch string) (*Toolchain, error) {
-	arch, err := QemuArch(goarch)
-	if err != nil {
-		return nil, err
-	}
+// Find locates the native qemu-system and qemu-img.
+func Find(runtimeDir string) (*Toolchain, error) {
+	arch := QemuArch()
 	binName := "qemu-system-" + arch
 
 	bundledBin := filepath.Join(runtimeDir, "qemu", arch, "bin")

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/huangzheng2016/pvm/internal/native"
 )
 
 func TestManifestSaveLoad(t *testing.T) {
@@ -44,26 +46,29 @@ func TestManifestSaveLoad(t *testing.T) {
 }
 
 func TestCheckMatch(t *testing.T) {
-	m := &SnapshotManifest{Arch: "arm64", CPUs: 2, MemMB: 2048, Accel: AccelHVF}
-	ok := &VMConfig{Arch: "arm64", CPUs: 2, MemMB: 2048, Accel: AccelHVF}
+	m := &SnapshotManifest{Arch: native.Arch, CPUs: 2, MemMB: 2048, Accel: AccelHVF}
+	ok := &VMConfig{CPUs: 2, MemMB: 2048, Accel: AccelHVF}
 	if err := m.checkMatch(ok); err != nil {
 		t.Fatalf("identical config should match: %v", err)
 	}
 	cases := []VMConfig{
-		{Arch: "amd64", CPUs: 2, MemMB: 2048, Accel: AccelHVF},
-		{Arch: "arm64", CPUs: 4, MemMB: 2048, Accel: AccelHVF},
-		{Arch: "arm64", CPUs: 2, MemMB: 4096, Accel: AccelHVF},
+		{CPUs: 4, MemMB: 2048, Accel: AccelHVF},
+		{CPUs: 2, MemMB: 4096, Accel: AccelHVF},
 	}
 	for i := range cases {
 		if err := m.checkMatch(&cases[i]); err == nil {
 			t.Fatalf("case %d: expected mismatch error", i)
 		}
 	}
+	m.Arch = "incompatible"
+	if err := m.checkMatch(ok); err == nil {
+		t.Fatal("incompatible snapshot architecture must be rejected")
+	}
 }
 
 func TestCheckMatchAccelFallback(t *testing.T) {
-	m := &SnapshotManifest{Arch: "arm64", CPUs: 2, MemMB: 2048, Accel: AccelHVF}
-	c := &VMConfig{Arch: "arm64", CPUs: 2, MemMB: 2048, Accel: AccelTCG}
+	m := &SnapshotManifest{Arch: native.Arch, CPUs: 2, MemMB: 2048, Accel: AccelHVF}
+	c := &VMConfig{CPUs: 2, MemMB: 2048, Accel: AccelTCG}
 	if err := m.checkMatch(c); err != nil {
 		t.Fatalf("hvf snapshot must be restorable on tcg host: %v", err)
 	}
@@ -131,21 +136,21 @@ func TestRemoveSnapshot(t *testing.T) {
 
 func TestBrokenLiveRestore(t *testing.T) {
 	tc := &Toolchain{Version: [3]int{11, 0, 0}}
-	if !tc.BrokenLiveRestore("arm64", AccelHVF) {
+	if !tc.BrokenLiveRestore(AccelHVF) {
 		t.Fatal("qemu 11.0.0 + arm64 + hvf must be flagged broken")
 	}
-	if tc.BrokenLiveRestore("arm64", AccelKVM) || tc.BrokenLiveRestore("amd64", AccelHVF) {
-		t.Fatal("non-hvf or non-arm64 must not be flagged")
+	if tc.BrokenLiveRestore(AccelKVM) {
+		t.Fatal("non-hvf must not be flagged")
 	}
 	for _, v := range [][3]int{{10, 0, 3}, {11, 0, 1}, {11, 1, 0}, {11, 1, 2}, {12, 0, 0}} {
 		tc.Version = v
-		if tc.BrokenLiveRestore("arm64", AccelHVF) {
+		if tc.BrokenLiveRestore(AccelHVF) {
 			t.Fatalf("qemu %v should not be flagged", v)
 		}
 	}
 	// Bundled runtimes are pvm's own known-good builds: never flagged.
 	tc = &Toolchain{Version: [3]int{11, 0, 0}, Bundled: true}
-	if tc.BrokenLiveRestore("arm64", AccelHVF) {
+	if tc.BrokenLiveRestore(AccelHVF) {
 		t.Fatal("bundled runtime must be exempt")
 	}
 }
