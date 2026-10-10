@@ -43,6 +43,36 @@ daemon:
 
 other:
   version       print version
+
+common choices:
+  images        ubuntu:24.04 | ubuntu:22.04 | debian:13 | debian:12
+  transports    udp (default, wireguard) | tcp (wireguard over tcp)
+  nat backends  auto | nft | iptables | userspace (no root, no icmp)
+  route via     direct | <exit-name>  (this host: us, us-tcp)
+
+create options:
+  --image IMG   ubuntu:24.04 | ubuntu:22.04 | debian:13 | debian:12
+  --name NAME   vm name (required)
+  --user USER   guest login user (required for non-interactive use)
+  --cpus N      vcpus (default 2)
+  --mem MB      memory in mb (default 4096)
+  --disk GB     disk size in gb (default 20)
+  --mount H:G   extra host:guest mount; ~/.pvm/share is always at /share
+  --tz TZ       iana timezone, e.g. America/Los_Angeles
+  --locale LOC  guest locale (default en_US.UTF-8)
+  --git-email E optional neutral git identity (never inherited from host)
+  --git-name N  optional neutral git name
+  --smbios-spoof  spoof dmi as a dell inspiron laptop
+  --no-start    create disk and metadata without starting the vm
+  --no-wait     return before cloud-init finishes
+
+examples:
+  pvm create --image ubuntu:24.04 --name dev1 --user dev
+  pvm route dev1 --via us
+  pvm ssh dev1 'curl -s ipinfo.io'
+  pvm kasm dev1
+  pvm map dev1 8080:80
+  pvm snapshot create dev1 && pvm start dev1
 `
 
 func main() {
