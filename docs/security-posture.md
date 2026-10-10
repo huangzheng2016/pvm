@@ -2,6 +2,10 @@
 
 pvm 的 VM 用于本地开发。以下是与风控/环境指纹相关的设计决策与使用建议。
 
+## 架构边界
+
+pvm 仅支持宿主原生架构：darwin/arm64 只运行 arm64 VM，linux/amd64 只运行 amd64 VM。构建与打包也只包含当前宿主架构的 guest 和 QEMU 运行时，不提供其他架构的模拟或分发包。
+
 ## VM 形态本身就是最优解
 
 AI-service Code 等工具的运行环境检测针对的是**容器**与云主机：`/.dockerenv`（docker 信号）与 `/sys/hypervisor/uuid`（Xen/EC2 信号）会被映射为 `deployment_environment` 并上行。pvm 的 QEMU VM 两者都没有，在用户态看来就是一台普通 Ubuntu 机器。因此：
