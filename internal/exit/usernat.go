@@ -265,6 +265,10 @@ type udpSessionTable struct {
 	once     sync.Once
 }
 
+// udpMaxSessions bounds the userspace-NAT UDP session table; each
+// session costs two goroutines and two sockets.
+const udpMaxSessions = 4096
+
 func newUDPSessionTable(timeout time.Duration) *udpSessionTable {
 	return &udpSessionTable{m: map[udpFlow]*udpSession{}, timeout: timeout, interval: 30 * time.Second, closed: make(chan struct{})}
 }
@@ -273,6 +277,12 @@ func (t *udpSessionTable) get(flow udpFlow) *udpSession {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.m[flow]
+}
+
+func (t *udpSessionTable) len() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.m)
 }
 
 func (t *udpSessionTable) put(flow udpFlow, s *udpSession) {
@@ -339,6 +349,12 @@ func (u *userspaceBackend) handleUDP(req *udp.ForwarderRequest) {
 	if u.sessions.get(flow) != nil {
 		return // existing session owns subsequent packets
 	}
+	// each session costs 2 goroutines + 2 sockets + buffers; a peer
+	// sweeping dst ports would otherwise exhaust memory/fd in minutes.
+	if u.sessions.len() >= udpMaxSessions {
+		log.Printf("userspace-nat: udp session table full (%d), dropping new flow %v", udpMaxSessions, flow)
+		return
+	}
 	dst := &net.UDPAddr{IP: net.ParseIP(flow.dstIP), Port: int(flow.dstPort)}
 	outConn, err := net.DialUDP("udp", nil, dst)
 	if err != nil {
@@ -382,10 +398,12 @@ func (u *userspaceBackend) handleUDP(req *udp.ForwarderRequest) {
 		for {
 			n, err := sess.outConn.Read(buf)
 			if err != nil {
+				sess.close()
 				return
 			}
 			sess.touch()
 			if _, err := sess.inConn.Write(buf[:n]); err != nil {
+				sess.close()
 				return
 			}
 		}

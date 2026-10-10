@@ -38,7 +38,9 @@ func startTestDCServer(t *testing.T, dialErr error) (string, chan string) {
 		go func() { _, _ = io.Copy(c2, c2) }() // echo
 		return c1, nil
 	}
-	go serveDomainConnect(ln, dialFn)
+	dc := newDCServer(nil)
+	dc.dial = dialFn
+	go dc.serve(ln)
 	return ln.Addr().String(), dialed
 }
 

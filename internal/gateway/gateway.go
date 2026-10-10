@@ -50,12 +50,12 @@ type Config struct {
 type Agent struct {
 	configPath string
 
-	mu   sync.Mutex
-	cfg  *Config
-	upl  string // uplink interface name, e.g. enp0s1
-	br   string
+	mu    sync.Mutex
+	cfg   *Config
+	upl   string // uplink interface name, e.g. enp0s1
+	br    string
 	exits *exitManager
-	stop chan struct{}
+	stop  chan struct{}
 }
 
 func New(configPath string) *Agent {
@@ -85,10 +85,10 @@ func (a *Agent) loadConfig() (*Config, error) {
 // Run blocks, converging system state to the config every few seconds.
 func (a *Agent) Run() error {
 	var (
-		dhcpSrv  *DHCPServer
-		fdns     *fakeDNS
-		fproxy   *fakeProxy
-		lastCfg  []byte
+		dhcpSrv *DHCPServer
+		fdns    *fakeDNS
+		fproxy  *fakeProxy
+		lastCfg []byte
 	)
 	for {
 		raw, err := os.ReadFile(a.configPath)
@@ -151,8 +151,7 @@ func (a *Agent) Run() error {
 						}
 					}
 					fproxy.SetPolicy(pol)
-					fproxy.markFor = a.exits.MarkForExit
-					fproxy.dcAddrFor = a.exits.DomainConnectAddr
+					fproxy.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr)
 				}
 			}
 			// exit tunnels + policy routing converge on every apply

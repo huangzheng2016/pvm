@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	mdns "github.com/miekg/dns"
@@ -34,7 +35,7 @@ type fakeDNS struct {
 }
 
 func newFakeDNS(upstream string, onDirectIP func(domain string, ips []string)) (*fakeDNS, error) {
-	pool, err := gwdns.NewPool("198.18.0.0/16", 1<<16)
+	pool, err := gwdns.NewPool("198.18.0.0/16", 0)
 	if err != nil {
 		return nil, err
 	}
@@ -43,13 +44,35 @@ func newFakeDNS(upstream string, onDirectIP func(domain string, ips []string)) (
 		return nil, err
 	}
 	up := gwdns.Upstream(gwdns.UDPUpstream{Addr: upstream + ":53"})
+	var engPtr *atomic.Pointer[rules.Engine]
 	if onDirectIP != nil {
-		up = &bypassRecorder{inner: up, engine: func() *rules.Engine { return eng }, cb: onDirectIP}
+		engPtr = &atomic.Pointer[rules.Engine]{}
+		engPtr.Store(eng)
+		up = &bypassRecorder{inner: up, engine: engPtr, cb: onDirectIP}
 	}
 	srv := gwdns.NewServer(up, eng, pool)
+	if onDirectIP != nil {
+		// internal-rule answers (either uplink path) are learned too:
+		// their traffic must bypass the tunnel like direct domains.
+		srv.OnInternalAnswer = func(name string, resp *mdns.Msg) {
+			var ips []string
+			for _, rr := range resp.Answer {
+				if a, ok := rr.(*mdns.A); ok {
+					ips = append(ips, a.A.String())
+				}
+			}
+			if len(ips) > 0 {
+				onDirectIP(name, ips)
+			}
+		}
+	}
 	f := &fakeDNS{pool: pool, srv: srv, done: make(chan struct{})}
 	// the recorder must follow rules hot-swaps
-	f.onRulesSwap = func(newEng *rules.Engine) { eng = newEng }
+	f.onRulesSwap = func(newEng *rules.Engine) {
+		if engPtr != nil {
+			engPtr.Store(newEng)
+		}
+	}
 	return f, nil
 }
 
@@ -139,9 +162,10 @@ var _ = log.Printf // keep log import if unused in future edits
 // bypassRecorder wraps the DNS upstream: A records of direct-rule
 // answers are reported so the routing layer can pin those IPs to the
 // main table (direct domains bypass the tunnel even for proxied VMs).
+// Internal-rule answers are learned separately via Server.OnInternalAnswer.
 type bypassRecorder struct {
 	inner  gwdns.Upstream
-	engine func() *rules.Engine
+	engine *atomic.Pointer[rules.Engine]
 	cb     func(domain string, ips []string)
 }
 
@@ -151,7 +175,7 @@ func (b *bypassRecorder) Exchange(ctx context.Context, req *mdns.Msg) (*mdns.Msg
 		return resp, err
 	}
 	domain := strings.ToLower(strings.TrimSuffix(req.Question[0].Name, "."))
-	if d, ok := b.engine().Match(domain, nil); !ok || d.Action != rules.Direct || d.Internal {
+	if d, ok := b.engine.Load().Match(domain, nil); !ok || d.Action != rules.Direct || d.Internal {
 		return resp, err
 	}
 	var ips []string
