@@ -1,4 +1,7 @@
 .bin/
 pvm
+/pvm
 internal/assets/packed/*.zst
+internal/assets/packed/gateway-*
+internal/assets/packed/agent-*
 .vps-test-env

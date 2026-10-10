@@ -89,7 +89,7 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 		for _, s := range specs {
 			if strings.HasPrefix(s.Name, "bake-"+nameStem+"-") {
 				fmt.Fprintf(o.Out, "cleaning stale build vm %s\n", s.Name)
-				inst := qemu.Instance{Cfg: s.QEMUConfig(o.P, o.Accel),
+				inst := qemu.Instance{Cfg: s.QEMUConfig(o.P, o.Accel, "", 0, 0),
 					StatePath: filepath.Join(o.P.VMDir(s.Name), "run.json"), Toolchain: o.TC}
 				inst.Stop()
 				vm.Delete(o.P, s.Name)
@@ -129,7 +129,7 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 	}()
 
 	inst := &qemu.Instance{
-		Cfg:       spec.QEMUConfig(o.P, o.Accel),
+		Cfg:       spec.QEMUConfig(o.P, o.Accel, "", 0, 0),
 		StatePath: filepath.Join(o.P.VMDir(name), "run.json"),
 		Toolchain: o.TC,
 	}

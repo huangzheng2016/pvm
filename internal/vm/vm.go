@@ -20,6 +20,7 @@ import (
 type Spec struct {
 	Name  string `json:"name"`
 	Image string `json:"image"` // e.g. ubuntu:24.04
+	Role  string `json:"role"`  // user | gateway
 	User  string `json:"user"`
 	// GuestUID pins the guest user's uid to the host user's uid so 9p
 	// shares behave sanely (same trick as lima/docker-desktop).
@@ -28,11 +29,16 @@ type Spec struct {
 	CPUs     int    `json:"cpus"`
 	MemMB    int    `json:"mem_mb"`
 	DiskGB   int    `json:"disk_gb"`
-	SSHPort  int    `json:"ssh_port"`
+	SSHPort  int    `json:"ssh_port"` // slirp hostfwd (gateways only)
 	BaseDisk string `json:"base_disk"`
 	// Golden is the golden image version the VM was cloned from
 	// (0 = plain base image). Golden clones skip first-boot apt.
 	Golden int `json:"golden,omitempty"`
+
+	// cluster membership (user VMs)
+	ClusterID int    `json:"cluster_id,omitempty"`
+	IP        string `json:"ip,omitempty"`
+	MAC       string `json:"mac,omitempty"`
 
 	CreatedAt time.Time    `json:"created_at"`
 	Mounts    []GuestMount `json:"mounts,omitempty"`
@@ -89,28 +95,41 @@ func (s *Spec) Save(p *paths.Paths) error {
 }
 
 // QEMUConfig derives the qemu runtime config from the spec.
-func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel) qemu.VMConfig {
+func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poolBase, poolSize int) qemu.VMConfig {
 	dir := s.dir(p)
 	mounts := make([]qemu.Mount, 0, len(s.Mounts))
 	for _, m := range s.Mounts {
 		mounts = append(mounts, qemu.Mount{Tag: m.Tag, HostPath: m.Host})
 	}
+	var net qemu.Network
+	hotplug := 0
+	switch {
+	case s.Role == "gateway":
+		net = qemu.Network{Mode: qemu.NetSlirp, SSHHostPort: s.SSHPort, PoolBase: poolBase, PoolSize: poolSize}
+		hotplug = 64 // rp10..rp73, one per cluster VM slot
+	case linkSock != "":
+		net = qemu.Network{Mode: qemu.NetCluster, LinkSock: linkSock, MAC: s.MAC}
+	default:
+		// no cluster attachment (image bake and other standalone VMs)
+		net = qemu.Network{Mode: qemu.NetSlirp, SSHHostPort: s.SSHPort}
+	}
 	return qemu.VMConfig{
-		Name:        s.Name,
-		Arch:        s.Arch,
-		CPUs:        s.CPUs,
-		MemMB:       s.MemMB,
-		DiskPath:    s.Disk(p),
-		SeedPath:    s.Seed(p),
-		VarsPath:    s.Vars(p),
-		ConsoleLog:  filepath.Join(dir, "console.log"),
-		QMPSock:     filepath.Join(dir, "qmp.sock"),
-		SerialSock:  filepath.Join(dir, "serial.sock"),
-		AgentSock:   p.AgentSock(s.Name),
-		SSHHostPort: s.SSHPort,
-		ShareDir:    p.Share,
-		ExtraMounts: mounts,
-		Accel:       accel,
+		Name:         s.Name,
+		Arch:         s.Arch,
+		CPUs:         s.CPUs,
+		MemMB:        s.MemMB,
+		DiskPath:     s.Disk(p),
+		SeedPath:     s.Seed(p),
+		VarsPath:     s.Vars(p),
+		ConsoleLog:   filepath.Join(dir, "console.log"),
+		QMPSock:      filepath.Join(dir, "qmp.sock"),
+		SerialSock:   filepath.Join(dir, "serial.sock"),
+		AgentSock:    p.AgentSock(s.Name),
+		Network:      net,
+		HotplugPorts: hotplug,
+		ShareDir:     p.Share,
+		ExtraMounts:  mounts,
+		Accel:        accel,
 	}
 }
 
@@ -159,6 +178,9 @@ func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec, sshPub string) error
 	}
 
 	ud, err := userData(spec, sshPub, spec.Mounts)
+	if spec.Role == "gateway" {
+		ud, err = gatewayUserData(spec, sshPub)
+	}
 	if err != nil {
 		return err
 	}

@@ -77,3 +77,54 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 func metaData(spec *Spec) []byte {
 	return []byte(fmt.Sprintf("instance-id: pvm-%s\nlocal-hostname: %s\n", spec.Name, spec.Name))
 }
+
+// gatewayUserData provisions a gateway VM: pvmgw user, nftables, the
+// pvm-gateway systemd unit (enabled once the host pushes the binary)
+// and ip_forward.
+func gatewayUserData(spec *Spec, sshPub string) ([]byte, error) {
+	unit := `[Unit]
+Description=pvm gateway agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/pvm-gateway -config /etc/pvm/gateway.json
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+`
+	doc := map[string]any{
+		"hostname":       spec.Name,
+		"ssh_pwauth":     false,
+		"package_update": true,
+		"packages":       []string{"nftables", "iproute2"},
+		"runcmd": []string{
+			"mkdir -p /etc/pvm",
+			"printf 'net.ipv4.ip_forward=1\\n' > /etc/sysctl.d/99-pvm.conf",
+			"sysctl --system",
+			"systemctl daemon-reload",
+			"systemctl enable pvm-gateway.service",
+		},
+		"users": []map[string]any{{
+			"name":                spec.User,
+			"groups":              []string{"sudo"},
+			"shell":               "/bin/bash",
+			"sudo":                "ALL=(ALL) NOPASSWD:ALL",
+			"lock_passwd":         true,
+			"uid":                 spec.GuestUID,
+			"ssh_authorized_keys": []string{strings.TrimSpace(sshPub)},
+		}},
+		"write_files": []map[string]any{{
+			"path":        "/etc/systemd/system/pvm-gateway.service",
+			"content":     unit,
+			"permissions": "0644",
+		}},
+	}
+	out, err := yaml.Marshal(doc)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte("#cloud-config\n"), out...), nil
+}

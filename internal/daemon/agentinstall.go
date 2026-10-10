@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
-	"strconv"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/agent"
@@ -46,15 +44,15 @@ func (s *Server) installAgent(spec *vm.Spec, bin string) error {
 	if err := s.waitSSH(spec, 6*time.Minute); err != nil {
 		return err
 	}
-	if out, err := s.scp(spec, bin, "/tmp/pvm-agent.new"); err != nil {
-		return fmt.Errorf("scp: %v\n%s", err, out)
+	if err := s.scpTo(spec, bin, "/tmp/pvm-agent.new"); err != nil {
+		return fmt.Errorf("scp: %w", err)
 	}
 	installCmd := fmt.Sprintf(
 		"sudo install -m 0755 /tmp/pvm-agent.new /usr/local/bin/pvm && rm -f /tmp/pvm-agent.new && "+
 			"echo %s | sudo tee /etc/systemd/system/pvm-agent.service >/dev/null && "+
 			"sudo systemctl daemon-reload && sudo systemctl enable pvm-agent && sudo systemctl restart pvm-agent",
 		shellQuote(agentUnit))
-	if out, err := s.ssh(spec, installCmd); err != nil {
+	if out, err := s.sshRun(spec, installCmd); err != nil {
 		return fmt.Errorf("install unit: %v\n%s", err, out)
 	}
 
@@ -76,47 +74,12 @@ func (s *Server) installAgent(spec *vm.Spec, bin string) error {
 func (s *Server) waitSSH(spec *vm.Spec, d time.Duration) error {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
-		if _, err := s.ssh(spec, "true"); err == nil {
+		if _, err := s.sshRun(spec, "true"); err == nil {
 			return nil
 		}
 		time.Sleep(3 * time.Second)
 	}
 	return fmt.Errorf("ssh not reachable within %v", d)
-}
-
-func (s *Server) sshArgs(spec *vm.Spec) []string {
-	return []string{
-		"-i", s.P.SSHKey(),
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
-		"-o", "ConnectTimeout=5",
-		"-o", "BatchMode=yes",
-		"-p", strconv.Itoa(spec.SSHPort),
-	}
-}
-
-func (s *Server) scpArgs(spec *vm.Spec) []string {
-	// scp wants -P for the port, unlike ssh's -p
-	args := s.sshArgs(spec)
-	for i, a := range args {
-		if a == "-p" {
-			args[i] = "-P"
-		}
-	}
-	return args
-}
-
-func (s *Server) ssh(spec *vm.Spec, remoteCmd string) ([]byte, error) {
-	args := append(s.sshArgs(spec), fmt.Sprintf("%s@127.0.0.1", spec.User), remoteCmd)
-	cmd := exec.Command("ssh", args...)
-	return cmd.CombinedOutput()
-}
-
-func (s *Server) scp(spec *vm.Spec, local, remote string) ([]byte, error) {
-	args := append(s.scpArgs(spec), local, fmt.Sprintf("%s@127.0.0.1:%s", spec.User, remote))
-	cmd := exec.Command("scp", args...)
-	return cmd.CombinedOutput()
 }
 
 func shellQuote(s string) string {

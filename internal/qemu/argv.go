@@ -11,6 +11,30 @@ type Mount struct {
 	HostPath string
 }
 
+// NetMode selects the guest network topology.
+type NetMode string
+
+const (
+	// NetSlirp is QEMU user-mode networking with hostfwd (gateway VMs
+	// and pre-M2 standalone VMs).
+	NetSlirp NetMode = "slirp"
+	// NetCluster attaches the only NIC to a cluster L2 segment via a
+	// point-to-point stream socket to the gateway VM.
+	NetCluster NetMode = "cluster"
+)
+
+// Network is the per-VM network configuration.
+type Network struct {
+	Mode NetMode
+	// slirp mode
+	SSHHostPort int
+	PoolBase    int // gateway only: hostfwd pool start (tcp+udp)
+	PoolSize    int
+	// cluster mode
+	LinkSock string // unix socket the gateway listens on
+	MAC      string
+}
+
 type VMConfig struct {
 	Name        string
 	Arch        string // GOARCH: arm64 / amd64
@@ -23,10 +47,14 @@ type VMConfig struct {
 	QMPSock     string
 	SerialSock  string
 	AgentSock   string // unix socket for the virtio-serial agent channel; empty disables
-	SSHHostPort int
-	ShareDir    string // default ~/.pvm/share mounted at /share
-	ExtraMounts []Mount
-	Accel       Accel
+	Network     Network
+	// HotplugPorts pre-creates pcie-root-ports rp10..rp(9+N) so NICs can
+	// be hot-added later (pcie.0 itself does not support hotplug).
+	// Gateway VMs get one port per possible cluster VM IP octet.
+	HotplugPorts int
+	ShareDir     string // default ~/.pvm/share mounted at /share
+	ExtraMounts  []Mount
+	Accel        Accel
 	// Incoming, when set, appends `-incoming <value>` (RAM snapshot
 	// restore, e.g. "exec:/path/pvm __snapshot-pipe-in <file>").
 	Incoming string
@@ -70,8 +98,6 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 		"-serial", "chardev:ser0",
 		"-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio,cache=writeback,discard=unmap,detect-zeroes=unmap", c.DiskPath),
 		"-drive", fmt.Sprintf("file=%s,format=raw,if=virtio,readonly=on", c.SeedPath),
-		"-netdev", fmt.Sprintf("user,id=net0,hostfwd=tcp:127.0.0.1:%d-:22", c.SSHHostPort),
-		"-device", "virtio-net-pci,netdev=net0",
 		"-object", "rng-random,id=rng0,filename=/dev/urandom",
 		"-device", "virtio-rng-pci,rng=rng0",
 		"-qmp", fmt.Sprintf("unix:%s,server=on,wait=off", c.QMPSock),
@@ -88,6 +114,19 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 		)
 	}
 
+	args = append(args, netArgs(c.Network)...)
+	for i := 0; i < c.HotplugPorts; i++ {
+		// root ports need explicit chassis+addr; slots 8-15 x 8
+		// functions = 64 ports, clear of the auto-assigned low slots
+		// used by our boot devices. fn0 must declare multifunction so
+		// functions 1-7 may share the slot.
+		mf := ""
+		if i%8 == 0 {
+			mf = ",multifunction=on"
+		}
+		args = append(args, "-device", fmt.Sprintf("pcie-root-port,id=rp%d,bus=pcie.0,addr=0x%x.%d,chassis=%d%s", 10+i, 8+i/8, i%8, i+1, mf))
+	}
+
 	fs := []Mount{{Tag: "pvmshare", HostPath: c.ShareDir}}
 	fs = append(fs, c.ExtraMounts...)
 	for i, m := range fs {
@@ -99,9 +138,10 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 		// id=<fsN> lets the snapshot flow hot-unplug the device via
 		// QMP device_del (9p otherwise blocks migration). pcie.0
 		// itself does not support hotplug, so each share sits behind
-		// a pcie-root-port on a high slot (dodging auto-assignment).
+		// a pcie-root-port on its own slot (0x10+i), clear of the
+		// hotplug range (0x8-0xf) and rp-link (0x1e).
 		args = append(args,
-			"-device", fmt.Sprintf("pcie-root-port,id=rp%d,bus=pcie.0,addr=0x%x", i, 0x8+i),
+			"-device", fmt.Sprintf("pcie-root-port,id=rp%d,bus=pcie.0,addr=0x%x,chassis=%d", i, 0x10+i, 128+i),
 			"-fsdev", fmt.Sprintf("local,id=%s,path=%s,security_model=none", id, m.HostPath),
 		)
 		if !c.NoVirtFSDevices {
@@ -111,4 +151,34 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 		}
 	}
 	return args, nil
+}
+
+// netArgs renders the -netdev/-device pair for the configured mode.
+func netArgs(n Network) []string {
+	switch n.Mode {
+	case NetCluster:
+		// the NIC sits on its own root port so the daemon can
+		// hot-replace it (device_del/netdev_add/device_add) after a
+		// gateway reboot: stream netdevs have no client reconnect.
+		// device id nic0, netdev id net0: QMP object ids share one
+		// namespace, so they must differ. slot 0x1e keeps clear of the
+		// NIC hotplug range (0x8-0xf) and the 9p share ports (0x10+).
+		return []string{
+			"-device", "pcie-root-port,id=rp-link,bus=pcie.0,addr=0x1e.0,chassis=96",
+			"-netdev", fmt.Sprintf("stream,id=net0,server=off,addr.type=unix,addr.path=%s", n.LinkSock),
+			"-device", fmt.Sprintf("virtio-net-pci,id=nic0,netdev=net0,mac=%s,bus=rp-link", n.MAC),
+		}
+	default: // NetSlirp
+		fwd := fmt.Sprintf("hostfwd=tcp:127.0.0.1:%d-:22", n.SSHHostPort)
+		if n.PoolBase > 0 && n.PoolSize > 0 {
+			for p := n.PoolBase; p < n.PoolBase+n.PoolSize; p++ {
+				fwd += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-:%d", p, p)
+				fwd += fmt.Sprintf(",hostfwd=udp:127.0.0.1:%d-:%d", p, p)
+			}
+		}
+		return []string{
+			"-netdev", "user,id=net0," + fwd,
+			"-device", "virtio-net-pci,netdev=net0",
+		}
+	}
 }
