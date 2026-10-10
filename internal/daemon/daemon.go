@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -25,6 +24,7 @@ import (
 	"github.com/huangzheng2016/pvm/internal/config"
 	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/image"
+	"github.com/huangzheng2016/pvm/internal/native"
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 	"github.com/huangzheng2016/pvm/internal/vm"
@@ -342,10 +342,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	base := filepath.Join(s.P.Images, fmt.Sprintf("%s-%s.qcow2", imageFileStem(req.Image), runtime.GOARCH))
+	base := filepath.Join(s.P.Images, fmt.Sprintf("%s-%s.qcow2", imageFileStem(req.Image), native.Arch))
 	goldenVer := 0
 	if distro, version, ok := strings.Cut(req.Image, ":"); ok {
-		if g := image.LatestGolden(s.P.Images, distro, version, runtime.GOARCH); g != nil {
+		if g := image.LatestGolden(s.P.Images, distro, version); g != nil {
 			base = filepath.Join(image.GoldenDir(s.P.Images), g.File)
 			goldenVer = g.Version
 		}
@@ -368,7 +368,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	s.stage(req.Name, "cluster", cl.Gateway)
 
 	spec := &vm.Spec{
-		Name: req.Name, Image: req.Image, Role: "user", User: req.User, Arch: runtime.GOARCH,
+		Name: req.Name, Image: req.Image, Role: "user", User: req.User,
 		GuestUID: os.Getuid(),
 		CPUs:     req.CPUs, MemMB: req.MemMB, DiskGB: req.DiskGB,
 		BaseDisk: base, Mounts: mounts, Golden: goldenVer,

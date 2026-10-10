@@ -8,11 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/huangzheng2016/pvm/internal/native"
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 	"github.com/huangzheng2016/pvm/internal/vm"
@@ -72,7 +72,7 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 	if o.Out == nil {
 		o.Out = io.Discard
 	}
-	ref, err := Resolve(o.Spec, runtime.GOARCH)
+	ref, err := Resolve(o.Spec)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +113,7 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 	}
 	name := fmt.Sprintf("bake-%s-%d", nameStem, time.Now().Unix())
 	spec := &vm.Spec{
-		Name: name, Image: o.Spec, User: "baker", Arch: runtime.GOARCH,
+		Name: name, Image: o.Spec, User: "baker",
 		GuestUID: os.Getuid(),
 		CPUs:     cpus, MemMB: mem, DiskGB: disk,
 		SSHPort: port, BaseDisk: base,
@@ -191,12 +191,12 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 		return nil, err
 	}
 	version := 1
-	if ms := cat.match(ref.Distro, ref.Version, runtime.GOARCH); len(ms) > 0 {
+	if ms := cat.match(ref.Distro, ref.Version); len(ms) > 0 {
 		version = ms[0].Version + 1
 	}
 	entry := GoldenEntry{
 		Version: version, Distro: ref.Distro, ImageVersion: ref.Version,
-		Arch: runtime.GOARCH, File: goldenFileName(ref.Distro, ref.Version, version),
+		Arch: native.Arch, File: goldenFileName(ref.Distro, ref.Version, version),
 		BaseDigest: digest, BuiltAt: time.Now(),
 		Packages: GoldenPackages, DockerImages: dockerImages,
 	}

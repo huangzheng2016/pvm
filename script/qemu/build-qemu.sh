@@ -38,14 +38,20 @@ if old in s:
 PY
 fi
 
+case "$(uname -m)" in
+  arm64|aarch64) TARGET=aarch64-softmmu; SYSTEM=qemu-system-aarch64 ;;
+  x86_64|amd64) TARGET=x86_64-softmmu; SYSTEM=qemu-system-x86_64 ;;
+  *) echo "unsupported host architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+
 export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig:${PKG_CONFIG_PATH:-}"
 [ -d build ] || ./configure \
-  --target-list=aarch64-softmmu,x86_64-softmmu \
+  --target-list="$TARGET" \
   --disable-gtk --disable-sdl --disable-cocoa --disable-docs \
   --disable-guest-agent --disable-user \
   --enable-slirp --enable-capstone --enable-hvf \
   --prefix="$PREFIX"
 cd build
-ninja -j"$(sysctl -n hw.ncpu)" qemu-system-aarch64 qemu-system-x86_64 qemu-img
+ninja -j"$(sysctl -n hw.ncpu)" "$SYSTEM" qemu-img
 ninja install
 echo "bundled qemu installed to $PREFIX"

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/huangzheng2016/pvm/internal/native"
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 )
@@ -35,9 +36,6 @@ func CloneSpec(src *Spec, newName, ip, mac string) *Spec {
 // and does not re-run — identity reset happens over ssh after boot).
 // The source VM must be stopped: converting a live disk is unsafe.
 func CloneDisk(p *paths.Paths, tc *qemu.Toolchain, src, dst *Spec) error {
-	if err := validateNativeArch(dst.Arch); err != nil {
-		return err
-	}
 	dir := filepath.Join(p.VMs, dst.Name)
 	if _, err := os.Stat(dir); err == nil {
 		return fmt.Errorf("vm %q already exists", dst.Name)
@@ -52,7 +50,7 @@ func CloneDisk(p *paths.Paths, tc *qemu.Toolchain, src, dst *Spec) error {
 	if err != nil {
 		return fmt.Errorf("qemu-img convert: %v\n%s", err, out)
 	}
-	if dst.Arch == "arm64" {
+	if native.Arch == "arm64" {
 		// Blank 64 MiB pflash; OVMF formats it on first boot.
 		if err := os.WriteFile(dst.Vars(p), make([]byte, 64*1024*1024), 0o600); err != nil {
 			return err

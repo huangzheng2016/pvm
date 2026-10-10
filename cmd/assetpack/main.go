@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/huangzheng2016/pvm/internal/native"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -31,12 +32,20 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	allowed := map[string]bool{
+		native.GuestBinary("agent"):   false,
+		native.GuestBinary("gateway"): false,
+	}
 	var manifest []manifestEntry
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || name == "manifest.json" || strings.HasSuffix(name, ".zst") {
 			continue
 		}
+		if _, ok := allowed[name]; !ok {
+			panic(fmt.Sprintf("unexpected guest payload %q; only native agent/gateway binaries are allowed", name))
+		}
+		allowed[name] = true
 		raw, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
 			panic(err)
@@ -53,6 +62,11 @@ func main() {
 			Mode:   mode,
 		})
 		fmt.Printf("packed %-28s %8d -> %8d bytes\n", name, len(raw), len(out))
+	}
+	for name, present := range allowed {
+		if !present {
+			panic(fmt.Sprintf("missing required native payload %q", name))
+		}
 	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {

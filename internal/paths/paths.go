@@ -4,6 +4,8 @@ package paths
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/huangzheng2016/pvm/internal/native"
 )
 
 type Paths struct {
@@ -70,7 +72,7 @@ func (p *Paths) AgentSock(name string) string {
 	return filepath.Join(p.VMDir(name), "agent.sock")
 }
 
-// AgentBin returns the unpacked guest agent binary for a linux guest arch.
-func (p *Paths) AgentBin(goarch string) string {
-	return filepath.Join(p.Runtime, "agent-linux-"+goarch)
+// AgentBin returns the unpacked native guest agent binary.
+func (p *Paths) AgentBin() string {
+	return filepath.Join(p.Runtime, native.GuestBinary("agent"))
 }

@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
-# build.sh: cross-compile guest binaries (gateway + agent), pack assets,
+# build.sh: build native guest binaries (gateway + agent), pack assets,
 # then build the host pvm binary with embedded assets.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-HOSTARCH=$(go env GOARCH)
-if [ "${PVM_ALL_ARCH:-0}" = "1" ]; then
-  ARCHES="amd64 arm64"
-else
-  ARCHES="$HOSTARCH"
-fi
+case "$(uname -m)" in
+  arm64|aarch64) HOSTARCH=arm64 ;;
+  x86_64|amd64) HOSTARCH=amd64 ;;
+  *) echo "unsupported host architecture: $(uname -m)" >&2; exit 1 ;;
+esac
+case "$(uname -s)" in
+  Darwin) HOSTOS=darwin ;;
+  Linux) HOSTOS=linux ;;
+  *) echo "unsupported host OS: $(uname -s)" >&2; exit 1 ;;
+esac
 
-# Remove stale raw/compressed guests so a native build never embeds the other
-# architecture left over from an earlier PVM_ALL_ARCH build.
+# Remove stale raw/compressed guests so a native build never embeds
+# another architecture left over from an earlier multi-architecture build.
 rm -f internal/assets/packed/gateway-linux-* internal/assets/packed/agent-linux-*
 
-echo "== guest binaries ($ARCHES)"
-for arch in $ARCHES; do
-  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "internal/assets/packed/gateway-linux-$arch" ./cmd/gateway
-  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -trimpath -ldflags='-s -w' -o "internal/assets/packed/agent-linux-$arch" ./cmd/pvm
-done
+echo "== guest binaries ($HOSTARCH)"
+CGO_ENABLED=0 GOOS=linux GOARCH="$HOSTARCH" go build -trimpath -ldflags='-s -w' -o "internal/assets/packed/gateway-linux-$HOSTARCH" ./cmd/gateway
+CGO_ENABLED=0 GOOS=linux GOARCH="$HOSTARCH" go build -trimpath -ldflags='-s -w' -o "internal/assets/packed/agent-linux-$HOSTARCH" ./cmd/pvm
 
 echo "== assetpack"
 go run ./cmd/assetpack
@@ -27,16 +29,14 @@ go run ./cmd/assetpack
 # build intermediates and would otherwise be embedded a second time. Keep
 # the .zst payloads: the glob above matches them too, so filter by suffix.
 find internal/assets/packed -maxdepth 1 -type f \( -name 'gateway-linux-*' -o -name 'agent-linux-*' \) ! -name '*.zst' -delete
-for arch in $ARCHES; do
-  for kind in gateway agent; do
-    payload="internal/assets/packed/$kind-linux-$arch.zst"
-    [ -s "$payload" ] || { echo "missing packed asset: $payload" >&2; exit 1; }
-  done
+for kind in gateway agent; do
+  payload="internal/assets/packed/$kind-linux-$HOSTARCH.zst"
+  [ -s "$payload" ] || { echo "missing packed asset: $payload" >&2; exit 1; }
 done
 
 echo "== pvm"
-go build -tags embedassets -buildvcs=false -trimpath -ldflags "-s -w -buildid=" -o pvm ./cmd/pvm
-echo "built ./pvm (with embedded guest assets: $ARCHES)"
+GOOS="$HOSTOS" GOARCH="$HOSTARCH" go build -tags embedassets -buildvcs=false -trimpath -ldflags "-s -w -buildid=" -o pvm ./cmd/pvm
+echo "built ./pvm (with embedded guest assets: $HOSTARCH)"
 
 if [ "${PVM_PACK_QEMU:-1}" = "1" ] && [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
   echo "== bundled qemu ($HOSTARCH)"
