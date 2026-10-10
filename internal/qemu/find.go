@@ -16,6 +16,29 @@ type Toolchain struct {
 	Img         string // qemu-img
 	FirmwareDir string // dir containing edk2-*.fd
 	Bundled     bool
+	Version     [3]int // e.g. {10,0,3}
+}
+
+// probeVersion runs `qemu-system --version` and parses "QEMU emulator
+// version X.Y.Z".
+func probeVersion(system string) [3]int {
+	out, err := exec.Command(system, "--version").Output()
+	if err != nil {
+		return [3]int{}
+	}
+	var v [3]int
+	if _, err := fmt.Sscanf(string(out), "QEMU emulator version %d.%d.%d", &v[0], &v[1], &v[2]); err != nil {
+		return [3]int{}
+	}
+	return v
+}
+
+// BrokenLiveRestore reports the QEMU 11.0.0 darwin/arm64 HVF regression
+// (cpu_pre_load assertion on incoming migration, fixed upstream by
+// 06fd39e426 which first ships in 11.1.0). Bundled runtimes are pvm's
+// own patched builds and are exempt.
+func (t *Toolchain) BrokenLiveRestore(arch string, accel Accel) bool {
+	return !t.Bundled && arch == "arm64" && accel == AccelHVF && t.Version == [3]int{11, 0, 0}
 }
 
 // QemuArch maps GOARCH to the qemu-system suffix.
@@ -64,7 +87,7 @@ func lookup(system, img string) (*Toolchain, error) {
 	if fi, err := os.Stat(fw); err != nil || !fi.IsDir() {
 		fw = ""
 	}
-	return &Toolchain{System: system, Img: img, FirmwareDir: fw}, nil
+	return &Toolchain{System: system, Img: img, FirmwareDir: fw, Version: probeVersion(system)}, nil
 }
 
 func executable(path string) bool {

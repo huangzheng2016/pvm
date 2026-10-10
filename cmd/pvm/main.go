@@ -18,6 +18,7 @@ vm:
   start|stop    start/stop a vm
   rm            stop and delete a vm
   ssh           ssh into a vm: pvm ssh dev1 [cmd...]
+  snapshot      ram snapshots: create <name> | ls [name] | rm <name>
 
 image:
   image fetch   download a base image (ubuntu:24.04, debian:13)
@@ -62,6 +63,12 @@ func main() {
 		code = cli.CmdExit(args)
 	case "exit-agent":
 		code = cli.CmdExitAgent(args)
+	case "snapshot":
+		code = cli.CmdSnapshot(args)
+	case "__snapshot-pipe-out":
+		code = cli.CmdSnapshotPipeOut(args)
+	case "__snapshot-pipe-in":
+		code = cli.CmdSnapshotPipeIn(args)
 	case "version", "--version", "-v":
 		fmt.Println(buildinfo.Version)
 	case "map", "route", "dns", "kasm", "agent", "gateway":
