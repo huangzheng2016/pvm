@@ -53,7 +53,7 @@ func (s *Server) applyRegionProfile(spec *vm.Spec, via string) string {
 		// timedated caches the pre-cloud-init zone for the whole boot,
 		// so read the /etc/localtime symlink instead of timedatectl.
 		curTZ, err1 := s.sshRun(spec, "readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||'")
-		curLocale, err2 := s.sshRun(spec, `grep -h '^LANG=' /etc/default/locale 2>/dev/null | cut -d= -f2`)
+		curLocale, err2 := s.sshRun(spec, `grep -E '^(export )?LANG=' /etc/default/locale /etc/profile.d/pvm-locale.sh 2>/dev/null | tail -1 | sed 's/^export //' | cut -d= -f2`)
 		if err1 != nil || err2 != nil {
 			return fmt.Sprintf("region profile for %q pending (vm unreachable via ssh): tz=%s locale=%s", via, tz, locale)
 		}
@@ -125,12 +125,21 @@ func (s *Server) setGuestRegion(spec *vm.Spec, tz, locale string) string {
 	if _, err := vm.NormalizeLocale(locale); err != nil {
 		return fmt.Sprintf("skip region apply: %v", err)
 	}
-	cmds := []string{
-		fmt.Sprintf("sudo timedatectl set-timezone %s", tz),
-		fmt.Sprintf("sudo locale-gen %s", locale),
-		fmt.Sprintf("sudo update-locale LANG=%s", locale),
-		// /etc/environment covers sessions that skip PAM locale.
-		fmt.Sprintf("grep -q '^LANG=' /etc/environment && sudo sed -i 's/^LANG=.*/LANG=%s/' /etc/environment || echo 'LANG=%s' | sudo tee -a /etc/environment", locale, locale),
+	var cmds []string
+	if vm.IsAlpine(spec) {
+		// Alpine uses OpenRC and /etc/profile.d, not systemd.
+		cmds = []string{
+			fmt.Sprintf("sudo ln -sf /usr/share/zoneinfo/%s /etc/localtime && echo %s | sudo tee /etc/timezone", tz, tz),
+			fmt.Sprintf("sudo mkdir -p /etc/profile.d && printf 'export LANG=%s\\n' | sudo tee /etc/profile.d/pvm-locale.sh", locale),
+		}
+	} else {
+		cmds = []string{
+			fmt.Sprintf("sudo timedatectl set-timezone %s", tz),
+			fmt.Sprintf("sudo locale-gen %s", locale),
+			fmt.Sprintf("sudo update-locale LANG=%s", locale),
+			// /etc/environment covers sessions that skip PAM locale.
+			fmt.Sprintf("grep -q '^LANG=' /etc/environment && sudo sed -i 's/^LANG=.*/LANG=%s/' /etc/environment || echo 'LANG=%s' | sudo tee -a /etc/environment", locale, locale),
+		}
 	}
 	for _, c := range cmds {
 		if out, err := s.sshRun(spec, c); err != nil {

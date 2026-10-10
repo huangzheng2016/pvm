@@ -18,6 +18,20 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 	if err := ValidateSpec(spec, mounts); err != nil {
 		return nil, err
 	}
+	alpine := IsAlpine(spec)
+	locale := spec.Locale
+	if locale == "" {
+		locale = "en_US.UTF-8"
+	}
+	if _, err := NormalizeLocale(locale); err != nil {
+		return nil, err
+	}
+	tz := spec.TZ
+	if tz != "" {
+		if err := ValidateTZ(tz); err != nil {
+			return nil, err
+		}
+	}
 	fstab := []string{
 		"pvmshare /share 9p trans=virtio,version=9p2000.L,msize=262144,access=any,rw,_netdev,nofail 0 0",
 	}
@@ -32,6 +46,16 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 			fmt.Sprintf("mountpoint -q %s || mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,access=any %s %s", m.Guest, m.Tag, m.Guest),
 		)
 	}
+	if alpine {
+		if tz != "" {
+			runcmd = append(runcmd, fmt.Sprintf("ln -sf /usr/share/zoneinfo/%s /etc/localtime && echo %s > /etc/timezone", tz, tz))
+		}
+		runcmd = append(runcmd,
+			fmt.Sprintf("mkdir -p /etc/profile.d && printf 'export LANG=%s\\n' > /etc/profile.d/pvm-locale.sh", locale),
+			"rc-update add sshd default || true",
+			"rc-service sshd start || true",
+		)
+	}
 
 	doc := map[string]any{
 		"hostname":   spec.Name,
@@ -42,13 +66,17 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 		// cloud-image fallback.
 		"locale": "en_US.UTF-8",
 	}
-	if spec.Locale != "" {
-		doc["locale"] = spec.Locale
+	if locale != "" {
+		doc["locale"] = locale
 	}
-	if spec.TZ != "" {
-		doc["timezone"] = spec.TZ
+	if tz != "" {
+		doc["timezone"] = tz
 	}
-	if spec.Golden > 0 {
+	if alpine {
+		// Alpine uses apk + OpenRC. Keep the image lean: no docker/kasm.
+		doc["package_update"] = true
+		doc["packages"] = []string{"openssh", "sudo", "shadow", "bash", "ca-certificates", "tzdata"}
+	} else if spec.Golden > 0 {
 		// Golden images are already provisioned (docker, qga, dev tools):
 		// skip the first-boot apt storm and just attach the user to docker.
 		// Do not --now qemu-guest-agent: its unit waits on the qga virtio
@@ -62,10 +90,13 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 		doc["packages"] = []string{"qemu-guest-agent"}
 	}
 	groups := []string{"sudo"}
-	if spec.Golden > 0 {
+	if alpine {
+		groups = []string{"wheel"}
+	}
+	if spec.Golden > 0 && !alpine {
 		groups = append(groups, "docker")
 	}
-	doc["users"] = []map[string]any{{
+	user := map[string]any{
 		"name":                spec.User,
 		"groups":              groups,
 		"shell":               "/bin/bash",
@@ -73,7 +104,15 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 		"lock_passwd":         true,
 		"uid":                 spec.GuestUID,
 		"ssh_authorized_keys": []string{strings.TrimSpace(sshPub)},
-	}}
+	}
+	if alpine {
+		// openssh-server-pam treats a locked shadow password as a hard deny,
+		// even for public-key logins. Keep password auth disabled but give
+		// the account a valid crypt password instead of a locked marker.
+		delete(user, "lock_passwd")
+		user["passwd"] = "$6$pvm$U/nwbY9cT2LxUv/8v5bDD8gLMAVGCoVjCM/efyTKpxL14rhOwa4/lqL5cXUyJNL9bCL7YWY5nb4i8pvdQcyMb0"
+	}
+	doc["users"] = []map[string]any{user}
 	writeFiles := []map[string]any{{
 		"path":    "/etc/fstab",
 		"append":  true,

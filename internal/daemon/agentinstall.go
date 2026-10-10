@@ -23,6 +23,13 @@ RestartSec=2
 WantedBy=multi-user.target
 `
 
+const agentOpenRC = `#!/sbin/openrc-run
+description="pvm guest agent"
+command="/usr/local/bin/pvm"
+command_args="agent"
+pidfile="/run/pvm-agent.pid"
+`
+
 // ensureAgentAsync pushes the guest agent once ssh is reachable. Runs
 // in the background; failures are logged, never fatal to the VM.
 func (s *Server) ensureAgentAsync(spec *vm.Spec) {
@@ -49,11 +56,20 @@ func (s *Server) installAgent(spec *vm.Spec, bin string) error {
 	if err := s.scpTo(spec, bin, "/tmp/pvm-agent.new"); err != nil {
 		return fmt.Errorf("scp: %w", err)
 	}
-	installCmd := fmt.Sprintf(
-		"sudo install -m 0755 /tmp/pvm-agent.new /usr/local/bin/pvm && rm -f /tmp/pvm-agent.new && "+
-			"echo %s | sudo tee /etc/systemd/system/pvm-agent.service >/dev/null && "+
-			"sudo systemctl daemon-reload && sudo systemctl enable pvm-agent && sudo systemctl restart pvm-agent",
-		shellQuote(agentUnit))
+	var installCmd string
+	if vm.IsAlpine(spec) {
+		installCmd = fmt.Sprintf(
+			"sudo install -m 0755 /tmp/pvm-agent.new /usr/local/bin/pvm && rm -f /tmp/pvm-agent.new && "+
+				"echo %s | sudo tee /etc/init.d/pvm-agent >/dev/null && sudo chmod +x /etc/init.d/pvm-agent && "+
+				"sudo rc-update add pvm-agent default && sudo rc-service pvm-agent start",
+			shellQuote(agentOpenRC))
+	} else {
+		installCmd = fmt.Sprintf(
+			"sudo install -m 0755 /tmp/pvm-agent.new /usr/local/bin/pvm && rm -f /tmp/pvm-agent.new && "+
+				"echo %s | sudo tee /etc/systemd/system/pvm-agent.service >/dev/null && "+
+				"sudo systemctl daemon-reload && sudo systemctl enable pvm-agent && sudo systemctl restart pvm-agent",
+			shellQuote(agentUnit))
+	}
 	if out, err := s.sshRun(spec, installCmd); err != nil {
 		return fmt.Errorf("install unit: %v\n%s", err, out)
 	}

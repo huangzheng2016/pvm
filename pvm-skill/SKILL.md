@@ -20,11 +20,12 @@ pvm 仅支持宿主原生架构：darwin/arm64 只运行 arm64 VM，linux/amd64 
 
 ## 常用选择
 
-- **镜像**：`ubuntu:24.04`、`ubuntu:22.04`、`debian:13`、`debian:12`
+- **镜像**：`ubuntu:24.04`、`ubuntu:22.04`、`debian:13`、`debian:12`、`alpine:3.20`、`alpine:3.21`
 - **出口传输**：`udp`（默认、性能优先）/ `tcp`（受限网络后备）
 - **exit-agent NAT 后端**：`auto`（自动探测）/ `nft` / `iptables` / `userspace`（免 root、无 ICMP）
 - **出口路由**：`direct`（本机出口）或 `<exit-name>`（本机现有 `us`、`us-tcp`）
-- **create 常用参数**：`--image`、`--name`、`--user`、`--cpus`、`--mem`、`--disk`、`--mount`、`--tz`、`--locale`、`--git-email`、`--git-name`、`--smbios-spoof`、`--no-start`、`--no-wait`
+- **create 常用参数**：`--image`、`--distro`、`--version`、`--name`、`--user`、`--cpus`、`--mem`、`--disk`、`--mount`、`--tz`、`--locale`、`--git-email`、`--git-name`、`--smbios-spoof`、`--no-start`、`--no-wait`
+  - `--image alpine:3.20` 与 `--distro alpine --version 3.20` 等价；冲突参数会报错。
 
 ## 核心工作流
 
@@ -32,6 +33,7 @@ pvm 仅支持宿主原生架构：darwin/arm64 只运行 arm64 VM，linux/amd64 
 
 ```bash
 pvm create --image ubuntu:24.04 --name dev1 --user dev
+# 别名：pvm create --distro alpine --version 3.20 --name a1 --user dev
 pvm list
 pvm ssh dev1 'whoami && ls /share'
 ```
