@@ -11,12 +11,12 @@
   },
   {
     "path": "gateway-linux-amd64",
-    "sha256": "e4bb5e427fec15148f70569a7b15966dfe7ed0936e9698888151687a50f57fba",
+    "sha256": "c9100165881e62a78c855f2e889ed0d0bb9658686f1a578051321e42b171826e",
     "mode": 493
   },
   {
     "path": "gateway-linux-arm64",
-    "sha256": "ad0e421af5d7bd20f7eb76fdd8900a1e0b53c0e1c541321b68e119678dc6ebac",
+    "sha256": "ff08ba983cc0e75bc56acaadba12f1841ec929bd8a75e4ff44da9a0fddacb7ea",
     "mode": 493
   }
 ]

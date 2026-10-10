@@ -32,7 +32,7 @@ func (a *Agent) applyNetwork(c *Config) error {
 	if err := os_WriteSysctl(); err != nil {
 		return err
 	}
-	return ApplyNFT(RenderNFT(c, upl, a.br))
+	return ApplyNFT(RenderNFT(c, upl, a.br, a.exits.BypassList()))
 }
 
 func os_WriteSysctl() error {
