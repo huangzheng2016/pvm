@@ -1,3 +1,2 @@
-/pvm
-*.test
-/tmp/
+.bin/
+.vps-test-env
