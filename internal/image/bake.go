@@ -137,7 +137,7 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 		return nil, fmt.Errorf("start build vm: %w", err)
 	}
 	defer func() {
-		if inst.Running() != nil {
+		if st, err := inst.Running(); err == nil && st != nil {
 			inst.Stop()
 		}
 	}()
@@ -168,11 +168,18 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 		return nil, fmt.Errorf("stop build vm: %w", err)
 	}
 	deadline := time.Now().Add(30 * time.Second)
-	for inst.Running() != nil && time.Now().Before(deadline) {
+	for {
+		st, err := inst.Running()
+		if err != nil {
+			return nil, err
+		}
+		if st == nil {
+			break
+		}
+		if !time.Now().Before(deadline) {
+			return nil, fmt.Errorf("build vm did not power off")
+		}
 		time.Sleep(time.Second)
-	}
-	if inst.Running() != nil {
-		return nil, fmt.Errorf("build vm did not power off")
 	}
 
 	digest, err := fileSHA256(base)

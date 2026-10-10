@@ -37,7 +37,10 @@ func (s *Server) handleKasm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	inst := s.instance(spec)
-	if inst.Running() == nil {
+	if st, err := inst.Running(); err != nil {
+		writeErr(w, 500, err)
+		return
+	} else if st == nil {
 		writeErr(w, 409, fmt.Errorf("vm %s is not running", name))
 		return
 	}

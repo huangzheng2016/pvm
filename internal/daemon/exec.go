@@ -38,7 +38,10 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err)
 		return
 	}
-	if st := s.instance(spec).Running(); st == nil {
+	if st, err := s.instance(spec).Running(); err != nil {
+		writeErr(w, 500, err)
+		return
+	} else if st == nil {
 		writeErr(w, 409, fmt.Errorf("vm %s is not running", name))
 		return
 	}

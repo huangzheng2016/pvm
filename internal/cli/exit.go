@@ -374,11 +374,39 @@ func exitTest(args []string) int {
 	if err != nil {
 		host = e.Server
 	}
-	if ip == host {
+	matches, err := observedIPMatchesHost(host, ip, func(h string) ([]net.IP, error) {
+		return net.DefaultResolver.LookupIP(ctx, "ip", h)
+	})
+	if err != nil {
+		return fatalf("resolve server %s: %v", host, err)
+	}
+	if matches {
 		fmt.Println("matches server address: traffic exits via the VPS")
 		return 0
 	}
 	return fatalf("MISMATCH: exit ip %s != server %s", ip, host)
+}
+
+type hostIPResolver func(string) ([]net.IP, error)
+
+func observedIPMatchesHost(host, observed string, resolve hostIPResolver) (bool, error) {
+	observedIP := net.ParseIP(observed)
+	if observedIP == nil {
+		return false, fmt.Errorf("invalid observed ip %q", observed)
+	}
+	if hostIP := net.ParseIP(host); hostIP != nil {
+		return hostIP.Equal(observedIP), nil
+	}
+	ips, err := resolve(host)
+	if err != nil {
+		return false, err
+	}
+	for _, ip := range ips {
+		if ip.Equal(observedIP) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func splitCSV(s string) []string {

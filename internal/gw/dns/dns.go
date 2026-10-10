@@ -27,6 +27,13 @@ type UDPUpstream struct{ Addr string }
 func (u UDPUpstream) Exchange(ctx context.Context, req *mdns.Msg) (*mdns.Msg, error) {
 	c := &mdns.Client{Net: "udp", Timeout: 5 * time.Second}
 	resp, _, err := c.ExchangeContext(ctx, req, u.Addr)
+	if err != nil || resp == nil || !resp.Truncated {
+		return resp, err
+	}
+	// Large answers (DNSSEC, many records) must not be forwarded forever
+	// in their truncated UDP form: retry the same query over TCP.
+	c.Net = "tcp"
+	resp, _, err = c.ExchangeContext(ctx, req, u.Addr)
 	return resp, err
 }
 
