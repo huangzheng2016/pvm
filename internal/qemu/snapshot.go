@@ -236,7 +236,7 @@ func (in *Instance) PrepareRestore(vmDir string) (*SnapshotManifest, error) {
 		return nil, err
 	}
 	if in.Toolchain != nil && in.Toolchain.BrokenLiveRestore(in.Cfg.Arch, in.Cfg.Accel) {
-		return nil, fmt.Errorf("qemu 11.0.0 has an hvf/arm64 live-restore regression (upstream fix lands in 11.1.0); use a bundled 10.0.x runtime or upgrade qemu")
+		return nil, fmt.Errorf("qemu 11.0.0 has an hvf/arm64 live-restore regression; upgrade QEMU to >= 11.1.1 (brew upgrade qemu) or use the bundled runtime")
 	}
 	sp := SnapPaths(vmDir)
 	if _, err := os.Stat(sp.RAM); err != nil {

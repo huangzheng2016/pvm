@@ -122,15 +122,29 @@ func TestBrokenLiveRestore(t *testing.T) {
 	if tc.BrokenLiveRestore("arm64", AccelKVM) || tc.BrokenLiveRestore("amd64", AccelHVF) {
 		t.Fatal("non-hvf or non-arm64 must not be flagged")
 	}
-	for _, v := range [][3]int{{10, 0, 3}, {11, 0, 1}, {11, 1, 0}} {
+	for _, v := range [][3]int{{10, 0, 3}, {11, 0, 1}, {11, 1, 0}, {11, 1, 2}, {12, 0, 0}} {
 		tc.Version = v
 		if tc.BrokenLiveRestore("arm64", AccelHVF) {
 			t.Fatalf("qemu %v should not be flagged", v)
 		}
 	}
-	// Bundled runtimes are pvm's own patched builds: never flagged.
+	// Bundled runtimes are pvm's own known-good builds: never flagged.
 	tc = &Toolchain{Version: [3]int{11, 0, 0}, Bundled: true}
 	if tc.BrokenLiveRestore("arm64", AccelHVF) {
 		t.Fatal("bundled runtime must be exempt")
+	}
+}
+
+func TestDetectBundledTrustsHVF(t *testing.T) {
+	// A bundled toolchain is trusted without a trial boot: pointing it
+	// at a nonexistent binary (probe would fail) must still yield hvf.
+	tc := &Toolchain{System: "/nonexistent/qemu-system-aarch64", Bundled: true}
+	if got := Detect(tc, "darwin"); got != AccelHVF {
+		t.Fatalf("bundled darwin: want hvf without probe, got %s", got)
+	}
+	// Non-bundled with an unbootable binary still falls back to tcg.
+	tc.Bundled = false
+	if got := Detect(tc, "darwin"); got != AccelTCG {
+		t.Fatalf("system qemu with dead binary: want tcg fallback, got %s", got)
 	}
 }

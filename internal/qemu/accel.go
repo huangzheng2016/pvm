@@ -33,6 +33,13 @@ func Detect(t *Toolchain, goos string) Accel {
 	}
 	switch goos {
 	case "darwin":
+		// The bundled runtime is pvm's own known-good build with a
+		// fixed version: trust it supports hvf instead of paying a
+		// trial boot on every daemon start. System QEMU installs vary,
+		// so those keep the probe.
+		if t != nil && t.Bundled {
+			return AccelHVF
+		}
 		if probe(t, "-machine", "virt,accel=hvf") || probe(t, "-machine", "q35,accel=hvf") {
 			return AccelHVF
 		}

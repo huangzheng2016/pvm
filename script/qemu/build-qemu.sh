@@ -1,17 +1,17 @@
 #!/bin/bash
 # build-qemu.sh — pvm bundled QEMU recipe (macOS arm64 first).
 #
-# Why not stock homebrew qemu: QEMU 11.0.0 has a darwin/arm64 HVF
-# live-restore regression (cpu_pre_load assertion on incoming
-# migration). The upstream fix 06fd39e426 first ships in 11.1.0, so we
-# build 11.0.0 + that patch ourselves. ParavirtualizedGraphics is
-# disabled: headless VMs don't need it and it fails to link against
-# some macOS SDKs.
+# QEMU >= 11.1.0 already carries the upstream darwin/arm64 HVF
+# live-restore fix (06fd39e426), so no source patches are needed
+# anymore; hvf-fix.patch is kept in this directory as historical
+# record of the 11.0.0 era workaround. ParavirtualizedGraphics is
+# still disabled: headless VMs don't need it and it fails to link
+# against some macOS SDKs.
 #
-# Usage: QEMU_VERSION=11.0.0 ./script/qemu/build-qemu.sh <output-prefix>
+# Usage: QEMU_VERSION=11.1.2 ./script/qemu/build-qemu.sh <output-prefix>
 set -euo pipefail
 
-QEMU_VERSION="${QEMU_VERSION:-11.0.0}"
+QEMU_VERSION="${QEMU_VERSION:-11.1.2}"
 PREFIX="${1:?usage: build-qemu.sh <output-prefix>}"
 SRC="${SRC_DIR:-/tmp/pvm-qemu-src}/qemu-${QEMU_VERSION}"
 
@@ -26,11 +26,8 @@ if [ ! -d "$SRC" ]; then
   tar -xJf "$tarball" -C "$(dirname "$SRC")"
 fi
 
-cd "$(dirname "$0")"
-cp hvf-fix.patch "$SRC"/../ || true
 cd "$SRC"
 if ! grep -q "pvm: headless builds" meson.build 2>/dev/null; then
-  patch -p1 < ../hvf-fix.patch
   python3 - <<'PY'
 p = 'meson.build'
 s = open(p).read()

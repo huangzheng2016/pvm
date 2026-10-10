@@ -35,8 +35,9 @@ func probeVersion(system string) [3]int {
 
 // BrokenLiveRestore reports the QEMU 11.0.0 darwin/arm64 HVF regression
 // (cpu_pre_load assertion on incoming migration, fixed upstream by
-// 06fd39e426 which first ships in 11.1.0). Bundled runtimes are pvm's
-// own patched builds and are exempt.
+// 06fd39e426 which first ships in 11.1.0). Only the exact 11.0.0
+// release is broken; 11.1+ stock builds pass, and bundled runtimes are
+// pvm's own known-good builds and are always exempt.
 func (t *Toolchain) BrokenLiveRestore(arch string, accel Accel) bool {
 	return !t.Bundled && arch == "arm64" && accel == AccelHVF && t.Version == [3]int{11, 0, 0}
 }
