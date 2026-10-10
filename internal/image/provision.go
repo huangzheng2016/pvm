@@ -2,28 +2,12 @@ package image
 
 import (
 	"fmt"
-	"runtime"
 	"strings"
 )
 
-// KasmCandidates is the ordered pull list for the pre-baked kasm
-// desktop image; the first one that pulls successfully wins.
-// kasmweb/desktop is amd64-only; docker on arm64 "succeeds" pulling it
-// via silent platform fallback, so arm64 must try the multi-arch core
-// images FIRST.
-func KasmCandidates(goarch string) []string {
-	if goarch == "arm64" {
-		return []string{
-			"kasmweb/core-ubuntu-jammy:1.16.0",
-			"kasmweb/core-ubuntu-jammy:1.15.0",
-		}
-	}
-	return []string{
-		"kasmweb/desktop:1.16.0",
-		"kasmweb/core-ubuntu-jammy:1.16.0",
-		"kasmweb/core-ubuntu-jammy:1.15.0",
-	}
-}
+// KasmImage is the kasm desktop image pre-baked into golden images and
+// launched by `pvm kasm`; multi-arch (amd64+arm64 manifests verified).
+const KasmImage = "kasmweb/core-ubuntu-jammy:1.16.0"
 
 // GoldenPackages are apt packages baked into every golden image.
 var GoldenPackages = []string{
@@ -65,15 +49,8 @@ for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 2; done
 docker info
 
 : > /etc/pvm-preinstalled-images
-`)
-	for _, img := range KasmCandidates(runtime.GOARCH) {
-		fmt.Fprintf(&b, `
-if [ ! -s /etc/pvm-preinstalled-images ]; then
-  docker pull %[1]s && echo %[1]s >> /etc/pvm-preinstalled-images || true
-fi
-`, img)
-	}
-	b.WriteString(`
+docker pull ` + KasmImage + ` && echo ` + KasmImage + ` >> /etc/pvm-preinstalled-images
+
 echo PVM_PREINSTALLED_BEGIN
 cat /etc/pvm-preinstalled-images
 echo PVM_PREINSTALLED_END

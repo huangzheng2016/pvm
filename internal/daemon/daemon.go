@@ -45,6 +45,9 @@ type Server struct {
 
 	agentMu sync.Mutex // guards agents
 	agents  map[string]*agent.Client
+
+	kasmMu sync.Mutex // guards kasms
+	kasms  map[string]*kasmProxy
 }
 
 type vmInfo struct {

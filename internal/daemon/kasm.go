@@ -16,22 +16,15 @@ const (
 	kasmPort      = 6901
 )
 
-// kasmImageFor picks the pre-baked kasm image for the VM arch (see
-// image.KasmCandidates: desktop is amd64-only).
-func kasmImageFor(goarch string) string {
-	return image.KasmCandidates(goarch)[0]
-}
-
 type kasmResponse struct {
 	URL      string `json:"url"`
-	Username string `json:"username"`
-	Password string `json:"password"`
 	HostPort int    `json:"host_port"`
 }
 
 // handleKasm idempotently (re)starts the kasm desktop container in the
 // VM, waits for its HTTPS endpoint and publishes it through a cluster
-// port map. The random VNC password acts as the one-time credential.
+// port map fronted by a credential-injecting loopback proxy, so the
+// returned URL needs no login.
 func (s *Server) handleKasm(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	spec, err := s.getSpec(name)
@@ -53,7 +46,7 @@ func (s *Server) handleKasm(w http.ResponseWriter, r *http.Request) {
 	run := fmt.Sprintf(
 		`docker rm -f %[1]s >/dev/null 2>&1; `+
 			`docker run -d --name %[1]s --shm-size=512m -e VNC_PW=%[2]s -p %[3]d:%[3]d %[4]s >/dev/null && echo STARTED`,
-		kasmContainer, pw, kasmPort, kasmImageFor(spec.Arch))
+		kasmContainer, pw, kasmPort, image.KasmImage)
 	out, err := s.sshRun(spec, run)
 	if err != nil {
 		writeErr(w, 500, fmt.Errorf("start kasm container: %v\n%s", err, out))
@@ -111,12 +104,14 @@ func (s *Server) handleKasm(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = poolPort
 
+	px, err := s.kasmProxyFor(spec.Name, hostPort, pw)
+	if err != nil {
+		writeErr(w, 500, fmt.Errorf("kasm proxy: %v", err))
+		return
+	}
 	writeJSON(w, 200, kasmResponse{
-		// credentials in the URL double as the one-time token
-		URL:      fmt.Sprintf("https://kasm_user:%s@127.0.0.1:%d/", pw, hostPort),
-		Username: "kasm_user",
-		Password: pw,
-		HostPort: hostPort,
+		URL:      fmt.Sprintf("http://127.0.0.1:%d/", px.port),
+		HostPort: px.port,
 	})
 }
 

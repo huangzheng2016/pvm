@@ -10,13 +10,12 @@ import (
 
 type kasmView struct {
 	URL      string `json:"url"`
-	Username string `json:"username"`
-	Password string `json:"password"`
 	HostPort int    `json:"host_port"`
 }
 
 // CmdKasm implements `pvm kasm <vm> [--open]`: ensure the kasm desktop
-// container runs in the VM and print its local URL + credentials.
+// container runs in the VM and print its local URL (no login needed —
+// the daemon injects the credential at its loopback proxy).
 func CmdKasm(args []string) int {
 	if len(args) < 1 {
 		return fatalf("usage: pvm kasm <vm> [--open]")
@@ -33,7 +32,7 @@ func CmdKasm(args []string) int {
 	if err := c.Post("/v1/vms/"+args[0]+"/kasm", nil, &v); err != nil {
 		return fatalf("%v", err)
 	}
-	fmt.Printf("kasm ready: %s\n  user:     %s\n  password: %s\n", v.URL, v.Username, v.Password)
+	fmt.Printf("kasm ready: %s\n", v.URL)
 	if hasFlag(args[1:], "--open") {
 		if runtime.GOOS == "darwin" {
 			exec.Command("open", v.URL).Start()
