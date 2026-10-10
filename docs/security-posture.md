@@ -17,6 +17,8 @@ Claude Code 等工具的运行环境检测针对的是**容器**与云主机：`
 
 - `pvm route <vm> --via <exit>` 后，该 VM 全部流量（含 DNS）经隧道从 VPS 出口，fail-closed：隧道断 = VM 断网，不会回退到本地出口造成 IP 跳变。
 - 被代理域名采用**域名直达（domain-egress）**：网关对代理域名不执行任何 DNS 解析（本机/本地网络对访问的域名零可见），域名经隧道内 domain-connect 通道送到 exit-agent，由它在 VPS 上解析并拨号。
+- 域名规则只对**经网关 DNS 的解析**生效。应用硬编码 DoH/DoQ 会绕过 fake-ip 接管，因此网关在 br0 入向拦截知名公共 DoH/DoQ 解析器（Cloudflare/Google/Quad9/OpenDNS/AdGuard/CleanBrowsing/dns.sb，清单见 `internal/gateway/doh.go`）的 443/853：这些地址的 53 已被劫持到网关，正常解析不受影响，仅硬编码 DoH 通道被关闭。集群为 IPv4-only：网关禁用 IPv6 且 nft 对 IPv6 出向默认丢弃。
+- br0 到上行为默认拒绝：仅放行 direct VM 的登记 MAC/IP 对与 bypass 目的地，未登记（伪造）地址 fail-closed，guest 改 IP/MAC 无法绕过 kill-switch。
 
 ## 内网 DNS 分流
 

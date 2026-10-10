@@ -193,7 +193,7 @@ WantedBy=multi-user.target
 		"packages":       []string{"nftables", "iproute2"},
 		"runcmd": []string{
 			"mkdir -p /etc/pvm",
-			"printf 'net.ipv4.ip_forward=1\\n' > /etc/sysctl.d/99-pvm.conf",
+			"printf 'net.ipv4.ip_forward=1\\nnet.ipv6.conf.all.disable_ipv6=1\\n' > /etc/sysctl.d/99-pvm.conf",
 			"sysctl --system",
 			"systemctl daemon-reload",
 			"systemctl enable pvm-gateway.service",
