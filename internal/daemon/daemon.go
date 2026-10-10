@@ -10,9 +10,12 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -48,9 +51,12 @@ func NewServer(p *paths.Paths, cfg *config.Config, tc *qemu.Toolchain, accel qem
 }
 
 func (s *Server) instance(spec *vm.Spec) *qemu.Instance {
+	cfg := spec.QEMUConfig(s.P, s.Accel)
+	vmDir := s.P.VMDir(spec.Name)
+	cfg.DiskPath = qemu.ActiveDisk(vmDir, cfg.DiskPath)
 	return &qemu.Instance{
-		Cfg:       spec.QEMUConfig(s.P, s.Accel),
-		StatePath: filepath.Join(s.P.VMDir(spec.Name), "run.json"),
+		Cfg:       cfg,
+		StatePath: filepath.Join(vmDir, "run.json"),
 		Toolchain: s.TC,
 	}
 }
@@ -82,6 +88,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/vms/{name}", s.handleDelete)
 	mux.HandleFunc("POST /v1/vms/{name}/start", s.handleStart)
 	mux.HandleFunc("POST /v1/vms/{name}/stop", s.handleStop)
+	mux.HandleFunc("POST /v1/vms/{name}/snapshot", s.handleSnapshotCreate)
+	mux.HandleFunc("GET /v1/vms/{name}/snapshot", s.handleSnapshotGet)
+	mux.HandleFunc("DELETE /v1/vms/{name}/snapshot", s.handleSnapshotDelete)
 	mux.HandleFunc("POST /v1/shutdown", s.handleShutdown)
 	return mux
 }
@@ -265,11 +274,124 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 	lock := qemu.LockVM(spec.Name)
 	lock.Lock()
 	defer lock.Unlock()
-	if err := s.instance(spec).Start(); err != nil {
+
+	vmDir := s.P.VMDir(spec.Name)
+	inst := s.instance(spec)
+	man, err := inst.PrepareRestore(vmDir)
+	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
+	if err := inst.Start(); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	if man != nil {
+		if err := inst.WaitRestored(vmDir); err != nil {
+			inst.Stop()
+			writeErr(w, 500, fmt.Errorf("restore failed, vm stopped: %w", err))
+			return
+		}
+		// Shares were hot-unplugged before the snapshot and re-attached
+		// after the restore; remount them (ssh needs a moment after
+		// resume).
+		go func() {
+			for i := 0; i < 15; i++ {
+				if err := s.sshGuest(spec, "sudo mount -a"); err == nil {
+					return
+				}
+				time.Sleep(2 * time.Second)
+			}
+			log.Printf("restore %s: remount of 9p shares failed", spec.Name)
+		}()
+		writeJSON(w, 200, map[string]any{"started": spec.Name, "restored": man.CreatedAt})
+		return
+	}
 	writeJSON(w, 200, map[string]any{"started": spec.Name})
+}
+
+// sshGuest runs a command inside the guest; used for snapshot-time 9p
+// mount management (umount before migrate, remount after restore).
+func (s *Server) sshGuest(spec *vm.Spec, remoteCmd string) error {
+	cmd := exec.Command("ssh",
+		"-i", s.P.SSHKey(),
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
+		"-o", "ConnectTimeout=5",
+		"-p", strconv.Itoa(spec.SSHPort),
+		fmt.Sprintf("%s@127.0.0.1", spec.User),
+		remoteCmd,
+	)
+	return cmd.Run()
+}
+
+func (s *Server) handleSnapshotCreate(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	spec, err := s.getSpec(name)
+	if err != nil {
+		writeErr(w, 404, err)
+		return
+	}
+	lock := qemu.LockVM(name)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// 9p mounts hold guest fid state the fresh QEMU process cannot
+	// reconstruct; lazily unmount them before migration (best effort).
+	mounts := []string{"/share"}
+	for _, m := range spec.Mounts {
+		mounts = append(mounts, m.Guest)
+	}
+	if err := s.sshGuest(spec, "sudo umount -l "+strings.Join(mounts, " ")); err != nil {
+		log.Printf("snapshot %s: pre-migrate umount failed (continuing): %v", name, err)
+	}
+
+	if err := s.instance(spec).CreateSnapshot(s.P.VMDir(name), buildinfo.Version); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	man, err := qemu.LoadManifest(s.P.VMDir(name))
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 201, man)
+}
+
+func (s *Server) handleSnapshotGet(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if _, err := s.getSpec(name); err != nil {
+		writeErr(w, 404, err)
+		return
+	}
+	man, err := qemu.LoadManifest(s.P.VMDir(name))
+	if err != nil {
+		writeErr(w, 404, err)
+		return
+	}
+	writeJSON(w, 200, man)
+}
+
+func (s *Server) handleSnapshotDelete(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	spec, err := s.getSpec(name)
+	if err != nil {
+		writeErr(w, 404, err)
+		return
+	}
+	lock := qemu.LockVM(name)
+	lock.Lock()
+	defer lock.Unlock()
+	if st := s.instance(spec).Running(); st != nil {
+		writeErr(w, 409, fmt.Errorf("vm %s is running; stop it before removing the snapshot", name))
+		return
+	}
+	if err := qemu.RemoveSnapshot(s.P.VMDir(name)); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"removed": name})
 }
 
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
