@@ -176,7 +176,7 @@ func (s *Server) maybeIdentityReset(spec *vm.Spec) {
 }
 
 func (s *Server) identityReset(spec *vm.Spec) error {
-	script := identityResetScript(spec.Name)
+	script := identityResetScript(spec)
 
 	// Agent channel first (no network dependency) via the shared pool:
 	// QEMU's chardev accepts exactly one host connection, so dialing
@@ -218,13 +218,56 @@ func (s *Server) identityReset(spec *vm.Spec) error {
 // not drop established sessions on Ubuntu, so our own connection lives.
 // The netplan rewrite matches the primary NIC by name (en*) instead of
 // the source's MAC, making future clones boot network-ready too.
-func identityResetScript(newHostname string) string {
-	return fmt.Sprintf(
-		"printf 'network:\n  version: 2\n  ethernets:\n    primary:\n      match:\n        name: en*\n      dhcp4: true\n' | sudo tee /etc/netplan/50-cloud-init.yaml >/dev/null && "+
-			"sudo netplan apply && "+
-			"sudo hostnamectl set-hostname %[1]s && "+
-			"sudo sh -c 'rm -f /etc/machine-id /var/lib/dbus/machine-id && systemd-machine-id-setup' && "+
-			"sudo rm -f /etc/ssh/ssh_host_* && sudo ssh-keygen -A; "+
-			"sudo systemctl restart ssh.socket ssh.service 2>/dev/null || true",
+//
+// Besides hostname/machine-id/ssh host keys, the script also wipes the
+// Claude device identity (~/.claude.json and ~/.claude for root and every
+// user): its random userID is the only device fingerprint that actually
+// leaves the machine, and a clone must not keep the source's. machine-id
+// and host keys are defense-in-depth by comparison.
+func identityResetScript(spec *vm.Spec) string {
+	if vm.IsAlpine(spec) {
+		return alpineIdentityResetScript(spec.Name)
+	}
+	return ubuntuIdentityResetScript(spec.Name)
+}
+
+// claudeIdentityWipe removes every trace of Claude's persistent device
+// identity for root and all users. A clone is a brand-new device, so the
+// whole state directory goes, not just the telemetry queue.
+const claudeIdentityWipe = `$SUDO sh -c 'rm -f /root/.claude.json; rm -rf /root/.claude; for home in /home/*; do rm -f "$home/.claude.json"; rm -rf "$home/.claude"; done'`
+
+// useSudo expands to `sudo` only when the caller is not root: the agent
+// channel already runs as root (and alpine's sudoers refuses root), while
+// the ssh fallback is an unprivileged user that needs it.
+const useSudo = `SUDO=''; [ "$(id -u)" -ne 0 ] && SUDO='sudo'`
+
+func ubuntuIdentityResetScript(newHostname string) string {
+	// set -e makes any failure abort non-zero so the caller retries on the
+	// next boot; the tolerated ssh restart at the end cannot mask a real
+	// failure the way '; ... || true' did.
+	return "set -e\n" + useSudo + "\n" + fmt.Sprintf(
+		"printf 'network:\n  version: 2\n  ethernets:\n    primary:\n      match:\n        name: en*\n      dhcp4: true\n' | $SUDO tee /etc/netplan/50-cloud-init.yaml >/dev/null\n"+
+			"$SUDO netplan apply\n"+
+			"$SUDO hostnamectl set-hostname %[1]s\n"+
+			"$SUDO sh -c 'rm -f /etc/machine-id /var/lib/dbus/machine-id && systemd-machine-id-setup'\n"+
+			"$SUDO rm -f /etc/ssh/ssh_host_* && $SUDO ssh-keygen -A\n"+
+			claudeIdentityWipe+"\n"+
+			"($SUDO systemctl restart ssh.socket ssh.service 2>/dev/null || true)\n",
+		newHostname)
+}
+
+// Alpine (OpenRC) equivalent: /etc/hostname + hostname -F instead of
+// hostnamectl, a fresh random machine-id instead of systemd-machine-id-setup,
+// and rc-service instead of systemctl. Alpine's /etc/network/interfaces is
+// written by interface name (eth0), not by source MAC, so no rewrite is
+// needed for networking.
+func alpineIdentityResetScript(newHostname string) string {
+	return "set -e\n" + useSudo + "\n" + fmt.Sprintf(
+		"echo %[1]s | $SUDO tee /etc/hostname >/dev/null\n"+
+			"$SUDO hostname -F /etc/hostname\n"+
+			"$SUDO sh -c 'rm -f /etc/machine-id /var/lib/dbus/machine-id; uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid' | tr -d '-' | $SUDO tee /etc/machine-id >/dev/null\n"+
+			"$SUDO rm -f /etc/ssh/ssh_host_* && $SUDO ssh-keygen -A\n"+
+			claudeIdentityWipe+"\n"+
+			"($SUDO rc-service sshd restart 2>/dev/null || true)\n",
 		newHostname)
 }

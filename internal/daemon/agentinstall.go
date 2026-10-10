@@ -27,14 +27,11 @@ const agentOpenRC = `#!/sbin/openrc-run
 description="pvm guest agent"
 command="/usr/local/bin/pvm"
 command_args="agent"
+command_background="yes"
 pidfile="/run/pvm-agent.pid"
 
-start_pre() {
-	# The alpine nocloud image leaves sshd stopped after a reboot even
-	# though it is in the default runlevel. The agent comes up on every
-	# boot, so ensure sshd with it; never block the agent on this.
-	rc-service sshd start >/dev/null 2>&1 || true
-	return 0
+depend() {
+	need net
 }
 `
 
@@ -58,6 +55,13 @@ func (s *Server) ensureAgentAsync(spec *vm.Spec) {
 func (s *Server) installAgent(spec *vm.Spec, bin string) error {
 	s.stage(spec.Name, "provision", "waiting for ssh (cloud-init running)")
 	if err := s.waitSSH(spec, 6*time.Minute); err != nil {
+		return err
+	}
+	// Alpine's sshd comes up long before cloud-init has finished
+	// apk-installing sudo/bash, so ssh being up does not mean the guest
+	// is provisioned. Wait for sudo to exist, then for cloud-init to
+	// settle (no-op where cloud-init is absent or already done).
+	if err := s.waitGuestProvisioned(spec, 6*time.Minute); err != nil {
 		return err
 	}
 	s.stage(spec.Name, "ready", "ssh reachable")
@@ -107,6 +111,25 @@ func (s *Server) waitSSH(spec *vm.Spec, d time.Duration) error {
 		time.Sleep(3 * time.Second)
 	}
 	return fmt.Errorf("ssh not reachable within %v", d)
+}
+
+// waitGuestProvisioned waits until sudo exists and cloud-init has
+// finished, so install commands never race the guest's own provisioning.
+func (s *Server) waitGuestProvisioned(spec *vm.Spec, d time.Duration) error {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if _, err := s.sshRun(spec, "command -v sudo >/dev/null 2>&1"); err == nil {
+			break
+		}
+		time.Sleep(3 * time.Second)
+	}
+	if !time.Now().Before(deadline) {
+		return fmt.Errorf("sudo not available within %v", d)
+	}
+	if _, err := s.sshRun(spec, "sudo cloud-init status --wait >/dev/null 2>&1 || true"); err != nil {
+		return fmt.Errorf("wait cloud-init: %w", err)
+	}
+	return nil
 }
 
 func shellQuote(s string) string {

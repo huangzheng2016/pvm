@@ -34,7 +34,7 @@ AI-service Code 等工具的运行环境检测针对的是**容器**与云主机
 ## 身份卫生
 
 - **git 身份**：AI-service Code 的会话上下文（gitStatus）携带 `git config user.name/user.email` 上行。pvm **绝不读取或传播宿主 `~/.gitconfig`**；需要时用 `pvm create --git-email/--git-name` 显式设置。
-- **设备身份**：每台 VM 是全新设备（独立的 `~/.ai-service.json` deviceId、machine-id、ssh host key，golden 镜像克隆时已做唯一性清洗）。RAM 快照会把设备身份一起冻结——同一 VM 快照恢复后仍是"同一台设备"，这是预期行为。
+- **设备身份**：`~/.ai-service.json` 的随机 userID 是唯一真正上行的持久设备指纹（遥测事件与 `/v1/messages` 的 `metadata.user_id` 都带它，且任何遥测开关都关不掉）。相比之下 machine-id 与 ssh host key 的读取结果不上行，属纵深防御。每台新 VM 天然是全新设备；**clone 的首启清洗会同时清除 `~/.ai-service.json` 与 `~/.ai-service/`**——克隆体与源机在服务端不是同一台设备。RAM 快照会把设备身份一起冻结：同一 VM 快照恢复后仍是"同一台设备"，这是预期行为。要换设备身份就新建或 clone，不要在 VM 间复制 `~/.ai-service.json` / `~/.ai-service/`。
 - **主机名**：trusted_devices 的 display_name 会带 hostname，VM 名保持中性即可。
 - **SMBIOS**：`pvm create --smbios-spoof` 让 DMI 呈现为常见 PC 硬件（Dell Inspiron）而非 QEMU 默认值。当前证据显示该类字段不上行，默认关闭。
 
