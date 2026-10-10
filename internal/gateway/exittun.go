@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/exit"
+	"github.com/huangzheng2016/pvm/internal/gw/rules"
 	"github.com/huangzheng2016/pvm/internal/tunnel"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -93,36 +94,50 @@ type exitManager struct {
 	tuns map[string]*exitTunnel
 	// desired ip-rule state (reconciled on Sync)
 	vmRules   map[string]int  // vmIP -> exit idx
+	vmDirect  map[string]bool // vmIP -> lookup main (cluster-default override)
 	cidrRules map[string]int  // proxied cidr -> exit idx
+	cluster   string          // cluster cidr with a default exit, "" = none
+	clusterTable string       // its lookup table, re-added on index drift
 	bypass    map[string]bool // direct cidrs/ips -> lookup main
-	// learned holds runtime-learned bypass /32s (direct/internal domain
-	// answers); kept across Sync calls so config pushes never reroute
-	// live direct flows into the tunnel mid-TTL.
-	learned         map[string]bool
+	// learned holds runtime-learned bypass /32s indexed by the domain
+	// that produced them (domain -> ip -> last seen). Entries survive
+	// config syncs so cached direct flows are never rerouted mid-TTL,
+	// but they are evicted when their domain stops being a direct rule
+	// (e.g. direct -> proxy) or when they go unused past learnedTTL.
+	learned         map[string]map[string]time.Time
+	learnedTTL      time.Duration
 	learnedFullOnce sync.Once
-	// onBypass fires when a new bypass ip/cidr is learned at runtime
-	// (direct-domain DNS answers), so the nft bypass set stays in sync
-	// between full table rebuilds.
+	// onBypass/onEvict fire when a bypass ip is learned/expired at
+	// runtime, so the nft bypass set stays in sync between full rebuilds.
 	onBypass func(ip string)
+	onEvict  func(ip string)
 }
 
-const learnedBypassCap = 4096
+const (
+	learnedBypassCap = 4096
+	defaultLearnedTTL = 24 * time.Hour
+)
 
 func newExitManager() *exitManager {
 	return &exitManager{
-		tuns:      map[string]*exitTunnel{},
-		vmRules:   map[string]int{},
-		cidrRules: map[string]int{},
-		bypass:    map[string]bool{},
-		learned:   map[string]bool{},
+		tuns:       map[string]*exitTunnel{},
+		vmRules:    map[string]int{},
+		vmDirect:   map[string]bool{},
+		cidrRules:  map[string]int{},
+		bypass:     map[string]bool{},
+		learned:    map[string]map[string]time.Time{},
+		learnedTTL: defaultLearnedTTL,
 	}
 }
 
 // Sync converges tunnels and ip rules to the config. exits contains
 // only the defs that are referenced; vmExits is vmName -> exit name
 // ("direct"/"" handled by caller); vmIPs maps vmName -> cluster IP;
-// proxiedCIDRs and directCIDRs come from the routing rules.
-func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, vmIPs map[string]string, proxiedCIDRs, directCIDRs []string) {
+// proxiedCIDRs and directCIDRs come from the routing rules. clusterCIDR
+// and defaultExit ("" = none) describe the cluster-wide fallback route:
+// with one set, every VM without an explicit exit enters the default
+// tunnel, and VMs explicitly marked direct get an override rule.
+func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, vmIPs map[string]string, proxiedCIDRs, directCIDRs []string, clusterCIDR, defaultExit string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -164,6 +179,20 @@ func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, 
 			wantCIDR[cidr] = idx
 		}
 	}
+	defIdx := -1
+	if defaultExit != "" {
+		defIdx = exitIndex(names, defaultExit)
+	}
+	wantDirect := map[string]bool{}
+	wantCluster := ""
+	if defIdx >= 0 {
+		for _, ip := range vmIPs {
+			if _, proxied := wantVM[ip]; !proxied {
+				wantDirect[ip] = true
+			}
+		}
+		wantCluster = clusterCIDR
+	}
 	wantBypass := map[string]bool{}
 	for _, c := range directCIDRs {
 		wantBypass[c] = true
@@ -175,34 +204,99 @@ func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, 
 	}
 	// runtime-learned bypass IPs survive config syncs; dropping them
 	// mid-TTL reroutes cached direct flows into the tunnel.
-	for ip := range m.learned {
-		wantBypass[ip] = true
+	for _, ips := range m.learned {
+		for ip := range ips {
+			wantBypass[ip] = true
+		}
 	}
 
 	m.reconcileRulesLocked(wantVM, wantCIDR, wantBypass)
+	m.reconcileDefaultLocked(wantDirect, wantCluster, defIdx)
 }
 
 // AddBypassIP records a freshly resolved direct/internal-domain IP so
-// its traffic skips the tunnel even for proxied VMs. Learned entries
-// persist across config syncs (see Sync); the table is capped and new
-// entries are dropped (fail-safe to the tunnel) once full.
-func (m *exitManager) AddBypassIP(ip string) {
+// its traffic skips the tunnel even for proxied VMs. Entries are keyed
+// by the domain that produced them (for rule-change eviction) and carry
+// a last-seen timestamp (for TTL expiry); both are refreshed on every
+// hit. The table is capped and new entries are dropped (fail-safe to
+// the tunnel) once full.
+func (m *exitManager) AddBypassIP(domain, ip string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.bypass[ip+"/32"] || m.learned[ip+"/32"] {
+	now := time.Now()
+	ips, ok := m.learned[domain]
+	if !ok {
+		ips = map[string]time.Time{}
+		m.learned[domain] = ips
+	}
+	cidr := ip + "/32"
+	if _, dup := ips[cidr]; dup {
+		ips[cidr] = now
 		return
 	}
-	if len(m.learned) >= learnedBypassCap {
+	total := 0
+	for _, set := range m.learned {
+		total += len(set)
+	}
+	if total >= learnedBypassCap {
 		m.learnedFullOnce.Do(func() {
 			log.Printf("exit: learned bypass table full (%d entries), dropping new ones", learnedBypassCap)
 		})
 		return
 	}
-	if err := ipRuleCmd("add", "to", ip+"/32", "lookup", "main", "pref", strconv.Itoa(rulePrefBypass)); err == nil {
-		m.learned[ip+"/32"] = true
-		m.bypass[ip+"/32"] = true
+	if err := ipRuleCmd("add", "to", cidr, "lookup", "main", "pref", strconv.Itoa(rulePrefBypass)); err == nil {
+		ips[cidr] = now
+		m.bypass[cidr] = true
 		if m.onBypass != nil {
-			m.onBypass(ip + "/32")
+			m.onBypass(cidr)
+		}
+	}
+}
+
+// evictLearnedIP removes one learned /32 everywhere: ip rule, state,
+// and (via onEvict) the nft bypass set.
+func (m *exitManager) evictLearnedIPLocked(domain, cidr string) {
+	ipRuleCmd("del", "to", cidr, "lookup", "main")
+	delete(m.learned[domain], cidr)
+	if len(m.learned[domain]) == 0 {
+		delete(m.learned, domain)
+	}
+	delete(m.bypass, cidr)
+	if m.onEvict != nil {
+		m.onEvict(cidr)
+	}
+}
+
+// ReconcileLearned evicts learned bypass entries whose domain no longer
+// resolves as a direct/internal rule — e.g. after the rule flipped to
+// proxy, the previously learned IPs must not keep bypassing the tunnel.
+func (m *exitManager) ReconcileLearned(eng *rules.Engine) {
+	if eng == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for domain := range m.learned {
+		d, ok := eng.Match(domain, nil)
+		if ok && (d.Action == rules.Direct || d.Internal) {
+			continue
+		}
+		for cidr := range m.learned[domain] {
+			m.evictLearnedIPLocked(domain, cidr)
+		}
+	}
+}
+
+// SweepLearned evicts learned bypass entries unused for longer than the
+// configured TTL. Called periodically from the agent run loop.
+func (m *exitManager) SweepLearned(now time.Time) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for domain, ips := range m.learned {
+		for cidr, seen := range ips {
+			if now.Sub(seen) > m.learnedTTL {
+				m.evictLearnedIPLocked(domain, cidr)
+			}
 		}
 	}
 }
@@ -260,6 +354,42 @@ func (m *exitManager) reconcileRulesLocked(wantVM map[string]int, wantCIDR map[s
 			if err := ipRuleCmd("add", "to", cidr, "lookup", "main", "pref", strconv.Itoa(rulePrefBypass)); err == nil {
 				m.bypass[cidr] = true
 			}
+		}
+	}
+}
+
+// reconcileDefaultLocked converges the cluster-default-exit rules: with
+// a default exit set, the whole cluster CIDR selects its table at
+// pref 103, and every direct VM (no explicit exit) overrides with
+// lookup-main at pref 102 — explicit per-VM exits at pref 101 always
+// win. With no default exit both rule sets are removed.
+func (m *exitManager) reconcileDefaultLocked(wantDirect map[string]bool, wantCluster string, defIdx int) {
+	for ip := range m.vmDirect {
+		if !wantDirect[ip] {
+			ipRuleCmd("del", "from", ip+"/32", "lookup", "main")
+			delete(m.vmDirect, ip)
+		}
+	}
+	for ip := range wantDirect {
+		if !m.vmDirect[ip] {
+			if err := ipRuleCmd("add", "from", ip+"/32", "lookup", "main", "pref", "102"); err == nil {
+				m.vmDirect[ip] = true
+			}
+		}
+	}
+	wantTable := ""
+	if defIdx >= 0 {
+		wantTable = strconv.Itoa(ruleTableBase + defIdx)
+	}
+	if m.cluster != "" && (wantCluster == "" || m.cluster != wantCluster || m.clusterTable != wantTable) {
+		// delete by prefix: the old rule may point at a different table
+		// after exits re-sorted, and ip rule tolerates the no-match case.
+		ipRuleCmd("del", "from", m.cluster, "pref", "103")
+		m.cluster, m.clusterTable = "", ""
+	}
+	if wantCluster != "" && m.cluster == "" {
+		if err := ipRuleCmd("add", "from", wantCluster, "lookup", wantTable, "pref", "103"); err == nil {
+			m.cluster, m.clusterTable = wantCluster, wantTable
 		}
 	}
 }

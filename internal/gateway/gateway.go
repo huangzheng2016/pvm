@@ -42,6 +42,10 @@ type Config struct {
 	Maps        []MapEntry        `json:"maps"`
 	Rules       []rules.Rule      `json:"rules,omitempty"`    // routing rules (fake-ip engine)
 	VMExits     map[string]string `json:"vm_exits,omitempty"` // vm name -> exit name; ""/absent = direct
+	// DefaultExit is the cluster-wide fallback exit ("", absent = direct)
+	// used when neither a rule nor a per-VM route matches. The daemon's
+	// `pvm route` CLI exposes it as the cluster default route.
+	DefaultExit string `json:"default_exit,omitempty"`
 	// Exits carries the connection defs for every exit referenced by
 	// Rules or VMExits (keyed by exit name).
 	Exits map[string]ExitDef `json:"exits,omitempty"`
@@ -61,10 +65,16 @@ type Agent struct {
 func New(configPath string) *Agent {
 	a := &Agent{configPath: configPath, br: "br0", exits: newExitManager(), stop: make(chan struct{})}
 	// learned bypass IPs are inserted into the nft set immediately;
-	// full table rebuilds re-include them via BypassList.
+	// evicted ones (rule flip or TTL) are removed the same way; full
+	// table rebuilds re-include the survivors via BypassList.
 	a.exits.onBypass = func(cidr string) {
 		if out, err := exec.Command("nft", "add", "element", "inet", "pvm", "bypass4", "{", cidr, "}").CombinedOutput(); err != nil {
 			log.Printf("nft bypass4 add %s: %v (%s)", cidr, err, strings.TrimSpace(string(out)))
+		}
+	}
+	a.exits.onEvict = func(cidr string) {
+		if out, err := exec.Command("nft", "delete", "element", "inet", "pvm", "bypass4", "{", cidr, "}").CombinedOutput(); err != nil {
+			log.Printf("nft bypass4 del %s: %v (%s)", cidr, err, strings.TrimSpace(string(out)))
 		}
 	}
 	return a
@@ -122,7 +132,7 @@ func (a *Agent) Run() error {
 			if fdns == nil && c.DNSUpstream != "" {
 				f, err := newFakeDNS(c.DNSUpstream, func(domain string, ips []string) {
 					for _, ip := range ips {
-						a.exits.AddBypassIP(ip)
+						a.exits.AddBypassIP(domain, ip)
 					}
 				})
 				if err != nil {
@@ -143,6 +153,9 @@ func (a *Agent) Run() error {
 				if err := fdns.SetRules(c.Rules); err != nil {
 					log.Printf("rules: %v", err)
 				}
+				// a rule that flipped direct -> proxy must not keep its
+				// previously learned bypass IPs.
+				a.exits.ReconcileLearned(fdns.Rules())
 				if fproxy != nil {
 					pol := gwpolicy.New(fdns.Rules(), fdns.Pool())
 					for name, exit := range c.VMExits {
@@ -150,6 +163,7 @@ func (a *Agent) Run() error {
 							pol.SetVMExit(name, exit)
 						}
 					}
+					pol.SetDefaultExit(c.DefaultExit)
 					fproxy.SetPolicy(pol)
 					fproxy.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr)
 				}
@@ -170,10 +184,11 @@ func (a *Agent) Run() error {
 					directCIDRs = append(directCIDRs, r.Pattern)
 				}
 			}
-			a.exits.Sync(c.Exits, c.VMExits, vmIPs, proxiedCIDRs, directCIDRs)
+			a.exits.Sync(c.Exits, c.VMExits, vmIPs, proxiedCIDRs, directCIDRs, c.CIDR, c.DefaultExit)
 			lastCfg = raw
 		}
 		a.reconcileLinks()
+		a.exits.SweepLearned(time.Now())
 		select {
 		case <-a.stop:
 			return nil
