@@ -55,6 +55,8 @@ type Server struct {
 
 	watchMu  sync.Mutex // guards watchSeq
 	watchSeq map[string]uint64
+
+	gwPushLocks sync.Map // clusterID -> *sync.Mutex, serializes gateway config pushes
 }
 
 type vmInfo struct {
@@ -428,7 +430,7 @@ func (s *Server) startVM(spec *vm.Spec) (*qemu.Instance, *qemu.SnapshotManifest,
 		// The DHCP mapping must be in place before the guest's first
 		// DHCP request: the async deploy races the boot and fast-give-up
 		// clients (alpine udhcpc) never get an offer.
-		if err := s.pushGatewayConfigRetry(cl); err != nil {
+		if err := s.pushGatewayConfigRetry(cl.ID); err != nil {
 			return nil, nil, err
 		}
 		go s.deployClusterAgent(cl) // binary push is best-effort async
@@ -649,7 +651,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if cl != nil {
 		s.removeLink(cl, name)
 		s.Clusters.RemoveVM(cl.ID, name)
-		s.pushGatewayConfig(cl)
+		s.pushGatewayConfig(cl.ID)
 	}
 	if err := vm.Delete(s.P, name); err != nil {
 		writeErr(w, 500, err)
