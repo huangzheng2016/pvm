@@ -135,7 +135,7 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 		added = append(added, pm)
 	}
 	if len(added) > 0 {
-		if err := s.pushGatewayConfig(cl); err != nil {
+		if err := s.pushGatewayConfig(cl.ID); err != nil {
 			writeErr(w, 500, fmt.Errorf("clone created but gateway config push failed: %w", err))
 			return
 		}
