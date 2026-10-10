@@ -3,6 +3,8 @@ package paths
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/huangzheng2016/pvm/internal/native"
 )
 
 func TestPVMHomeOverride(t *testing.T) {
@@ -17,7 +19,7 @@ func TestPVMHomeOverride(t *testing.T) {
 	if got := p.AgentSock("dev1"); got != "/tmp/pvm-test-xyz/vms/dev1/agent.sock" {
 		t.Fatalf("agent sock %s", got)
 	}
-	if got := p.AgentBin("arm64"); got != filepath.Join(p.Runtime, "agent-linux-arm64") {
+	if got := p.AgentBin(); got != filepath.Join(p.Runtime, native.GuestBinary("agent")) {
 		t.Fatalf("agent bin %s", got)
 	}
 }

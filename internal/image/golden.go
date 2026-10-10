@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
+	"github.com/huangzheng2016/pvm/internal/native"
 )
 
 // GoldenEntry describes one baked golden image. Golden images are
@@ -66,10 +66,10 @@ func (c *goldenCatalog) save(imagesDir string) error {
 	return fsutil.AtomicWrite(goldenCatalogPath(imagesDir), data, 0o644)
 }
 
-func (c *goldenCatalog) match(distro, imageVersion, arch string) []GoldenEntry {
+func (c *goldenCatalog) match(distro, imageVersion string) []GoldenEntry {
 	var out []GoldenEntry
 	for _, e := range c.Entries {
-		if e.Distro == distro && e.ImageVersion == imageVersion && e.Arch == arch {
+		if e.Distro == distro && e.ImageVersion == imageVersion && native.Compatible(e.Arch) {
 			out = append(out, e)
 		}
 	}
@@ -79,15 +79,12 @@ func (c *goldenCatalog) match(distro, imageVersion, arch string) []GoldenEntry {
 
 // LatestGolden returns the newest golden image whose file is still
 // present, or nil when none exists. Non-native architectures are ignored.
-func LatestGolden(imagesDir, distro, imageVersion, arch string) *GoldenEntry {
-	if arch != runtime.GOARCH {
-		return nil
-	}
+func LatestGolden(imagesDir, distro, imageVersion string) *GoldenEntry {
 	cat, err := loadGoldenCatalog(imagesDir)
 	if err != nil {
 		return nil
 	}
-	for _, e := range cat.match(distro, imageVersion, arch) {
+	for _, e := range cat.match(distro, imageVersion) {
 		if _, err := os.Stat(filepath.Join(GoldenDir(imagesDir), e.File)); err == nil {
 			e := e
 			return &e

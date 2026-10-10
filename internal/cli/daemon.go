@@ -101,7 +101,7 @@ func daemonRun(p *paths.Paths) int {
 	}
 	assets.CleanStaleVersions(p.Runtime)
 
-	tc, err := qemu.Find(p.Runtime, runtime.GOARCH)
+	tc, err := qemu.Find(p.Runtime)
 	if err != nil {
 		return fatalf("%v", err)
 	}

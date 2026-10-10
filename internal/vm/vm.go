@@ -10,10 +10,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
+	"github.com/huangzheng2016/pvm/internal/native"
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 )
@@ -26,7 +26,6 @@ type Spec struct {
 	// GuestUID pins the guest user's uid to the host user's uid so 9p
 	// shares behave sanely (same trick as lima/docker-desktop).
 	GuestUID int    `json:"guest_uid"`
-	Arch     string `json:"arch"`
 	CPUs     int    `json:"cpus"`
 	MemMB    int    `json:"mem_mb"`
 	DiskGB   int    `json:"disk_gb"`
@@ -62,13 +61,6 @@ type Spec struct {
 
 var nameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
 
-func validateNativeArch(arch string) error {
-	if arch != runtime.GOARCH {
-		return fmt.Errorf("unsupported vm architecture %q (host is %s)", arch, runtime.GOARCH)
-	}
-	return nil
-}
-
 // ValidateName checks a VM name.
 func ValidateName(name string) error {
 	if !nameRe.MatchString(name) {
@@ -85,17 +77,27 @@ func (s *Spec) SpecPath(p *paths.Paths) string {
 	return filepath.Join(s.dir(p), "vm.json")
 }
 
-// Load reads a VM spec by name.
+// Load reads a VM spec by name. A legacy or hand-written arch field is
+// accepted only when it matches the native target; a heterogeneous disk is
+// never started silently.
 func Load(p *paths.Paths, name string) (*Spec, error) {
 	data, err := os.ReadFile(p.VMs + "/" + name + "/vm.json")
 	if err != nil {
 		return nil, err
 	}
-	var s Spec
-	if err := json.Unmarshal(data, &s); err != nil {
+	var wire struct {
+		Spec
+		Arch string `json:"arch"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
 		return nil, err
 	}
-	return &s, nil
+	if wire.Arch != "" {
+		if err := native.Validate(wire.Arch); err != nil {
+			return nil, fmt.Errorf("vm %s: %w", name, err)
+		}
+	}
+	return &wire.Spec, nil
 }
 
 // ListAll returns specs for every VM directory with a vm.json.
@@ -146,7 +148,6 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 	}
 	return qemu.VMConfig{
 		Name:         s.Name,
-		Arch:         s.Arch,
 		CPUs:         s.CPUs,
 		MemMB:        s.MemMB,
 		DiskPath:     s.Disk(p),
@@ -169,9 +170,6 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 // spec file. It does not start the VM.
 func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec, sshPub string) error {
 	if err := ValidateName(spec.Name); err != nil {
-		return err
-	}
-	if err := validateNativeArch(spec.Arch); err != nil {
 		return err
 	}
 	if _, err := os.Stat(spec.BaseDisk); err != nil {
@@ -205,7 +203,7 @@ func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec, sshPub string) error
 		}
 	}
 
-	if spec.Arch == "arm64" {
+	if native.Arch == "arm64" {
 		// 64 MiB blank pflash; OVMF formats it on first boot.
 		if err := os.WriteFile(spec.Vars(p), make([]byte, 64*1024*1024), 0o600); err != nil {
 			return err

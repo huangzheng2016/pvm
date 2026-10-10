@@ -3,8 +3,9 @@ package qemu
 import (
 	"fmt"
 	"path/filepath"
-	"runtime"
 	"strconv"
+
+	"github.com/huangzheng2016/pvm/internal/native"
 )
 
 type Mount struct {
@@ -38,7 +39,6 @@ type Network struct {
 
 type VMConfig struct {
 	Name       string
-	Arch       string // GOARCH: arm64 / amd64
 	CPUs       int
 	MemMB      int
 	DiskPath   string
@@ -70,9 +70,6 @@ type VMConfig struct {
 
 // BuildArgs constructs the full qemu argv (excluding the binary itself).
 func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
-	if c.Arch != runtime.GOARCH {
-		return nil, fmt.Errorf("vm architecture %q is not supported on host architecture %s", c.Arch, runtime.GOARCH)
-	}
 	if c.CPUs <= 0 {
 		c.CPUs = 2
 	}
@@ -81,7 +78,7 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 	}
 	args := []string{}
 
-	if c.Arch == "arm64" {
+	if native.Arch == "arm64" {
 		args = append(args, "-machine", "virt")
 		if t.FirmwareDir == "" {
 			return nil, fmt.Errorf("aarch64 VMs need UEFI firmware (edk2-aarch64-code.fd); firmware dir unknown")

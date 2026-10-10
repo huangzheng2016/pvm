@@ -1,14 +1,15 @@
 package vm
 
 import (
-	"runtime"
 	"testing"
+
+	"github.com/huangzheng2016/pvm/internal/native"
 )
 
 func TestCloneSpec(t *testing.T) {
 	src := &Spec{
 		Name: "c1", Image: "ubuntu:24.04", Role: "user", User: "tester",
-		GuestUID: 501, Arch: "arm64", CPUs: 2, MemMB: 4096, DiskGB: 20,
+		GuestUID: 501, CPUs: 2, MemMB: 4096, DiskGB: 20,
 		BaseDisk: "/img/golden.qcow2", Golden: 3, ClusterID: 1,
 		IP: "192.168.1.10", MAC: "52:54:00:00:00:0a",
 		Mounts: []GuestMount{{Tag: "pvm0", Host: "/h", Guest: "/g"}},
@@ -50,15 +51,15 @@ func TestCloneSpec(t *testing.T) {
 	}
 }
 
-func TestValidateNativeArch(t *testing.T) {
+func TestNativeValidate(t *testing.T) {
 	other := "amd64"
-	if runtime.GOARCH == other {
+	if native.Arch == other {
 		other = "arm64"
 	}
-	if err := validateNativeArch(other); err == nil {
-		t.Fatalf("validateNativeArch(%q) passed on %s", other, runtime.GOARCH)
+	if err := native.Validate(other); err == nil {
+		t.Fatalf("native.Validate(%q) passed on %s", other, native.Arch)
 	}
-	if err := validateNativeArch(runtime.GOARCH); err != nil {
+	if err := native.Validate(native.Arch); err != nil {
 		t.Fatalf("native arch rejected: %v", err)
 	}
 }
