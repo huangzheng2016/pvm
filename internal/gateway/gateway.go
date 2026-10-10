@@ -142,6 +142,7 @@ func (a *Agent) Run() error {
 					}
 					fproxy.SetPolicy(pol)
 					fproxy.markFor = a.exits.MarkForExit
+					fproxy.dcAddrFor = a.exits.DomainConnectAddr
 				}
 			}
 			// exit tunnels + policy routing converge on every apply

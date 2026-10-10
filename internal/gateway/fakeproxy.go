@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/huangzheng2016/pvm/internal/exit"
 	gwpolicy "github.com/huangzheng2016/pvm/internal/gw/policy"
 )
 
@@ -20,14 +21,15 @@ import (
 // fake-ip range: the original destination (a fake IP) is recovered with
 // SO_ORIGINAL_DST, mapped back to its domain, routed by policy and
 // dialed out. Direct flows are resolved via the uplink resolver and
-// dialed from the gateway; proxied flows carry an SO_MARK that policy
-// routing sends into the exit tunnel, and their DNS is resolved through
-// the tunnel at a public resolver (remote-resolve semantics).
+// dialed from the gateway; proxied flows are handed to the exit's
+// domain-connect service BY DOMAIN — the gateway performs no DNS
+// resolution for them at all (the exit resolves and dials on the VPS).
 type fakeProxy struct {
 	policy   *gwpolicy.Engine
 	resolver *net.Resolver
 	vmByIP   func(ip net.IP) string // config lookup, nil-safe
 	markFor  func(exitName string) int // SO_MARK selecting the exit's table; -1 = no tunnel
+	dcAddrFor func(exitName string) (string, bool) // in-tunnel domain-connect addr
 
 	mu       sync.Mutex
 	ln       *net.TCPListener
@@ -47,6 +49,7 @@ func newFakeProxy(policy *gwpolicy.Engine, upstream string, vmByIP func(net.IP) 
 		},
 		vmByIP: vmByIP,
 		markFor: func(string) int { return -1 },
+		dcAddrFor: func(string) (string, bool) { return "", false },
 	}
 }
 
@@ -141,36 +144,30 @@ func (p *fakeProxy) dialDirect(src *net.TCPConn, domain string, port int) {
 	relay(src, up)
 }
 
-// dialProxy carries the flow out via the named exit tunnel. Both the
-// DNS lookup and the target dial are marked, so policy routing sends
-// them through the tunnel: the gateway never resolves proxied domains
-// on the local uplink (remote-resolve semantics).
+// dialProxy hands the flow to the exit's domain-connect service: the
+// domain travels inside the tunnel and only the exit resolves it (on
+// the VPS). Fail-closed: if the tunnel or the service is down the flow
+// is refused, never resolved locally.
 func (p *fakeProxy) dialProxy(src *net.TCPConn, domain string, port int, exitName string) {
 	mark := p.markFor(exitName)
 	if mark < 0 {
 		log.Printf("fakeproxy: %s wants exit %q but tunnel is down; refusing fast", domain, exitName)
 		return
 	}
-	markedDial := func(ctx context.Context, network, address string) (net.Conn, error) {
-		d := net.Dialer{Timeout: 8 * time.Second, Control: soMark(mark)}
-		return d.DialContext(ctx, network, address)
-	}
-	resolver := &net.Resolver{
-		PreferGo: true,
-		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-			return markedDial(ctx, "udp", "1.1.1.1:53")
-		},
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	ips, err := resolver.LookupIP(ctx, "ip4", domain)
-	cancel()
-	if err != nil || len(ips) == 0 {
-		log.Printf("fakeproxy: remote-resolve %s via %s: %v", domain, exitName, err)
+	dcAddr, ok := p.dcAddrFor(exitName)
+	if !ok {
+		log.Printf("fakeproxy: %s wants exit %q but domain-connect is unavailable; refusing fast", domain, exitName)
 		return
 	}
-	up, err := markedDial(context.Background(), "tcp4", net.JoinHostPort(ips[0].String(), fmt.Sprint(port)))
+	d := net.Dialer{Timeout: 10 * time.Second, Control: soMark(mark)}
+	up, err := d.DialContext(context.Background(), "tcp4", dcAddr)
 	if err != nil {
-		log.Printf("fakeproxy: dial %s (%s:%d) via %s: %v", domain, ips[0], port, exitName, err)
+		log.Printf("fakeproxy: domain-connect %s via %s (%s): %v", domain, exitName, dcAddr, err)
+		return
+	}
+	if err := exit.WriteDomainConnect(up, domain, port); err != nil {
+		log.Printf("fakeproxy: domain-egress %s:%d via %s: %v", domain, port, exitName, err)
+		up.Close()
 		return
 	}
 	defer up.Close()

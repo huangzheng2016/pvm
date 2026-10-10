@@ -13,8 +13,9 @@ import (
 type routeRuleRequest struct {
 	Type    string `json:"type"`    // domain-suffix | domain-prefix | domain-keyword | cidr
 	Pattern string `json:"pattern"` // e.g. example.com / 10.0.0.0/8
-	Action  string `json:"action"`  // direct | proxy
+	Action  string `json:"action"`  // direct | proxy | internal
 	Via     string `json:"via"`     // exit-node name when action == proxy
+	DNS     string `json:"dns"`     // designated resolver host[:port] when action == internal
 }
 
 func (s *Server) handleRouteList(w http.ResponseWriter, r *http.Request) {
@@ -37,9 +38,25 @@ func (s *Server) handleRouteAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
-	rule := rules.Rule{Type: rules.Type(req.Type), Pattern: req.Pattern, Action: rules.Action(req.Action), Exit: req.Via}
-	if rule.Action == rules.Direct {
+	rule := rules.Rule{Type: rules.Type(req.Type), Pattern: req.Pattern, Action: rules.Action(req.Action), Exit: req.Via, DNS: req.DNS}
+	switch rule.Action {
+	case rules.Direct:
+		rule.Exit, rule.DNS = "", ""
+	case rules.Proxy:
+		rule.DNS = ""
+	case rules.Internal:
 		rule.Exit = ""
+		if rule.DNS == "" {
+			writeErr(w, 400, fmt.Errorf("internal rules need a dns resolver"))
+			return
+		}
+		if rule.Type != rules.DomainSuffix && rule.Type != rules.DomainPrefix && rule.Type != rules.DomainKeyword {
+			writeErr(w, 400, fmt.Errorf("internal rules need a domain match type"))
+			return
+		}
+	default:
+		writeErr(w, 400, fmt.Errorf("unknown action %q", rule.Action))
+		return
 	}
 	// validate by compiling against a scratch engine
 	eng, err := rules.NewEngine("", nil)

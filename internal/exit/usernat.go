@@ -34,6 +34,27 @@ type userspaceBackend struct {
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	once     sync.Once
+
+	intercept   map[string]func(net.Conn) // dst addr -> in-stack handler
+	interceptMu sync.RWMutex
+}
+
+// Intercept registers an in-stack handler for connections to dst
+// (host:port, e.g. a tunnel NIC's domain-connect address) instead of
+// dialing that address from the VPS.
+func (u *userspaceBackend) Intercept(dst string, h func(net.Conn)) {
+	u.interceptMu.Lock()
+	defer u.interceptMu.Unlock()
+	if u.intercept == nil {
+		u.intercept = map[string]func(net.Conn){}
+	}
+	u.intercept[dst] = h
+}
+
+func (u *userspaceBackend) interceptor(dst string) func(net.Conn) {
+	u.interceptMu.RLock()
+	defer u.interceptMu.RUnlock()
+	return u.intercept[dst]
 }
 
 func newUserspaceBackend() *userspaceBackend {
@@ -146,10 +167,22 @@ func (u *userspaceBackend) cleanup() error {
 	return nil
 }
 
-// handleTCP dials the original destination from the VPS and relays.
+// handleTCP dials the original destination from the VPS and relays,
+// unless the destination is an intercepted in-stack service.
 func (u *userspaceBackend) handleTCP(req *tcp.ForwarderRequest) {
 	id := req.ID()
 	dst := net.JoinHostPort(id.LocalAddress.String(), fmt.Sprintf("%d", id.LocalPort))
+	if h := u.interceptor(dst); h != nil {
+		var wq waiter.Queue
+		ep, terr := req.CreateEndpoint(&wq)
+		if terr != nil {
+			req.Complete(true)
+			return
+		}
+		req.Complete(false)
+		go h(gonet.NewTCPConn(&wq, ep))
+		return
+	}
 	outConn, err := (&net.Dialer{Timeout: 15 * time.Second}).Dial("tcp", dst)
 	if err != nil {
 		req.Complete(true) // RST

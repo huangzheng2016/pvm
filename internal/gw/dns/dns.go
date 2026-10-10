@@ -35,6 +35,10 @@ type Server struct {
 	pool     *Pool
 	fakeTTL  uint32
 
+	// NewInternalUpstream builds the upstream for an internal-rule
+	// resolver address; replaceable in tests to observe isolation.
+	NewInternalUpstream func(addr string) Upstream
+
 	mu     sync.RWMutex
 	rules  *rules.Engine
 	static map[string]net.IP
@@ -137,9 +141,17 @@ func (s *Server) answerHost(req, resp *mdns.Msg, name string, qtype uint16) {
 		}
 		return
 	}
-	if d, ok := s.Rules().Match(name, nil); ok && d.Action == rules.Direct && !d.Internal {
-		s.forward(req, resp)
-		return
+	if d, ok := s.Rules().Match(name, nil); ok && !d.Internal {
+		switch d.Action {
+		case rules.Internal:
+			// internal-rule names resolve ONLY via their designated
+			// resolver; everything else must never reach that server.
+			s.forwardInternal(req, resp, d.DNS)
+			return
+		case rules.Direct:
+			s.forward(req, resp)
+			return
+		}
 	}
 	if qtype == mdns.TypeAAAA {
 		// fake-IP is v4-only; NODATA makes the client fall back to A
@@ -206,6 +218,31 @@ func (s *Server) forward(req, resp *mdns.Msg) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	up, err := s.upstream.Exchange(ctx, req)
+	if err != nil {
+		resp.Rcode = mdns.RcodeServerFailure
+		return
+	}
+	*resp = *up
+	resp.Id = req.Id
+}
+
+// forwardInternal resolves via the internal rule's designated resolver.
+// An empty address means "unresolvable here" (NODATA), never fall back
+// to the default upstream.
+func (s *Server) forwardInternal(req, resp *mdns.Msg, addr string) {
+	if addr == "" {
+		return
+	}
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		addr = net.JoinHostPort(addr, "53")
+	}
+	mk := s.NewInternalUpstream
+	if mk == nil {
+		mk = func(a string) Upstream { return UDPUpstream{Addr: a} }
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	up, err := mk(addr).Exchange(ctx, req)
 	if err != nil {
 		resp.Rcode = mdns.RcodeServerFailure
 		return
