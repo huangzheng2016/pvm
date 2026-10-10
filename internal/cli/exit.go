@@ -14,6 +14,7 @@ import (
 
 	"github.com/huangzheng2016/pvm/internal/exit"
 	"github.com/huangzheng2016/pvm/internal/tunnel"
+	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
 // CmdExitAgent runs the VPS-side exit agent in the foreground.
@@ -70,6 +71,8 @@ func CmdExit(args []string) int {
 	switch args[0] {
 	case "add":
 		return exitAdd(args[1:])
+	case "set":
+		return exitSet(args[1:])
 	case "ls", "list":
 		return exitLs()
 	case "rm", "del":
@@ -91,10 +94,12 @@ func exitsDir() (string, error) {
 }
 
 func exitAdd(args []string) int {
-	fs := newFlagSet("exit add", "<name> --server host:port --token <tok> [--transport udp|tcp]")
+	fs := newFlagSet("exit add", "<name> --server host:port --token <tok> [--transport udp|tcp] [--tz TZ] [--locale L]")
 	server := fs.String("server", "", "control plane host:port")
 	token := fs.String("token", "", "control plane token")
 	transport := fs.String("transport", "udp", "udp | tcp")
+	tz := fs.String("tz", "", "IANA timezone of this exit's region (e.g. America/Los_Angeles)")
+	locale := fs.String("locale", "", "locale matching this exit's region (e.g. en_US.UTF-8)")
 	// accept "add <name> --flags" even though flag stops at the first
 	// positional argument
 	name := ""
@@ -118,6 +123,18 @@ func exitAdd(args []string) int {
 	}
 	if *transport != "udp" && *transport != "tcp" {
 		return fatalf("transport must be udp or tcp")
+	}
+	if *tz != "" {
+		if err := vm.ValidateTZ(*tz); err != nil {
+			return fatalf("%v", err)
+		}
+	}
+	if *locale != "" {
+		l, err := vm.NormalizeLocale(*locale)
+		if err != nil {
+			return fatalf("%v", err)
+		}
+		*locale = l
 	}
 	dir, err := exitsDir()
 	if err != nil {
@@ -165,6 +182,8 @@ func exitAdd(args []string) int {
 		TunnelIP:     resp.TunnelIP,
 		MTU:          resp.MTU,
 		Endpoint:     resp.Endpoint,
+		TZ:           *tz,
+		Locale:       *locale,
 		CreatedAt:    time.Now(),
 	}
 	if err := exit.SaveEntry(dir, e); err != nil {
@@ -172,6 +191,63 @@ func exitAdd(args []string) int {
 	}
 	fmt.Printf("exit %q added: transport=%s tunnel_ip=%s endpoint=%s mtu=%d\n",
 		name, e.Transport, e.TunnelIP, e.Endpoint, e.MTU)
+	return 0
+}
+
+// exitSet updates mutable fields of an existing entry (region profile).
+func exitSet(args []string) int {
+	fs := newFlagSet("exit set", "<name> [--tz TZ] [--locale L]")
+	tz := fs.String("tz", "", "IANA timezone of this exit's region")
+	locale := fs.String("locale", "", "locale matching this exit's region")
+	name := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		name = args[0]
+		args = args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		if name != "" {
+			fs.Usage()
+			return 2
+		}
+		name = fs.Arg(0)
+	}
+	if name == "" {
+		fs.Usage()
+		return 2
+	}
+	if *tz != "" {
+		if err := vm.ValidateTZ(*tz); err != nil {
+			return fatalf("%v", err)
+		}
+	}
+	if *locale != "" {
+		l, err := vm.NormalizeLocale(*locale)
+		if err != nil {
+			return fatalf("%v", err)
+		}
+		*locale = l
+	}
+	dir, err := exitsDir()
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	e, err := exit.LoadEntry(dir, name)
+	if err != nil {
+		return fatalf("exit %q not found", name)
+	}
+	if *tz != "" {
+		e.TZ = *tz
+	}
+	if *locale != "" {
+		e.Locale = *locale
+	}
+	if err := exit.SaveEntry(dir, e); err != nil {
+		return fatalf("save entry: %v", err)
+	}
+	fmt.Printf("exit %q updated: tz=%s locale=%s (applies on next `pvm route <vm> --via %s`)\n", name, e.TZ, e.Locale, name)
 	return 0
 }
 

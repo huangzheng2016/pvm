@@ -30,11 +30,33 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 		)
 	}
 
+	// Git identity is written only when explicitly requested at create
+	// time; the host's ~/.gitconfig is never consulted or propagated
+	// (it leaks into Claude Code's gitStatus session context).
+	if spec.GitEmail != "" {
+		git := []string{
+			fmt.Sprintf("sudo -u %s git config --global user.email %q", spec.User, spec.GitEmail),
+		}
+		if spec.GitName != "" {
+			git = append(git, fmt.Sprintf("sudo -u %s git config --global user.name %q", spec.User, spec.GitName))
+		}
+		runcmd = append(git, runcmd...)
+	}
+
 	doc := map[string]any{
 		"hostname":   spec.Name,
 		"fqdn":       spec.Name + ".pvm.internal",
 		"ssh_pwauth": false,
 		"runcmd":     runcmd,
+		// Neutral default: a plain US-English Ubuntu, not the C.UTF-8
+		// cloud-image fallback.
+		"locale": "en_US.UTF-8",
+	}
+	if spec.Locale != "" {
+		doc["locale"] = spec.Locale
+	}
+	if spec.TZ != "" {
+		doc["timezone"] = spec.TZ
 	}
 	if spec.Golden > 0 {
 		// Golden images are already provisioned (docker, qga, dev tools):

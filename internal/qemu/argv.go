@@ -62,6 +62,9 @@ type VMConfig struct {
 	// the front-end devices out; used on restore, where the devices
 	// are hot-added via QMP device_add after the migration completes.
 	NoVirtFSDevices bool
+	// SmbiosSpoof presents common commodity hardware in DMI instead of
+	// the QEMU defaults.
+	SmbiosSpoof bool
 }
 
 // BuildArgs constructs the full qemu argv (excluding the binary itself).
@@ -90,6 +93,9 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 	}
 
 	args = append(args, c.Accel.Args()...)
+	if c.SmbiosSpoof {
+		args = append(args, "-smbios", "type=1,manufacturer=Dell Inc.,product=Inspiron 15 5510")
+	}
 	args = append(args,
 		"-m", strconv.Itoa(c.MemMB),
 		"-smp", strconv.Itoa(c.CPUs),
