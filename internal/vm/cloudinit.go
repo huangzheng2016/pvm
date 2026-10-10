@@ -1,11 +1,23 @@
 package vm
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+// randomPassword returns an unknown single-use password used only to keep a
+// guest account unlocked (ssh password auth stays disabled everywhere).
+func randomPassword(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		panic(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b)[:n]
+}
 
 // GuestMount is one host->guest 9p mount beyond the default /share.
 type GuestMount struct {
@@ -52,7 +64,11 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 		}
 		runcmd = append(runcmd,
 			fmt.Sprintf("mkdir -p /etc/profile.d && printf 'export LANG=%s\\n' > /etc/profile.d/pvm-locale.sh", locale),
-			"rc-update add sshd default || true",
+			// The nocloud image ships an sshd runlevel entry that boots
+			// leave in stopped state; re-registering it makes OpenRC
+			// actually start sshd on every boot.
+			"rc-update del sshd default 2>/dev/null || true",
+			"rc-update add sshd default",
 			"rc-service sshd start || true",
 		)
 	}
@@ -106,11 +122,18 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 		"ssh_authorized_keys": []string{strings.TrimSpace(sshPub)},
 	}
 	if alpine {
-		// openssh-server-pam treats a locked shadow password as a hard deny,
-		// even for public-key logins. Keep password auth disabled but give
-		// the account a valid crypt password instead of a locked marker.
+		// sshd denies login while the login shell does not exist yet, and
+		// bash only appears after apk finishes (which can take minutes on
+		// first boot). Use busybox sh so ssh works as soon as sshd is up.
+		user["shell"] = "/bin/sh"
+		// A random, unknown password keeps the account unlocked (alpine
+		// sshd hard-denies locked shadow entries even for pubkey logins)
+		// without enabling ssh password auth (ssh_pwauth stays false).
 		delete(user, "lock_passwd")
-		user["passwd"] = "$6$pvm$U/nwbY9cT2LxUv/8v5bDD8gLMAVGCoVjCM/efyTKpxL14rhOwa4/lqL5cXUyJNL9bCL7YWY5nb4i8pvdQcyMb0"
+		doc["chpasswd"] = map[string]any{
+			"list":   spec.User + ":" + randomPassword(24),
+			"expire": false,
+		}
 	}
 	doc["users"] = []map[string]any{user}
 	writeFiles := []map[string]any{{

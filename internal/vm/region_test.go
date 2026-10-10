@@ -3,12 +3,12 @@ package vm
 import "testing"
 
 func TestValidateTZ(t *testing.T) {
-	for _, ok := range []string{"America/Los_Angeles", "Etc/UTC", "Asia/Shanghai", "America/Argentina/Buenos_Aires"} {
+	for _, ok := range []string{"America/Los_Angeles", "Etc/UTC", "Asia/Shanghai", "America/Argentina/Buenos_Aires", "UTC"} {
 		if err := ValidateTZ(ok); err != nil {
 			t.Errorf("%s should be valid: %v", ok, err)
 		}
 	}
-	for _, bad := range []string{"", "UTC", "America/Los Angeles", "x;rm -rf /", "$(reboot)", "../etc", "a/b/c/d"} {
+	for _, bad := range []string{"", "America/Los Angeles", "x;rm -rf /", "$(reboot)", "../etc", "a/b/c/d"} {
 		if err := ValidateTZ(bad); err == nil {
 			t.Errorf("%q should be rejected", bad)
 		}

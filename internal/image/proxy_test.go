@@ -13,7 +13,7 @@ func TestRewriteProxyURL(t *testing.T) {
 		"":                                "",
 	}
 	for input, want := range cases {
-		if got := rewriteProxyURL(input, true); got != want {
+		if got := rewriteProxyURL(input); got != want {
 			t.Errorf("rewriteProxyURL(%q) = %q, want %q", input, got, want)
 		}
 	}

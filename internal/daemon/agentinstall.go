@@ -28,6 +28,14 @@ description="pvm guest agent"
 command="/usr/local/bin/pvm"
 command_args="agent"
 pidfile="/run/pvm-agent.pid"
+
+start_pre() {
+	# The alpine nocloud image leaves sshd stopped after a reboot even
+	# though it is in the default runlevel. The agent comes up on every
+	# boot, so ensure sshd with it; never block the agent on this.
+	rc-service sshd start >/dev/null 2>&1 || true
+	return 0
+}
 `
 
 // ensureAgentAsync pushes the guest agent once ssh is reachable. Runs

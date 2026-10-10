@@ -48,19 +48,30 @@ func (s *Server) applyRegionProfile(spec *vm.Spec, via string) string {
 	if locale == "" {
 		locale = "en_US.UTF-8"
 	}
-	if spec.PrevTZ == "" && spec.PrevLocale == "" {
+	if spec.PrevTZ == "" {
 		// First route into a region: remember what the guest had.
 		// timedated caches the pre-cloud-init zone for the whole boot,
-		// so read the /etc/localtime symlink instead of timedatectl.
-		curTZ, err1 := s.sshRun(spec, "readlink /etc/localtime 2>/dev/null | sed 's|.*/zoneinfo/||'")
+		// so read /etc/localtime instead of timedatectl. Alpine ships it
+		// as a regular file, hence the /etc/timezone fallback.
+		curTZ, err1 := s.sshRun(spec, `z=$(readlink /etc/localtime 2>/dev/null); z=${z##*/zoneinfo/}; if [ -z "$z" ] && [ -f /etc/timezone ]; then z=$(cat /etc/timezone); fi; echo "$z"`)
 		curLocale, err2 := s.sshRun(spec, `grep -E '^(export )?LANG=' /etc/default/locale /etc/profile.d/pvm-locale.sh 2>/dev/null | tail -1 | sed 's/^export //' | cut -d= -f2`)
 		if err1 != nil || err2 != nil {
 			return fmt.Sprintf("region profile for %q pending (vm unreachable via ssh): tz=%s locale=%s", via, tz, locale)
 		}
-		spec.PrevTZ = strings.TrimSpace(curTZ)
-		spec.PrevLocale = strings.TrimSpace(curLocale)
-		if err := spec.Save(s.P); err != nil {
-			return fmt.Sprintf("region profile applied in guest but spec save failed: %v", err)
+		tz0 := strings.TrimSpace(curTZ)
+		if tz0 == "" {
+			tz0 = "UTC"
+		}
+		loc0 := strings.TrimSpace(curLocale)
+		if loc0 == "" {
+			loc0 = "en_US.UTF-8"
+		}
+		if tz0 != tz || loc0 != locale {
+			spec.PrevTZ = tz0
+			spec.PrevLocale = loc0
+			if err := spec.Save(s.P); err != nil {
+				return fmt.Sprintf("region profile applied in guest but spec save failed: %v", err)
+			}
 		}
 	}
 	return s.setGuestRegion(spec, tz, locale)
@@ -85,7 +96,12 @@ func (s *Server) restoreRegion(spec *vm.Spec) string {
 		locale = "en_US.UTF-8"
 	}
 	note := s.setGuestRegion(spec, tz, locale)
-	spec.PrevTZ, spec.PrevLocale = "", ""
+	if strings.HasPrefix(note, "region applied") {
+		// Only drop the rollback baseline once the restore really took;
+		// a failed restore keeps PrevTZ/PrevLocale so a later --via direct
+		// can retry instead of losing the pre-route values.
+		spec.PrevTZ, spec.PrevLocale = "", ""
+	}
 	if err := spec.Save(s.P); err != nil && !strings.HasPrefix(note, "region apply failed") {
 		note = fmt.Sprintf("region restored in guest but spec save failed: %v", err)
 	}

@@ -21,9 +21,9 @@ func (p ProxyConfig) enabled() bool {
 }
 
 func (p ProxyConfig) normalized() ProxyConfig {
-	p.HTTPProxy = rewriteProxyURL(p.HTTPProxy, true)
-	p.HTTPSProxy = rewriteProxyURL(p.HTTPSProxy, true)
-	p.AllProxy = rewriteProxyURL(p.AllProxy, true)
+	p.HTTPProxy = rewriteProxyURL(p.HTTPProxy)
+	p.HTTPSProxy = rewriteProxyURL(p.HTTPSProxy)
+	p.AllProxy = rewriteProxyURL(p.AllProxy)
 	return p
 }
 
@@ -31,16 +31,16 @@ func (p ProxyConfig) normalized() ProxyConfig {
 // loopback proxy hosts for the build VM (10.0.2.2 on QEMU slirp).
 func ProxyConfigFromEnv() ProxyConfig {
 	return ProxyConfig{
-		HTTPProxy:  rewriteProxyURL(os.Getenv("HTTP_PROXY"), true),
-		HTTPSProxy: rewriteProxyURL(os.Getenv("HTTPS_PROXY"), true),
-		AllProxy:   rewriteProxyURL(os.Getenv("ALL_PROXY"), true),
+		HTTPProxy:  rewriteProxyURL(os.Getenv("HTTP_PROXY")),
+		HTTPSProxy: rewriteProxyURL(os.Getenv("HTTPS_PROXY")),
+		AllProxy:   rewriteProxyURL(os.Getenv("ALL_PROXY")),
 		NoProxy:    os.Getenv("NO_PROXY"),
 	}
 }
 
 // rewriteProxyURL preserves scheme, credentials, port and path, changing
 // only loopback proxy hosts to the address visible from the build VM.
-func rewriteProxyURL(raw string, _ bool) string {
+func rewriteProxyURL(raw string) string {
 	if raw == "" {
 		return ""
 	}
@@ -85,6 +85,10 @@ func (p ProxyConfig) writeProvisionEnv(b *strings.Builder) {
 		{"HTTPS_PROXY", p.HTTPSProxy},
 		{"ALL_PROXY", p.AllProxy},
 		{"NO_PROXY", p.NoProxy},
+		{"http_proxy", p.HTTPProxy},
+		{"https_proxy", p.HTTPSProxy},
+		{"all_proxy", p.AllProxy},
+		{"no_proxy", p.NoProxy},
 	} {
 		fmt.Fprintf(b, "export %s=%s\n", item[0], shellQuote(item[1]))
 	}
@@ -93,6 +97,8 @@ func (p ProxyConfig) writeProvisionEnv(b *strings.Builder) {
 	b.WriteString("cat > /etc/systemd/system/docker.service.d/pvm-proxy.conf <<'EOF'\n")
 	b.WriteString("[Service]\n")
 	fmt.Fprintf(b, "Environment=\"HTTP_PROXY=%s\" \"HTTPS_PROXY=%s\" \"ALL_PROXY=%s\" \"NO_PROXY=%s\"\n",
+		systemdEnv(p.HTTPProxy), systemdEnv(p.HTTPSProxy), systemdEnv(p.AllProxy), systemdEnv(p.NoProxy))
+	fmt.Fprintf(b, "Environment=\"http_proxy=%s\" \"https_proxy=%s\" \"all_proxy=%s\" \"no_proxy=%s\"\n",
 		systemdEnv(p.HTTPProxy), systemdEnv(p.HTTPSProxy), systemdEnv(p.AllProxy), systemdEnv(p.NoProxy))
 	b.WriteString("EOF\n")
 }
