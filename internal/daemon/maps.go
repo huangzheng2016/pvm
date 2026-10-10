@@ -77,11 +77,9 @@ func (s *Server) handleMapAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
-	if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
-		if err := s.pushGatewayConfig(cl); err != nil {
-			writeErr(w, 500, fmt.Errorf("map recorded but gateway config push failed: %w", err))
-			return
-		}
+	if err := s.pushGatewayConfig(spec.ClusterID); err != nil {
+		writeErr(w, 500, fmt.Errorf("map recorded but gateway config push failed: %w", err))
+		return
 	}
 	writeJSON(w, 201, m)
 }
@@ -95,7 +93,7 @@ func (s *Server) handleMapRemove(w http.ResponseWriter, r *http.Request) {
 	proto := r.PathValue("proto")
 	for _, cl := range s.Clusters.List() {
 		s.Clusters.RemoveMap(cl.ID, port, proto)
-		s.pushGatewayConfig(cl)
+		s.pushGatewayConfig(cl.ID)
 	}
 	s.relays.Remove(proto, port)
 	writeJSON(w, 200, map[string]any{"removed": port})

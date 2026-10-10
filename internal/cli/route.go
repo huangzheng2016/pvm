@@ -97,6 +97,7 @@ func CmdRoute(args []string) int {
 			return fatalf("%v", err)
 		}
 		fmt.Printf("%s: default route -> %s\n", args[0], *via)
+		fmt.Println("config pushed; the gateway converges within a few seconds. Live connections whose route changed have been reset and will reconnect via the new route.")
 		if note, _ := resp["note"].(string); note != "" {
 			fmt.Println(note)
 		}

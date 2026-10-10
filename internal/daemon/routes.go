@@ -81,11 +81,9 @@ func (s *Server) handleRouteAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
-	if cl := s.Clusters.Get(cluster.DefaultClusterID); cl != nil {
-		if err := s.pushGatewayConfig(cl); err != nil {
-			writeErr(w, 500, fmt.Errorf("rule stored but gateway push failed: %w", err))
-			return
-		}
+	if err := s.pushGatewayConfig(cluster.DefaultClusterID); err != nil {
+		writeErr(w, 500, fmt.Errorf("rule stored but gateway push failed: %w", err))
+		return
 	}
 	writeJSON(w, 201, map[string]any{"index": idx, "rule": rule})
 }
@@ -100,11 +98,9 @@ func (s *Server) handleRouteRemove(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err)
 		return
 	}
-	if cl := s.Clusters.Get(cluster.DefaultClusterID); cl != nil {
-		if err := s.pushGatewayConfig(cl); err != nil {
-			writeErr(w, 500, fmt.Errorf("rule removed but gateway push failed: %w", err))
-			return
-		}
+	if err := s.pushGatewayConfig(cluster.DefaultClusterID); err != nil {
+		writeErr(w, 500, fmt.Errorf("rule removed but gateway push failed: %w", err))
+		return
 	}
 	writeJSON(w, 200, map[string]any{"removed": idx})
 }
@@ -151,11 +147,9 @@ func (s *Server) handleVMRoute(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
-	if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
-		if err := s.pushGatewayConfig(cl); err != nil {
-			writeErr(w, 500, fmt.Errorf("route stored but gateway push failed: %w", err))
-			return
-		}
+	if err := s.pushGatewayConfig(spec.ClusterID); err != nil {
+		writeErr(w, 500, fmt.Errorf("route stored but gateway push failed: %w", err))
+		return
 	}
 	note := ""
 	if via == "direct" || via == "" {

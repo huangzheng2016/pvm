@@ -14,7 +14,7 @@ func TestDialProxyFailClosed(t *testing.T) {
 	src := tcpPair(t)
 	p := newFakeProxy(nil, "10.0.2.3", nil)
 	done := make(chan struct{})
-	go func() { p.dialProxy(src, "example.com", 443, "us"); close(done) }()
+	go func() { p.dialProxy(src, "example.com", 443, "us", ""); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
@@ -26,7 +26,7 @@ func TestDialProxyFailClosed(t *testing.T) {
 	p2 := newFakeProxy(nil, "10.0.2.3", nil)
 	p2.markFor = func(string) int { return 0x99 }
 	done2 := make(chan struct{})
-	go func() { p2.dialProxy(src2, "example.com", 443, "us"); close(done2) }()
+	go func() { p2.dialProxy(src2, "example.com", 443, "us", ""); close(done2) }()
 	select {
 	case <-done2:
 	case <-time.After(2 * time.Second):
