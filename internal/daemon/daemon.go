@@ -155,6 +155,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/vms/{name}", s.handleDelete)
 	mux.HandleFunc("POST /v1/vms/{name}/start", s.handleStart)
 	mux.HandleFunc("POST /v1/vms/{name}/stop", s.handleStop)
+	mux.HandleFunc("POST /v1/vms/{name}/clone", s.handleClone)
 	mux.HandleFunc("POST /v1/vms/{name}/snapshot", s.handleSnapshotCreate)
 	mux.HandleFunc("GET /v1/vms/{name}/snapshot", s.handleSnapshotGet)
 	mux.HandleFunc("DELETE /v1/vms/{name}/snapshot", s.handleSnapshotDelete)
@@ -456,6 +457,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.ensureAgentAsync(spec)
+	s.maybeIdentityReset(spec)
 	if man != nil {
 		vmDir := s.P.VMDir(spec.Name)
 		if err := inst.WaitRestored(vmDir); err != nil {

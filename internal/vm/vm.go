@@ -53,9 +53,21 @@ type Spec struct {
 	SmbiosSpoof bool   `json:"smbios_spoof,omitempty"`
 	PrevTZ      string `json:"prev_tz,omitempty"`
 	PrevLocale  string `json:"prev_locale,omitempty"`
+
+	// IdentityReset marks a fresh clone whose guest identity (hostname,
+	// machine-id, ssh host keys) must be regenerated after first boot.
+	IdentityReset bool `json:"identity_reset,omitempty"`
 }
 
 var nameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
+
+// ValidateName checks a VM name.
+func ValidateName(name string) error {
+	if !nameRe.MatchString(name) {
+		return fmt.Errorf("invalid vm name %q (letters/digits/-_, <=32, must start with a letter)", name)
+	}
+	return nil
+}
 
 func (s *Spec) dir(p *paths.Paths) string  { return p.VMDir(s.Name) }
 func (s *Spec) Disk(p *paths.Paths) string { return filepath.Join(s.dir(p), "disk.qcow2") }
@@ -148,8 +160,8 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 // Create builds the VM directory: overlay disk, UEFI vars, seed ISO,
 // spec file. It does not start the VM.
 func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec, sshPub string) error {
-	if !nameRe.MatchString(spec.Name) {
-		return fmt.Errorf("invalid vm name %q (letters/digits/-_, <=32, must start with a letter)", spec.Name)
+	if err := ValidateName(spec.Name); err != nil {
+		return err
 	}
 	if _, err := os.Stat(spec.BaseDisk); err != nil {
 		return fmt.Errorf("base image %s not found; run `pvm image fetch %s`", spec.BaseDisk, spec.Image)
