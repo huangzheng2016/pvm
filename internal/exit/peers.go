@@ -23,30 +23,45 @@ type Peer struct {
 }
 
 // PeerStore allocates tunnel IPs per transport subnet and persists to JSON.
-// Subnets: udp -> 10.99.0.0/24, tcp -> 10.99.1.0/24 (server holds .1).
+// Subnets derive from a base octet: udp -> 10.<base>.0.0/24,
+// tcp -> 10.<base>.1.0/24 (server holds .1). Default base 99.
 type PeerStore struct {
-	mu    sync.Mutex
-	path  string
-	Peers []Peer `json:"peers"`
+	mu      sync.Mutex
+	path    string
+	subnets map[string]string
+	Peers   []Peer `json:"peers"`
 }
 
-var transportSubnets = map[string]string{
-	"udp": "10.99.0.0/24",
-	"tcp": "10.99.1.0/24",
+const defaultSubnetBase = 99
+
+func subnetsFor(base int) map[string]string {
+	return map[string]string{
+		"udp": fmt.Sprintf("10.%d.0.0/24", base),
+		"tcp": fmt.Sprintf("10.%d.1.0/24", base),
+	}
 }
 
-// SubnetFor returns the CIDR serving a transport.
+// SubnetFor returns the CIDR serving a transport (default base, client view).
 func SubnetFor(transport string) (string, error) {
-	s, ok := transportSubnets[transport]
+	return subnetOf(subnetsFor(defaultSubnetBase), transport)
+}
+
+// ServerIP returns the server's address inside a transport subnet (".1"),
+// default base (client view).
+func ServerIP(transport string) (string, error) {
+	return serverIPOf(subnetsFor(defaultSubnetBase), transport)
+}
+
+func subnetOf(subnets map[string]string, transport string) (string, error) {
+	s, ok := subnets[transport]
 	if !ok {
 		return "", fmt.Errorf("unknown transport %q", transport)
 	}
 	return s, nil
 }
 
-// ServerIP returns the server's address inside a transport subnet (".1").
-func ServerIP(transport string) (string, error) {
-	cidr, err := SubnetFor(transport)
+func serverIPOf(subnets map[string]string, transport string) (string, error) {
+	cidr, err := subnetOf(subnets, transport)
 	if err != nil {
 		return "", err
 	}
@@ -63,7 +78,11 @@ func ServerIP(transport string) (string, error) {
 }
 
 func LoadPeerStore(path string) (*PeerStore, error) {
-	s := &PeerStore{path: path}
+	return LoadPeerStoreWithBase(path, defaultSubnetBase)
+}
+
+func LoadPeerStoreWithBase(path string, base int) (*PeerStore, error) {
+	s := &PeerStore{path: path, subnets: subnetsFor(base)}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -90,7 +109,7 @@ func (s *PeerStore) saveLocked() error {
 func (s *PeerStore) Allocate(pubkey, hostname, transport string) (Peer, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := SubnetFor(transport); err != nil {
+	if _, err := subnetOf(s.subnets, transport); err != nil {
 		return Peer{}, err
 	}
 	for _, p := range s.Peers {
@@ -98,7 +117,7 @@ func (s *PeerStore) Allocate(pubkey, hostname, transport string) (Peer, error) {
 			return p, nil
 		}
 	}
-	cidr, _ := SubnetFor(transport)
+	cidr, _ := subnetOf(s.subnets, transport)
 	_, ipnet, _ := net.ParseCIDR(cidr)
 	used := map[string]bool{}
 	for _, p := range s.Peers {

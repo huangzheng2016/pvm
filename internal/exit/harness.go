@@ -126,7 +126,7 @@ func (t *Tunnel) FetchExitIP(ctx context.Context) (string, error) {
 		if err != nil || !ip.Is4() {
 			continue
 		}
-		body, err := t.httpGet(ctx, ip, "ifconfig.me", "/ip")
+		body, err := t.httpGet(ctx, ip, 80, "ifconfig.me", "/ip")
 		if err != nil {
 			lastErr = err
 			continue
@@ -136,10 +136,10 @@ func (t *Tunnel) FetchExitIP(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("fetch exit ip: %v", lastErr)
 }
 
-func (t *Tunnel) httpGet(ctx context.Context, ip netip.Addr, host, path string) (string, error) {
+func (t *Tunnel) httpGet(ctx context.Context, ip netip.Addr, port uint16, host, path string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	conn, err := t.Net.DialContextTCPAddrPort(ctx, netip.AddrPortFrom(ip, 80))
+	conn, err := t.Net.DialContextTCPAddrPort(ctx, netip.AddrPortFrom(ip, port))
 	if err != nil {
 		return "", err
 	}
