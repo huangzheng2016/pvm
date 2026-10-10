@@ -118,7 +118,13 @@ func (s *Server) handleVMRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	writeJSON(w, 200, map[string]any{"vm": spec.Name, "via": req.Via})
+	note := ""
+	if req.Via == "direct" || req.Via == "" {
+		note = s.restoreRegion(spec)
+	} else {
+		note = s.applyRegionProfile(spec, req.Via)
+	}
+	writeJSON(w, 200, map[string]any{"vm": spec.Name, "via": req.Via, "note": note})
 }
 
 // handleDNSList returns the gateway's live fake-ip mapping table.
