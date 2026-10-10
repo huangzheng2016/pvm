@@ -14,9 +14,10 @@ usage: pvm <command> [args]
 
 vm:
   create        create (and start) a vm
+  clone         clone a stopped vm: pvm clone dev1 dev2 [--inherit-ports]
   list          list vms
   start|stop    start/stop a vm
-  rm            stop and delete a vm
+  rm            stop and delete a vm (asks for confirmation; -y to skip)
   ssh           ssh into a vm: pvm ssh dev1 [cmd...]
   snapshot      ram snapshots: create <name> | ls [name] | rm <name>
   exec          run a command via the guest agent (no network needed): pvm exec dev1 cmd...
@@ -59,6 +60,8 @@ func main() {
 		code = cli.CmdStop(args)
 	case "rm":
 		code = cli.CmdRm(args)
+	case "clone":
+		code = cli.CmdClone(args)
 	case "ssh":
 		code = cli.CmdSSH(args)
 	case "map":

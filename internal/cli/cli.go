@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/huangzheng2016/pvm/internal/paths"
 )
@@ -34,4 +35,20 @@ func newFlagSet(name, usage string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprintf(os.Stderr, "usage: pvm %s %s\n", name, usage) }
 	return fs
+}
+
+// partitionFlags moves dash-prefixed args before positionals so flag.Parse
+// (which stops at the first positional) sees them. Only safe for
+// bool-flag-only FlagSets; value flags interleaved after positionals are
+// left in place (flag stops there and the value lands in Args).
+func partitionFlags(args []string) []string {
+	var flags, rest []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") && a != "-" && a != "--" {
+			flags = append(flags, a)
+		} else {
+			rest = append(rest, a)
+		}
+	}
+	return append(flags, rest...)
 }

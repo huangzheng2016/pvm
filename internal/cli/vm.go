@@ -256,24 +256,51 @@ func cmdVMSimple(args []string, action string) int {
 		return fatalf("%v", err)
 	}
 	name := args[0]
-	switch action {
-	case "start", "stop":
-		if err := c.Post(fmt.Sprintf("/v1/vms/%s/%s", name, action), nil, nil); err != nil {
-			return fatalf("%v", err)
-		}
-		fmt.Printf("%s %s\n", action, name)
-	case "rm":
-		if err := c.Delete("/v1/vms/"+name, nil); err != nil {
-			return fatalf("%v", err)
-		}
-		fmt.Printf("removed %s\n", name)
+	if err := c.Post(fmt.Sprintf("/v1/vms/%s/%s", name, action), nil, nil); err != nil {
+		return fatalf("%v", err)
 	}
+	fmt.Printf("%s %s\n", action, name)
 	return 0
 }
 
 func CmdStart(args []string) int { return cmdVMSimple(args, "start") }
 func CmdStop(args []string) int  { return cmdVMSimple(args, "stop") }
-func CmdRm(args []string) int    { return cmdVMSimple(args, "rm") }
+
+func CmdRm(args []string) int {
+	fs := newFlagSet("rm", "<name> [-y|--force]")
+	yes := fs.Bool("y", false, "confirm deletion (non-interactive)")
+	force := fs.Bool("force", false, "alias for -y")
+	if err := fs.Parse(partitionFlags(args)); err != nil {
+		return 2
+	}
+	if fs.NArg() < 1 {
+		fs.Usage()
+		return 2
+	}
+	name := fs.Arg(0)
+	if !*yes && !*force {
+		if !stdinIsTTY() {
+			return fatalf("refusing to delete %q without confirmation (non-interactive stdin); use -y to confirm", name)
+		}
+		if !confirmAction(os.Stdin, os.Stderr, fmt.Sprintf("delete VM '%s' (disk + metadata)?", name)) {
+			fmt.Fprintln(os.Stderr, "aborted")
+			return 1
+		}
+	}
+	p, err := mustPaths()
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	c, err := daemon.Ensure(p)
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	if err := c.Delete("/v1/vms/"+name, nil); err != nil {
+		return fatalf("%v", err)
+	}
+	fmt.Printf("removed %s\n", name)
+	return 0
+}
 
 func CmdSSH(args []string) int {
 	if len(args) < 1 {
