@@ -23,6 +23,7 @@ func WriteSeed(path string, userData, metaData []byte) error {
 	if err != nil {
 		return err
 	}
+	defer os.Remove(tmp) // no-op once renamed
 	fs, err := d.CreateFilesystem(disk.FilesystemSpec{
 		Partition:   0,
 		FSType:      filesystem.TypeFat32,
@@ -49,5 +50,19 @@ func WriteSeed(path string, userData, metaData []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	// fsync the image (via a second handle, diskfs owns the first) and
+	// the directory after rename, so a crash cannot yield a 0-byte seed
+	// (the VM would boot with no user and no way in).
+	if f, err := os.OpenFile(tmp, os.O_RDWR, 0); err == nil {
+		f.Sync()
+		f.Close()
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	if dir, err := os.Open(filepath.Dir(path)); err == nil {
+		dir.Sync()
+		dir.Close()
+	}
+	return nil
 }

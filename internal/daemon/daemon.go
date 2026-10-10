@@ -23,6 +23,7 @@ import (
 	"github.com/huangzheng2016/pvm/internal/buildinfo"
 	"github.com/huangzheng2016/pvm/internal/cluster"
 	"github.com/huangzheng2016/pvm/internal/config"
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/image"
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/qemu"
@@ -295,9 +296,45 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if req.User == "" {
 		req.User = "pvm"
 	}
+	if req.CPUs < 1 || req.CPUs > 64 {
+		writeErr(w, 400, fmt.Errorf("cpus %d out of range [1,64]", req.CPUs))
+		return
+	}
+	if req.MemMB < 128 || req.MemMB > 1048576 {
+		writeErr(w, 400, fmt.Errorf("mem_mb %d out of range [128,1048576]", req.MemMB))
+		return
+	}
+	if req.DiskGB < 1 || req.DiskGB > 4096 {
+		writeErr(w, 400, fmt.Errorf("disk_gb %d out of range [1,4096]", req.DiskGB))
+		return
+	}
 
 	mounts, err := parseMounts(req.Mounts)
 	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	// Each extra mount takes a pcie-root-port at 0x10+i; rp-link lives at
+	// 0x1E, so 13 is the hard ceiling (BuildArgs).
+	if len(mounts) > 13 {
+		writeErr(w, 400, fmt.Errorf("too many mounts: %d (max 13)", len(mounts)))
+		return
+	}
+	if req.TZ != "" {
+		if err := vm.ValidateTZ(req.TZ); err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+	}
+	if req.Locale != "" {
+		l, err := vm.NormalizeLocale(req.Locale)
+		if err != nil {
+			writeErr(w, 400, err)
+			return
+		}
+		req.Locale = l
+	}
+	if err := vm.ValidateSpec(&vm.Spec{User: req.User, GitEmail: req.GitEmail, GitName: req.GitName}, mounts); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -327,20 +364,6 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.stage(req.Name, "cluster", cl.Gateway)
 
-	if req.TZ != "" {
-		if err := vm.ValidateTZ(req.TZ); err != nil {
-			writeErr(w, 400, err)
-			return
-		}
-	}
-	if req.Locale != "" {
-		l, err := vm.NormalizeLocale(req.Locale)
-		if err != nil {
-			writeErr(w, 400, err)
-			return
-		}
-		req.Locale = l
-	}
 	spec := &vm.Spec{
 		Name: req.Name, Image: req.Image, Role: "user", User: req.User, Arch: runtime.GOARCH,
 		GuestUID: os.Getuid(),
@@ -520,7 +543,11 @@ func (s *Server) handleSnapshotCreate(w http.ResponseWriter, r *http.Request) {
 	for _, m := range spec.Mounts {
 		mounts = append(mounts, m.Guest)
 	}
-	if err := s.sshGuest(spec, "sudo umount -l "+strings.Join(mounts, " ")); err != nil {
+	quoted := make([]string, len(mounts))
+	for i, m := range mounts {
+		quoted[i] = shellQuote(m)
+	}
+	if err := s.sshGuest(spec, "sudo sync; sudo umount -l "+strings.Join(quoted, " ")); err != nil {
 		log.Printf("snapshot %s: pre-migrate umount failed (continuing): %v", name, err)
 	}
 
@@ -600,12 +627,15 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if err := s.instance(spec).Stop(); err != nil {
 		log.Printf("stop %s before delete: %v", name, err)
 	}
+	var cl *cluster.Cluster
 	if spec.Role != "gateway" && spec.ClusterID > 0 {
-		if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
-			s.removeLink(cl, name)
-			s.Clusters.RemoveVM(cl.ID, name)
-			s.pushGatewayConfig(cl)
-		}
+		cl = s.Clusters.Get(spec.ClusterID)
+	}
+	s.closeVMResources(name, cl)
+	if cl != nil {
+		s.removeLink(cl, name)
+		s.Clusters.RemoveVM(cl.ID, name)
+		s.pushGatewayConfig(cl)
 	}
 	if err := vm.Delete(s.P, name); err != nil {
 		writeErr(w, 500, err)
@@ -673,6 +703,21 @@ func (s *Server) recoverClusters() {
 // Run starts the unix-socket HTTP server and blocks until shutdown.
 func Run(p *paths.Paths, srv *Server) error {
 	sock := p.DaemonSock()
+	// Single-instance guard, held for the daemon's whole lifetime: a
+	// second daemon would write stale in-memory state over clusters.json
+	// (the maps:null incident). The CLI autospawn lock (daemon.lock) is
+	// separate and only serialises spawning.
+	runLock, err := fsutil.TryLock(p.DaemonRunLock())
+	if err != nil {
+		holder := "unknown"
+		if b, rerr := os.ReadFile(p.DaemonRunLock()); rerr == nil && len(b) > 0 {
+			holder = strings.TrimSpace(string(b))
+		}
+		return fmt.Errorf("another pvm daemon is already running (pid %s)", holder)
+	}
+	defer runLock.Unlock()
+	os.WriteFile(p.DaemonRunLock(), []byte(fmt.Sprint(os.Getpid())), 0o600)
+
 	os.Remove(sock)
 	ln, err := net.Listen("unix", sock)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
@@ -122,9 +123,16 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 
 	// From here the guest may be paused: resume on any failure.
 	completed := false
+	sharesRemoved := false
 	defer func() {
 		if !completed {
 			q.Cont()
+			if sharesRemoved {
+				// Best-effort: put the 9p front-ends back or every later
+				// snapshot fails with "Device 'fs0' not found" and the
+				// shares stay gone until reboot.
+				in.reattachShares(q)
+			}
 		}
 	}()
 
@@ -138,6 +146,7 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 			return err
 		}
 	}
+	sharesRemoved = true
 
 	if err := q.Stop(); err != nil {
 		return fmt.Errorf("qmp stop: %w", err)
@@ -151,7 +160,7 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 	}
 	ramTmp := sp.RAM + ".tmp"
 	os.Remove(ramTmp)
-	uri := fmt.Sprintf("exec:%s __snapshot-pipe-out %s", exe, ramTmp)
+	uri := fmt.Sprintf("exec:%s __snapshot-pipe-out %s", shellQuote(exe), shellQuote(ramTmp))
 	if err := q.Migrate(uri); err != nil {
 		return fmt.Errorf("qmp migrate: %w", err)
 	}
@@ -179,9 +188,6 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 	if err := os.Rename(snapTmp, sp.Snap); err != nil {
 		return err
 	}
-	if in.Cfg.DiskPath == sp.Restore {
-		os.Remove(sp.Restore)
-	}
 	if err := os.Rename(ramTmp, sp.RAM); err != nil {
 		return err
 	}
@@ -197,6 +203,13 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 	}
 	if err := m.save(vmDir); err != nil {
 		return err
+	}
+	// The stale restore overlay is dropped only after the manifest is on
+	// disk: its content is fully captured in sp.Snap (qemu has quit), and
+	// a crash before this point must not lose the only reference to the
+	// VM's current data.
+	if in.Cfg.DiskPath == sp.Restore {
+		os.Remove(sp.Restore)
 	}
 	completed = true
 	return nil
@@ -250,13 +263,22 @@ func (in *Instance) PrepareRestore(vmDir string) (*SnapshotManifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	os.Remove(sp.Restore)
+	// A leftover restore overlay may hold real writes from a previous
+	// restore that failed after the migration (cont/reattach/save error);
+	// keep it as .bak instead of silently discarding that work.
+	if _, err := os.Stat(sp.Restore); err == nil {
+		bak := sp.Restore + ".bak"
+		os.Remove(bak)
+		if err := os.Rename(sp.Restore, bak); err != nil {
+			return nil, fmt.Errorf("preserve restore overlay: %w", err)
+		}
+	}
 	out, err := exec.Command(in.Toolchain.Img, "create", "-f", "qcow2", "-b", sp.Snap, "-F", "qcow2", sp.Restore).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("qemu-img create restore overlay: %v\n%s", err, out)
 	}
 	in.Cfg.DiskPath = sp.Restore
-	in.Cfg.Incoming = fmt.Sprintf("exec:%s __snapshot-pipe-in %s", exe, sp.RAM)
+	in.Cfg.Incoming = fmt.Sprintf("exec:%s __snapshot-pipe-in %s", shellQuote(exe), shellQuote(sp.RAM))
 	in.Cfg.NoVirtFSDevices = true
 	return m, nil
 }
@@ -280,6 +302,18 @@ func (in *Instance) WaitRestored(vmDir string) error {
 			}
 			switch status {
 			case "completed":
+				// Mark consumed before anything else: the overlay now
+				// holds the migrated disk state, so even a cont/reattach
+				// failure must fall back to a plain boot from it rather
+				// than re-restoring stale RAM over newer writes.
+				m, err := LoadManifest(vmDir)
+				if err != nil {
+					return err
+				}
+				m.Consumed = true
+				if err := m.save(vmDir); err != nil {
+					return err
+				}
 				// Incoming migration can leave the guest paused;
 				// an explicit cont is required (same as aq).
 				if err := q.Cont(); err != nil {
@@ -291,12 +325,7 @@ func (in *Instance) WaitRestored(vmDir string) error {
 				if err := in.reattachShares(q); err != nil {
 					return err
 				}
-				m, err := LoadManifest(vmDir)
-				if err != nil {
-					return err
-				}
-				m.Consumed = true
-				return m.save(vmDir)
+				return nil
 			case "failed", "cancelled":
 				return fmt.Errorf("restore migration %s", status)
 			}
@@ -340,6 +369,11 @@ func RemoveSnapshot(vmDir string) error {
 		}
 	}
 	return nil
+}
+
+// shellQuote wraps s in single quotes for /bin/sh -c (qemu exec: URIs).
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // ActiveDisk returns the disk a stopped VM should boot from: the restore

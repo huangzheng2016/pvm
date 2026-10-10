@@ -5,11 +5,22 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
 )
+
+var nameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
+
+// ValidName reports whether name is safe to use as an exit identifier
+// (it becomes a filename under the exits dir).
+func ValidName(name string) bool { return nameRe.MatchString(name) }
+
+func entryPath(dir, name string) string {
+	return filepath.Join(dir, name+".json")
+}
 
 // Entry is a locally stored exit-node enrollment (client side).
 type Entry struct {
@@ -34,12 +45,11 @@ type Entry struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-func entryPath(dir, name string) string {
-	return filepath.Join(dir, name+".json")
-}
-
 // SaveEntry persists an entry (0600).
 func SaveEntry(dir string, e *Entry) error {
+	if !ValidName(e.Name) {
+		return fmt.Errorf("invalid exit name %q", e.Name)
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
@@ -52,6 +62,9 @@ func SaveEntry(dir string, e *Entry) error {
 
 // LoadEntry reads one entry by name.
 func LoadEntry(dir, name string) (*Entry, error) {
+	if !ValidName(name) {
+		return nil, fmt.Errorf("invalid exit name %q", name)
+	}
 	b, err := os.ReadFile(entryPath(dir, name))
 	if err != nil {
 		return nil, err
@@ -89,6 +102,9 @@ func ListEntries(dir string) ([]*Entry, error) {
 
 // RemoveEntry deletes the local entry file.
 func RemoveEntry(dir, name string) error {
+	if !ValidName(name) {
+		return fmt.Errorf("invalid exit name %q", name)
+	}
 	err := os.Remove(entryPath(dir, name))
 	if os.IsNotExist(err) {
 		return fmt.Errorf("exit %q not found", name)
