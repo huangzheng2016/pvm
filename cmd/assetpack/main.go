@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/klauspost/compress/zstd"
@@ -21,10 +22,34 @@ type manifestEntry struct {
 	Mode   int32  `json:"mode"`
 }
 
+func validateInputs(entries []os.DirEntry) error {
+	remaining := map[string]bool{
+		"agent-linux-" + runtime.GOARCH:   true,
+		"gateway-linux-" + runtime.GOARCH: true,
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || name == "manifest.json" || strings.HasSuffix(name, ".zst") {
+			continue
+		}
+		if !remaining[name] {
+			return fmt.Errorf("unexpected asset %q for native architecture %s", name, runtime.GOARCH)
+		}
+		delete(remaining, name)
+	}
+	if len(remaining) != 0 {
+		return fmt.Errorf("missing native assets for %s: %v", runtime.GOARCH, remaining)
+	}
+	return nil
+}
+
 func main() {
 	dir := "internal/assets/packed"
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		panic(err)
+	}
+	if err := validateInputs(entries); err != nil {
 		panic(err)
 	}
 	enc, err := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedBestCompression))
