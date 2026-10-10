@@ -1,8 +1,15 @@
 package image
 
 import (
+	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/hex"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -78,7 +85,7 @@ func TestLatestGoldenSkipsMissingFile(t *testing.T) {
 }
 
 func TestRenderProvision(t *testing.T) {
-	s, err := renderProvision("ubuntu", "baker")
+	s, err := renderProvision("ubuntu", "baker", ProxyConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,11 +107,57 @@ func TestRenderProvision(t *testing.T) {
 	if strings.Contains(s, "docker system prune -af") {
 		t.Error("provision script would prune the kasm image it just pulled")
 	}
-	if _, err := renderProvision("alpine", "baker"); err == nil {
+	if _, err := renderProvision("alpine", "baker", ProxyConfig{}); err == nil {
 		t.Error("expected error for alpine")
 	}
-	if _, err := renderProvision("ubuntu", "root"); err == nil {
+	if _, err := renderProvision("ubuntu", "root", ProxyConfig{}); err == nil {
 		t.Error("expected error for root build user")
+	}
+}
+
+func TestRenderProvisionProxyLifecycle(t *testing.T) {
+	proxy := ProxyConfig{
+		HTTPProxy:  "http://127.0.0.1:8080",
+		HTTPSProxy: "http://user:pass@localhost:8081",
+		AllProxy:   "socks5://[::1]:1080",
+		NoProxy:    "example.com,internal",
+	}
+	s, err := renderProvision("ubuntu", "baker", proxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"http://10.0.2.2:8080", "http://user:pass@10.0.2.2:8081", "socks5://[10.0.2.2]:1080",
+		"/tmp/pvm-build-proxy.env", "/etc/systemd/system/docker.service.d/pvm-proxy.conf",
+		"rm -f /tmp/pvm-build-proxy.env /etc/systemd/system/docker.service.d/pvm-proxy.conf",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("proxy provision missing %q", want)
+		}
+	}
+	if strings.Contains(s, "localhost") {
+		t.Error("loopback localhost was not rewritten")
+	}
+}
+
+func TestRenderProvisionWithoutProxyHasNoProxyArtifacts(t *testing.T) {
+	s, err := renderProvision("ubuntu", "baker", ProxyConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"pvm-build-proxy.env", "pvm-proxy.conf"} {
+		if strings.Contains(s, forbidden) {
+			t.Errorf("proxy artifact %q leaked into golden provision", forbidden)
+		}
+	}
+}
+
+func TestFetchUsesDefaultTransport(t *testing.T) {
+	if httpClient.Transport != nil {
+		t.Fatal("custom transport configured; fetch should use the Go default proxy behavior")
+	}
+	if http.DefaultTransport.(*http.Transport).Proxy == nil {
+		t.Fatal("default transport no longer uses ProxyFromEnvironment")
 	}
 }
 
@@ -130,5 +183,74 @@ func TestResolveUsesNativeArchitecture(t *testing.T) {
 	}
 	if ref.Arch != native.Arch {
 		t.Fatalf("Resolve arch = %q, want native %q", ref.Arch, native.Arch)
+	}
+}
+
+func TestAlpineBareHashChecksum(t *testing.T) {
+	payload := []byte("alpine image bytes")
+	sum := sha512.Sum512(payload)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(hex.EncodeToString(sum[:]) + "\n"))
+	}))
+	defer srv.Close()
+	file := filepath.Join(t.TempDir(), "alpine.qcow2")
+	if err := os.WriteFile(file, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref := &Ref{SumFile: "alpine.qcow2", SumsURL: srv.URL, SumKind: "sha512"}
+	if err := verifyChecksum(ref, file); err != nil {
+		t.Fatalf("bare Alpine sha512 was not accepted: %v", err)
+	}
+}
+
+func TestFetchSkipsAlreadyCompletePart(t *testing.T) {
+	payload := []byte("already downloaded")
+	gets := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "HEAD" {
+			w.Header().Set("Content-Length", strconv.Itoa(len(payload)))
+			return
+		}
+		gets++
+		_, _ = w.Write(payload)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	part := filepath.Join(dir, "alpine-3.20-arm64.qcow2.part")
+	if err := os.WriteFile(part, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(payload)
+	sums := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(hex.EncodeToString(sum[:]) + " alpine-3.20-arm64.qcow2\n"))
+	}))
+	defer sums.Close()
+	final, err := Fetch(&Ref{Distro: "alpine", Version: "3.20", Arch: "arm64", URL: srv.URL, SumsURL: sums.URL, SumFile: "alpine-3.20-arm64.qcow2", SumKind: "sha256"}, dir, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final != filepath.Join(dir, "alpine-3.20-arm64.qcow2") {
+		t.Fatalf("final path = %q", final)
+	}
+	if gets != 0 {
+		t.Fatalf("complete part was downloaded again (%d GETs)", gets)
+	}
+}
+
+func TestResolveAlpine(t *testing.T) {
+	for _, tc := range []struct{ version, file string }{
+		{"3.20", "nocloud_alpine-3.20.9-aarch64-uefi-cloudinit-r0.qcow2"},
+		{"3.21", "alpine-3.21.8-aarch64-uefi-cloudinit-r0.qcow2"},
+	} {
+		ref, err := Resolve("alpine:" + tc.version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ref.URL != "https://dl-cdn.alpinelinux.org/alpine/v"+tc.version+"/releases/cloud/"+tc.file {
+			t.Errorf("unexpected alpine url: %s", ref.URL)
+		}
+		if ref.SumsURL != ref.URL+".sha512" || ref.SumKind != "sha512" {
+			t.Errorf("unexpected alpine checksum: %s / %s", ref.SumsURL, ref.SumKind)
+		}
 	}
 }

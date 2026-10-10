@@ -30,6 +30,7 @@ type BakeOptions struct {
 	BuildCPUs int
 	BuildMem  int
 	BuildDisk int
+	Proxy     ProxyConfig
 }
 
 type sshRunner struct {
@@ -148,7 +149,7 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 		return nil, err
 	}
 
-	prov, err := renderProvision(ref.Distro, spec.User)
+	prov, err := renderProvision(ref.Distro, spec.User, o.Proxy)
 	if err != nil {
 		return nil, err
 	}

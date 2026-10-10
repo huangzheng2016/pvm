@@ -29,13 +29,13 @@ func gatewayConfigFromCluster(s *Server, cl *cluster.Cluster) []byte {
 		Fingerprint string `json:"fingerprint"`
 	}
 	doc := struct {
-		CIDR        string            `json:"cidr"`
-		GwIP        string            `json:"gw_ip"`
-		DNSUpstream string            `json:"dns_upstream"`
-		VMs         []vmEntry         `json:"vms"`
-		Maps        []mapEntry        `json:"maps"`
-		Rules       []rules.Rule      `json:"rules,omitempty"`
-		VMExits     map[string]string `json:"vm_exits,omitempty"`
+		CIDR        string             `json:"cidr"`
+		GwIP        string             `json:"gw_ip"`
+		DNSUpstream string             `json:"dns_upstream"`
+		VMs         []vmEntry          `json:"vms"`
+		Maps        []mapEntry         `json:"maps"`
+		Rules       []rules.Rule       `json:"rules,omitempty"`
+		VMExits     map[string]string  `json:"vm_exits,omitempty"`
 		Exits       map[string]exitDef `json:"exits,omitempty"`
 	}{
 		CIDR: cl.CIDR, GwIP: cl.GwIP, DNSUpstream: "10.0.2.3",

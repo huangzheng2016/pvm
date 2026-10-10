@@ -10,8 +10,9 @@ import (
 // accepted shapes strict instead of escaping.
 
 var (
-	// America/Los_Angeles, Etc/UTC, Asia/Shanghai
-	tzRe = regexp.MustCompile(`^[A-Za-z]+/[A-Za-z_]+(/[A-Za-z_]+)?$`)
+	// America/Los_Angeles, Etc/UTC, Asia/Shanghai; bare UTC is also a real
+	// zoneinfo file and is what an unconfigured guest reports.
+	tzRe = regexp.MustCompile(`^([A-Za-z]+/[A-Za-z_]+(/[A-Za-z_]+)?|UTC)$`)
 	// en_US.UTF-8 (normalized form)
 	localeRe = regexp.MustCompile(`^[a-z]{2,3}(_[A-Z]{2})?\.UTF-8$`)
 )
