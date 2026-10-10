@@ -60,6 +60,7 @@ type exitTunnel struct {
 	def    ExitDef
 	idx    int
 	tunIP  string
+	priv   string // wg private key, persisted across re-enrolls so the server keeps seeing the same peer
 	dev    *device.Device
 	td     tun.Device
 	stop   chan struct{}
@@ -88,17 +89,24 @@ func (t *exitTunnel) lastHandshake() int64 {
 // exitManager owns all exit tunnels and the policy-routing state that
 // sends marked/from-VM traffic into them.
 type exitManager struct {
-	mu     sync.Mutex
-	tuns   map[string]*exitTunnel
+	mu   sync.Mutex
+	tuns map[string]*exitTunnel
 	// desired ip-rule state (reconciled on Sync)
 	vmRules   map[string]int  // vmIP -> exit idx
 	cidrRules map[string]int  // proxied cidr -> exit idx
 	bypass    map[string]bool // direct cidrs/ips -> lookup main
+	// learned holds runtime-learned bypass /32s (direct/internal domain
+	// answers); kept across Sync calls so config pushes never reroute
+	// live direct flows into the tunnel mid-TTL.
+	learned         map[string]bool
+	learnedFullOnce sync.Once
 	// onBypass fires when a new bypass ip/cidr is learned at runtime
 	// (direct-domain DNS answers), so the nft bypass set stays in sync
 	// between full table rebuilds.
 	onBypass func(ip string)
 }
+
+const learnedBypassCap = 4096
 
 func newExitManager() *exitManager {
 	return &exitManager{
@@ -106,6 +114,7 @@ func newExitManager() *exitManager {
 		vmRules:   map[string]int{},
 		cidrRules: map[string]int{},
 		bypass:    map[string]bool{},
+		learned:   map[string]bool{},
 	}
 }
 
@@ -164,19 +173,33 @@ func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, 
 			wantBypass[t.server+"/32"] = true
 		}
 	}
+	// runtime-learned bypass IPs survive config syncs; dropping them
+	// mid-TTL reroutes cached direct flows into the tunnel.
+	for ip := range m.learned {
+		wantBypass[ip] = true
+	}
 
 	m.reconcileRulesLocked(wantVM, wantCIDR, wantBypass)
 }
 
-// AddBypassIP records a freshly resolved direct-domain IP so its
-// traffic skips the tunnel even for proxied VMs.
+// AddBypassIP records a freshly resolved direct/internal-domain IP so
+// its traffic skips the tunnel even for proxied VMs. Learned entries
+// persist across config syncs (see Sync); the table is capped and new
+// entries are dropped (fail-safe to the tunnel) once full.
 func (m *exitManager) AddBypassIP(ip string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.bypass[ip+"/32"] {
+	if m.bypass[ip+"/32"] || m.learned[ip+"/32"] {
 		return
 	}
-	if err := ipRule("add", "to", ip+"/32", "lookup", "main", "pref", strconv.Itoa(rulePrefBypass)); err == nil {
+	if len(m.learned) >= learnedBypassCap {
+		m.learnedFullOnce.Do(func() {
+			log.Printf("exit: learned bypass table full (%d entries), dropping new ones", learnedBypassCap)
+		})
+		return
+	}
+	if err := ipRuleCmd("add", "to", ip+"/32", "lookup", "main", "pref", strconv.Itoa(rulePrefBypass)); err == nil {
+		m.learned[ip+"/32"] = true
 		m.bypass[ip+"/32"] = true
 		if m.onBypass != nil {
 			m.onBypass(ip + "/32")
@@ -200,41 +223,41 @@ func (m *exitManager) BypassList() []string {
 func (m *exitManager) reconcileRulesLocked(wantVM map[string]int, wantCIDR map[string]int, wantBypass map[string]bool) {
 	for ip, idx := range m.vmRules {
 		if _, ok := wantVM[ip]; !ok {
-			ipRule("del", "from", ip+"/32", "lookup", strconv.Itoa(ruleTableBase+idx))
+			ipRuleCmd("del", "from", ip+"/32", "lookup", strconv.Itoa(ruleTableBase+idx))
 			delete(m.vmRules, ip)
 		}
 	}
 	for ip, idx := range wantVM {
 		if cur, ok := m.vmRules[ip]; !ok || cur != idx {
-			ipRule("del", "from", ip+"/32", "lookup", strconv.Itoa(ruleTableBase+cur))
-			if err := ipRule("add", "from", ip+"/32", "lookup", strconv.Itoa(ruleTableBase+idx), "pref", strconv.Itoa(rulePrefVMExit)); err == nil {
+			ipRuleCmd("del", "from", ip+"/32", "lookup", strconv.Itoa(ruleTableBase+cur))
+			if err := ipRuleCmd("add", "from", ip+"/32", "lookup", strconv.Itoa(ruleTableBase+idx), "pref", strconv.Itoa(rulePrefVMExit)); err == nil {
 				m.vmRules[ip] = idx
 			}
 		}
 	}
 	for cidr, idx := range m.cidrRules {
 		if _, ok := wantCIDR[cidr]; !ok {
-			ipRule("del", "to", cidr, "lookup", strconv.Itoa(ruleTableBase+idx))
+			ipRuleCmd("del", "to", cidr, "lookup", strconv.Itoa(ruleTableBase+idx))
 			delete(m.cidrRules, cidr)
 		}
 	}
 	for cidr, idx := range wantCIDR {
 		if cur, ok := m.cidrRules[cidr]; !ok || cur != idx {
-			ipRule("del", "to", cidr, "lookup", strconv.Itoa(ruleTableBase+cur))
-			if err := ipRule("add", "to", cidr, "lookup", strconv.Itoa(ruleTableBase+idx), "pref", "60"); err == nil {
+			ipRuleCmd("del", "to", cidr, "lookup", strconv.Itoa(ruleTableBase+cur))
+			if err := ipRuleCmd("add", "to", cidr, "lookup", strconv.Itoa(ruleTableBase+idx), "pref", "60"); err == nil {
 				m.cidrRules[cidr] = idx
 			}
 		}
 	}
 	for cidr := range m.bypass {
 		if !wantBypass[cidr] {
-			ipRule("del", "to", cidr, "lookup", "main")
+			ipRuleCmd("del", "to", cidr, "lookup", "main")
 			delete(m.bypass, cidr)
 		}
 	}
 	for cidr := range wantBypass {
 		if !m.bypass[cidr] {
-			if err := ipRule("add", "to", cidr, "lookup", "main", "pref", strconv.Itoa(rulePrefBypass)); err == nil {
+			if err := ipRuleCmd("add", "to", cidr, "lookup", "main", "pref", strconv.Itoa(rulePrefBypass)); err == nil {
 				m.bypass[cidr] = true
 			}
 		}
@@ -243,9 +266,11 @@ func (m *exitManager) reconcileRulesLocked(wantVM map[string]int, wantCIDR map[s
 
 func (m *exitManager) ensureLocked(name string, def ExitDef, idx int) {
 	if t, ok := m.tuns[name]; ok {
-		if t.def == def {
-			return // already up with the same parameters
+		if t.def == def && t.idx == idx {
+			return // already up with the same parameters and index
 		}
+		// def or index drifted (an exit was added/removed and re-sorted
+		// the indexes): rebuild so ifname/mark/table match the rules.
 		m.teardownLocked(t)
 	}
 	t := &exitTunnel{name: name, def: def, idx: idx, stop: make(chan struct{}), done: make(chan struct{})}
@@ -257,6 +282,16 @@ func (m *exitManager) teardownLocked(t *exitTunnel) {
 	close(t.stop)
 	<-t.done
 	delete(m.tuns, t.name)
+	// permanently gone: revoke the server-side peer so the tunnel-IP
+	// pool does not fill with dead registrations.
+	if t.tunIP != "" {
+		cl := exit.NewClient(t.def.Server, t.def.Token, t.def.Fingerprint)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := cl.DeletePeer(ctx, t.tunIP); err != nil {
+			log.Printf("exit %s: revoke peer %s: %v", t.name, t.tunIP, err)
+		}
+		cancel()
+	}
 }
 
 // runTunnel enrolls and maintains the tunnel until torn down,
@@ -290,15 +325,21 @@ func (m *exitManager) runTunnel(t *exitTunnel) {
 	}
 }
 
-// upOnce enrolls a fresh peer and brings the device and routing up.
+// upOnce enrolls a peer and brings the device and routing up. The WG
+// private key is generated once per tunnel and reused across watchdog
+// re-enrolls, so the server keeps the same peer/IP instead of leaking
+// pool entries on every rebuild.
 func (m *exitManager) upOnce(t *exitTunnel) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	priv, err := tunnel.GenerateKey()
-	if err != nil {
-		return err
+	if t.priv == "" {
+		priv, err := tunnel.GenerateKey()
+		if err != nil {
+			return err
+		}
+		t.priv = priv
 	}
-	pub, err := tunnel.PublicKey(priv)
+	pub, err := tunnel.PublicKey(t.priv)
 	if err != nil {
 		return err
 	}
@@ -322,7 +363,7 @@ func (m *exitManager) upOnce(t *exitTunnel) error {
 		td.Close()
 		return fmt.Errorf("wg device: %w", err)
 	}
-	privHex, err := tunnel.Hex(priv)
+	privHex, err := tunnel.Hex(t.priv)
 	if err != nil {
 		dev.Close()
 		return err
@@ -359,15 +400,15 @@ persistent_keepalive_interval=25
 		return err
 	}
 	mark := strconv.Itoa(fwMarkBase + t.idx)
-	ipRule("del", "fwmark", mark, "lookup", table) // dedupe, ignore error
-	if err := ipRule("add", "fwmark", mark, "lookup", table, "pref", "100"); err != nil {
+	ipRuleCmd("del", "fwmark", mark, "lookup", table) // dedupe, ignore error
+	if err := ipRuleCmd("add", "fwmark", mark, "lookup", table, "pref", "100"); err != nil {
 		dev.Close()
 		return fmt.Errorf("fwmark rule: %w", err)
 	}
 	// the outer endpoint packets must never enter the tunnel
 	if t.server != "" {
-		ipRule("del", "to", t.server+"/32", "lookup", "main")
-		if err := ipRule("add", "to", t.server+"/32", "lookup", "main", "pref", "40"); err != nil {
+		ipRuleCmd("del", "to", t.server+"/32", "lookup", "main")
+		if err := ipRuleCmd("add", "to", t.server+"/32", "lookup", "main", "pref", "40"); err != nil {
 			log.Printf("exit %s: endpoint host rule: %v", t.name, err)
 		}
 	}
@@ -405,7 +446,12 @@ func (m *exitManager) watch(t *exitTunnel) bool {
 func (m *exitManager) cleanupDevice(t *exitTunnel) {
 	mark := strconv.Itoa(fwMarkBase + t.idx)
 	table := strconv.Itoa(ruleTableBase + t.idx)
-	ipRule("del", "fwmark", mark, "lookup", table)
+	ipRuleCmd("del", "fwmark", mark, "lookup", table)
+	// drop the anti-loop host rule too; leaving it pins a stale VPS IP
+	// to the main table after the tunnel is gone.
+	if t.server != "" {
+		ipRuleCmd("del", "to", t.server+"/32", "lookup", "main")
+	}
 	if t.dev != nil {
 		t.dev.Close()
 		t.dev = nil
@@ -446,6 +492,10 @@ func (m *exitManager) DomainConnectAddr(name string) (string, bool) {
 	addr := exit.DomainConnectAddr(t.tunIP)
 	return addr, addr != ""
 }
+
+// ipRuleCmd is indirection for tests (the gateway only runs on linux,
+// but the reconcile logic is testable anywhere with a stub).
+var ipRuleCmd = ipRule
 
 func ipRule(args ...string) error {
 	out, err := exec.Command("ip", append([]string{"rule"}, args...)...).CombinedOutput()

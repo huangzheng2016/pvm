@@ -81,20 +81,22 @@ func (p *Pool) freeIPLocked() uint32 {
 			return ip
 		}
 	}
-	// every address is mapped; reuse the LRU tail
-	return p.lru.Back().Value.(uint32)
+	// every address is mapped; evict the LRU tail and reuse its address
+	return p.evictLocked()
 }
 
-func (p *Pool) evictLocked() {
+// evictLocked drops the least recently used mapping and returns its IP.
+func (p *Pool) evictLocked() uint32 {
 	back := p.lru.Back()
 	if back == nil {
-		return
+		return p.base + 1
 	}
 	ip := back.Value.(uint32)
 	p.lru.Remove(back)
 	delete(p.elems, ip)
 	delete(p.dToI, p.iToD[ip])
 	delete(p.iToD, ip)
+	return ip
 }
 
 // Lookup resolves a fake IP back to its domain.

@@ -39,6 +39,12 @@ type Server struct {
 	// resolver address; replaceable in tests to observe isolation.
 	NewInternalUpstream func(addr string) Upstream
 
+	// OnInternalAnswer, when set, is invoked with the question name and
+	// the upstream answer for internal-rule forwards (both the default
+	// uplink and designated-resolver paths), so the routing layer can
+	// learn bypass IPs for internal domains.
+	OnInternalAnswer func(name string, resp *mdns.Msg)
+
 	mu     sync.RWMutex
 	rules  *rules.Engine
 	static map[string]net.IP
@@ -148,10 +154,13 @@ func (s *Server) answerHost(req, resp *mdns.Msg, name string, qtype uint16) {
 				// no designated resolver: internal names take the
 				// default uplink (host DNS resolves corp/VPN names)
 				s.forward(req, resp)
-				return
+			} else {
+				// designated resolver: ONLY that server ever sees the name
+				s.forwardInternal(req, resp, d.DNS)
 			}
-			// designated resolver: ONLY that server ever sees the name
-			s.forwardInternal(req, resp, d.DNS)
+			if s.OnInternalAnswer != nil {
+				s.OnInternalAnswer(name, resp)
+			}
 			return
 		case rules.Direct:
 			s.forward(req, resp)

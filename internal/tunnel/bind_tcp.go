@@ -5,6 +5,7 @@
 package tunnel
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"net/netip"
@@ -33,6 +34,7 @@ func NewTCPBind() conn.Bind {
 type TCPBind struct {
 	mu         sync.Mutex
 	tcpConnMap map[string]*tcpConn
+	perIP      map[string]int
 	dialing    map[string]*sync.Mutex
 	listener   *net.TCPListener
 	closed     bool
@@ -42,6 +44,18 @@ type TCPBind struct {
 	recvChan  chan *recvData
 	closeChan chan struct{}
 }
+
+// Inbound connections are unauthenticated until a WireGuard handshake
+// completes, so every idle TCP conn would otherwise cost a 64KB buffer
+// and a goroutine forever.
+const (
+	tcpMaxConns      = 1024
+	tcpMaxConnsPerIP = 16
+)
+
+// tcpFirstReadTimeout is the deadline for the first frame (a WG
+// handshake initiation); a var so tests can shrink it.
+var tcpFirstReadTimeout = 10 * time.Second
 
 type tcpConn struct {
 	conn    *net.TCPConn
@@ -113,6 +127,10 @@ func (t *TCPBind) handleConn(entry *tcpConn, endpoint conn.Endpoint) {
 			t.deleteConn(endpoint.DstToString(), entry)
 			entry.conn.Close()
 		}()
+		// the first frame (a WG handshake initiation) must arrive quickly;
+		// afterwards the deadline is lifted and WG keepalives rule.
+		entry.conn.SetReadDeadline(time.Now().Add(tcpFirstReadTimeout)) //nolint:errcheck
+		first := true
 		for {
 			data := t.dataPool.Get().(*recvData)
 			if _, err := io.ReadFull(entry.conn, data.len[:]); err != nil {
@@ -136,6 +154,10 @@ func (t *TCPBind) handleConn(entry *tcpConn, endpoint conn.Endpoint) {
 				t.dataPool.Put(data)
 				continue
 			}
+			if first {
+				entry.conn.SetReadDeadline(time.Time{}) //nolint:errcheck
+				first = false
+			}
 			data.size = size
 			data.endpoint = endpoint
 			select {
@@ -153,19 +175,40 @@ func (t *TCPBind) deleteConn(endpoint string, entry *tcpConn) {
 	defer t.mu.Unlock()
 	if t.tcpConnMap != nil && t.tcpConnMap[endpoint] == entry {
 		delete(t.tcpConnMap, endpoint)
+		if ip, _, err := net.SplitHostPort(endpoint); err == nil && t.perIP[ip] > 0 {
+			t.perIP[ip]--
+		}
 	}
 }
 
 func (t *TCPBind) accept(listener *net.TCPListener) {
+	closeChan := t.closeChan
+	backoff := 10 * time.Millisecond
 	for {
 		c, err := listener.AcceptTCP()
 		if err != nil {
-			return
+			if t.isClosed() {
+				return
+			}
+			// EMFILE and friends are temporary; never let the accept loop
+			// die silently, the whole TCP transport depends on it.
+			select {
+			case <-time.After(backoff):
+			case <-closeChan:
+				return
+			}
+			if backoff < time.Second {
+				backoff *= 2
+			}
+			continue
 		}
+		backoff = 10 * time.Millisecond
 		c.SetNoDelay(true) //nolint:errcheck
 		endpoint := &conn.StdNetEndpoint{AddrPort: c.RemoteAddr().(*net.TCPAddr).AddrPort()}
 		entry := &tcpConn{conn: c}
-		t.storeConn(endpoint.DstToString(), entry)
+		if !t.storeConn(endpoint.DstToString(), entry) {
+			continue
+		}
 		t.handleConn(entry, endpoint)
 	}
 }
@@ -176,6 +219,7 @@ func (t *TCPBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	t.recvChan = make(chan *recvData, 1024)
 	t.closeChan = make(chan struct{})
 	t.tcpConnMap = make(map[string]*tcpConn)
+	t.perIP = make(map[string]int)
 	t.dialing = make(map[string]*sync.Mutex)
 	t.closed = false
 
@@ -223,20 +267,31 @@ func (t *TCPBind) Close() error {
 	return err
 }
 
-func (t *TCPBind) storeConn(endpoint string, entry *tcpConn) {
+func (t *TCPBind) storeConn(endpoint string, entry *tcpConn) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
 		entry.conn.Close()
-		return
+		return false
 	}
 	if t.tcpConnMap == nil {
 		t.tcpConnMap = make(map[string]*tcpConn)
 	}
+	ip, _, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		ip = endpoint
+	}
+	if len(t.tcpConnMap) >= tcpMaxConns || t.perIP[ip] >= tcpMaxConnsPerIP {
+		entry.conn.Close()
+		return false
+	}
 	if old := t.tcpConnMap[endpoint]; old != nil && old != entry {
 		old.conn.Close()
+		t.perIP[ip]--
 	}
 	t.tcpConnMap[endpoint] = entry
+	t.perIP[ip]++
+	return true
 }
 
 func (t *TCPBind) getConn(endpoint conn.Endpoint) (*tcpConn, error) {
@@ -247,7 +302,16 @@ func (t *TCPBind) getConn(endpoint conn.Endpoint) (*tcpConn, error) {
 
 	lock := t.dialLock(key)
 	lock.Lock()
-	defer lock.Unlock()
+	defer func() {
+		lock.Unlock()
+		// drop the entry so the map cannot grow without bound; a late
+		// duplicate dial is handled by storeConn's replace logic.
+		t.mu.Lock()
+		if t.dialing[key] == lock {
+			delete(t.dialing, key)
+		}
+		t.mu.Unlock()
+	}()
 	if t.isClosed() {
 		return nil, net.ErrClosed
 	}
@@ -272,7 +336,9 @@ func (t *TCPBind) getConn(endpoint conn.Endpoint) (*tcpConn, error) {
 	// RTT per WireGuard packet.
 	rawTCP.SetNoDelay(true) //nolint:errcheck
 	entry := &tcpConn{conn: rawTCP}
-	t.storeConn(key, entry)
+	if !t.storeConn(key, entry) {
+		return nil, fmt.Errorf("too many tcp connections")
+	}
 	t.handleConn(entry, endpoint)
 	return entry, nil
 }

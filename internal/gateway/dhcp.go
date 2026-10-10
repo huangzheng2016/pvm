@@ -84,7 +84,14 @@ func (s *DHCPServer) serve() {
 		}
 		pkt := make([]byte, n)
 		copy(pkt, buf[:n])
-		go s.handle(pkt)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("dhcp: handle panic: %v", r)
+				}
+			}()
+			s.handle(pkt)
+		}()
 	}
 }
 
@@ -145,6 +152,9 @@ func parseDHCP(b []byte) (*dhcpRequest, error) {
 	}
 	if b[0] != 1 { // BOOTREQUEST
 		return nil, fmt.Errorf("not a bootrequest")
+	}
+	if b[1] != 1 || int(b[2]) > 16 || len(b) < 28+int(b[2]) {
+		return nil, fmt.Errorf("bad htype/hlen %d/%d", b[1], b[2])
 	}
 	if !equalBytes(b[236:240], []byte{99, 130, 83, 99}) {
 		return nil, fmt.Errorf("bad magic cookie")

@@ -55,7 +55,11 @@ func (e *Engine) SetVMExit(vmID, exit string) {
 
 // SetDefaultExit sets the cluster-wide fallback used when neither a
 // rule nor a per-VM override matches.
-func (e *Engine) SetDefaultExit(exit string) { e.defExit = exit }
+func (e *Engine) SetDefaultExit(exit string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.defExit = exit
+}
 
 // LookupByFakeIP resolves a fake IP back to the domain that produced
 // it, so proxied connections can be routed by name (e.g. SNI-less or

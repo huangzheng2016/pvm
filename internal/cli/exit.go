@@ -32,6 +32,7 @@ func CmdExitAgent(args []string) int {
 	udpPort := fs.Int("udp-port", 18443, "wireguard UDP port")
 	tcpPort := fs.Int("tcp-port", 18444, "wireguard TCP port")
 	verbose := fs.Bool("v", false, "verbose wireguard logging")
+	dcAllow := fs.String("domain-allow-cidr", "", "comma-separated CIDRs the domain-connect service may dial despite being private/link-local (e.g. 10.0.0.0/8)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -57,6 +58,7 @@ func CmdExitAgent(args []string) int {
 		NAT:            *nat,
 		TunPrefix:      *tunPrefix,
 		SubnetBase:     *subnetBase,
+		DomainAllow:    splitCSV(*dcAllow),
 		Verbose:        *verbose,
 	})
 	if err != nil {
@@ -113,6 +115,7 @@ func exitAdd(args []string) int {
 	server := fs.String("server", "", "control plane host:port")
 	token := fs.String("token", "", "control plane token")
 	transport := fs.String("transport", "udp", "udp | tcp")
+	fpExpect := fs.String("fingerprint", "", "expected server cert fingerprint (out-of-band; aborts on mismatch instead of blind TOFU)")
 	tz := fs.String("tz", "", "IANA timezone of this exit's region (e.g. America/Los_Angeles)")
 	locale := fs.String("locale", "", "locale matching this exit's region (e.g. en_US.UTF-8)")
 	// accept "add <name> --flags" even though flag stops at the first
@@ -163,6 +166,9 @@ func exitAdd(args []string) int {
 	fp, err := exit.ProbeFingerprint(*server)
 	if err != nil {
 		return fatalf("probe %s: %v", *server, err)
+	}
+	if *fpExpect != "" && !strings.EqualFold(*fpExpect, fp) {
+		return fatalf("fingerprint mismatch: got %s, want %s (possible MITM; aborting before sending the token)", fp, *fpExpect)
 	}
 	fmt.Printf("server cert fingerprint: %s (pinned)\n", fp)
 
@@ -373,4 +379,17 @@ func exitTest(args []string) int {
 		return 0
 	}
 	return fatalf("MISMATCH: exit ip %s != server %s", ip, host)
+}
+
+func splitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
