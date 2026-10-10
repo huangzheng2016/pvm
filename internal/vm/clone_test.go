@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"runtime"
 	"testing"
 )
 
@@ -11,7 +12,7 @@ func TestCloneSpec(t *testing.T) {
 		BaseDisk: "/img/golden.qcow2", Golden: 3, ClusterID: 1,
 		IP: "192.168.1.10", MAC: "52:54:00:00:00:0a",
 		Mounts: []GuestMount{{Tag: "pvm0", Host: "/h", Guest: "/g"}},
-		TZ: "America/Los_Angeles", Locale: "en_US.UTF-8",
+		TZ:     "America/Los_Angeles", Locale: "en_US.UTF-8",
 		GitEmail: "a@b.c", GitName: "n", SmbiosSpoof: true,
 		PrevTZ: "UTC", PrevLocale: "C.UTF-8",
 	}
@@ -46,6 +47,19 @@ func TestCloneSpec(t *testing.T) {
 	dst.Mounts[0].Host = "/changed"
 	if src.Mounts[0].Host != "/h" {
 		t.Error("CloneSpec shares the mounts slice with the source")
+	}
+}
+
+func TestValidateNativeArch(t *testing.T) {
+	other := "amd64"
+	if runtime.GOARCH == other {
+		other = "arm64"
+	}
+	if err := validateNativeArch(other); err == nil {
+		t.Fatalf("validateNativeArch(%q) passed on %s", other, runtime.GOARCH)
+	}
+	if err := validateNativeArch(runtime.GOARCH); err != nil {
+		t.Fatalf("native arch rejected: %v", err)
 	}
 }
 

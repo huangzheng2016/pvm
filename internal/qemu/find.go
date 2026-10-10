@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 )
 
 type Toolchain struct {
@@ -47,21 +48,29 @@ func (t *Toolchain) BrokenLiveRestore(arch string, accel Accel) bool {
 	return t.Version == [3]int{11, 0, 0} || t.Version == [3]int{0, 0, 0}
 }
 
-// QemuArch maps GOARCH to the qemu-system suffix.
-func QemuArch(goarch string) string {
+// QemuArch maps the host GOARCH to the qemu-system suffix. Guests are
+// intentionally limited to the native architecture; any other arch is an
+// error rather than an emulation fallback.
+func QemuArch(goarch string) (string, error) {
+	if goarch != runtime.GOARCH {
+		return "", fmt.Errorf("unsupported guest architecture %q (host is %s)", goarch, runtime.GOARCH)
+	}
 	switch goarch {
 	case "amd64":
-		return "x86_64"
+		return "x86_64", nil
 	case "arm64":
-		return "aarch64"
+		return "aarch64", nil
 	default:
-		return goarch
+		return "", fmt.Errorf("unsupported host architecture %q", goarch)
 	}
 }
 
 // Find locates qemu-system-<goarch> and qemu-img for the given GOARCH.
 func Find(runtimeDir, goarch string) (*Toolchain, error) {
-	arch := QemuArch(goarch)
+	arch, err := QemuArch(goarch)
+	if err != nil {
+		return nil, err
+	}
 	binName := "qemu-system-" + arch
 
 	bundledBin := filepath.Join(runtimeDir, "qemu", arch, "bin")

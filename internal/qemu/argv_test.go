@@ -1,6 +1,7 @@
 package qemu
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -19,47 +20,71 @@ func testCfg(arch string, accel Accel) *VMConfig {
 
 func joined(args []string) string { return strings.Join(args, " ") }
 
-func TestBuildArgsARM64HVF(t *testing.T) {
+func TestBuildArgsNativeHVF(t *testing.T) {
 	tc := &Toolchain{FirmwareDir: "/fw"}
-	args, err := BuildArgs(tc, testCfg("arm64", AccelHVF))
+	args, err := BuildArgs(tc, testCfg(runtime.GOARCH, AccelHVF))
 	if err != nil {
 		t.Fatal(err)
 	}
 	j := joined(args)
-	for _, want := range []string{
-		"-machine virt", "-accel hvf", "-cpu host",
-		"if=pflash,format=raw,readonly=on,file=/fw/edk2-aarch64-code.fd",
-		"if=pflash,format=raw,file=/d/vars.fd",
+	want := []string{
+		"-accel hvf", "-cpu host",
 		"hostfwd=tcp:127.0.0.1:10022-:22",
 		"mount_tag=pvmshare", "mount_tag=pvm0",
 		"security_model=none",
 		"-qmp unix:/d/qmp.sock,server=on,wait=off",
-	} {
-		if !strings.Contains(j, want) {
-			t.Errorf("args missing %q\nargs: %s", want, j)
+	}
+	if runtime.GOARCH == "arm64" {
+		want = append(want, "-machine virt", "if=pflash,format=raw,readonly=on,file=/fw/edk2-aarch64-code.fd", "if=pflash,format=raw,file=/d/vars.fd")
+	} else {
+		want = append(want, "-machine q35")
+	}
+	for _, w := range want {
+		if !strings.Contains(j, w) {
+			t.Errorf("args missing %q\nargs: %s", w, j)
 		}
 	}
 }
 
-func TestBuildArgsAMD64NoPflash(t *testing.T) {
-	tc := &Toolchain{}
-	args, err := BuildArgs(tc, testCfg("amd64", AccelTCG))
+func TestBuildArgsNativeTCG(t *testing.T) {
+	tc := &Toolchain{FirmwareDir: "/fw"}
+	args, err := BuildArgs(tc, testCfg(runtime.GOARCH, AccelTCG))
 	if err != nil {
 		t.Fatal(err)
 	}
 	j := joined(args)
-	if strings.Contains(j, "pflash") {
-		t.Errorf("amd64 SeaBIOS boot must not use pflash: %s", j)
+	if runtime.GOARCH == "amd64" {
+		if strings.Contains(j, "pflash") {
+			t.Errorf("amd64 SeaBIOS boot must not use pflash: %s", j)
+		}
+		if !strings.Contains(j, "-machine q35") {
+			t.Errorf("amd64 args missing q35: %s", j)
+		}
+	} else if !strings.Contains(j, "-machine virt") {
+		t.Errorf("arm64 args missing virt: %s", j)
 	}
-	for _, want := range []string{"-machine q35", "-accel tcg,thread=multi", "-cpu max"} {
+	for _, want := range []string{"-accel tcg,thread=multi", "-cpu max"} {
 		if !strings.Contains(j, want) {
 			t.Errorf("args missing %q", want)
 		}
 	}
 }
 
-func TestBuildArgsARM64NeedsFirmware(t *testing.T) {
-	_, err := BuildArgs(&Toolchain{}, testCfg("arm64", AccelHVF))
+func TestBuildArgsRejectsNonNative(t *testing.T) {
+	other := "amd64"
+	if runtime.GOARCH == other {
+		other = "arm64"
+	}
+	if _, err := BuildArgs(&Toolchain{}, testCfg(other, AccelHVF)); err == nil {
+		t.Fatalf("expected non-native architecture %q to be rejected on %s", other, runtime.GOARCH)
+	}
+}
+
+func TestBuildArgsNativeNeedsFirmware(t *testing.T) {
+	if runtime.GOARCH != "arm64" {
+		t.Skip("UEFI firmware check is arm64-specific")
+	}
+	_, err := BuildArgs(&Toolchain{}, testCfg(runtime.GOARCH, AccelHVF))
 	if err == nil {
 		t.Fatal("expected error when firmware dir unknown")
 	}
@@ -87,8 +112,18 @@ func TestParseAccel(t *testing.T) {
 }
 
 func TestQemuArch(t *testing.T) {
-	if QemuArch("amd64") != "x86_64" || QemuArch("arm64") != "aarch64" {
-		t.Error("arch mapping wrong")
+	for _, tc := range []struct{ goarch, want string }{
+		{"amd64", "x86_64"},
+		{"arm64", "aarch64"},
+	} {
+		got, err := QemuArch(tc.goarch)
+		if runtime.GOARCH == tc.goarch {
+			if err != nil || got != tc.want {
+				t.Fatalf("QemuArch(%q) = %q, %v; want %q", tc.goarch, got, err, tc.want)
+			}
+		} else if err == nil {
+			t.Fatalf("QemuArch(%q) must be rejected on %s", tc.goarch, runtime.GOARCH)
+		}
 	}
 }
 
@@ -123,7 +158,7 @@ func TestNetArgsCluster(t *testing.T) {
 }
 
 func TestBuildArgsSmbiosSpoof(t *testing.T) {
-	c := testCfg("arm64", AccelHVF)
+	c := testCfg(runtime.GOARCH, AccelHVF)
 	c.SmbiosSpoof = true
 	args, err := BuildArgs(&Toolchain{FirmwareDir: "/fw"}, c)
 	if err != nil {
@@ -133,7 +168,7 @@ func TestBuildArgsSmbiosSpoof(t *testing.T) {
 	if !strings.Contains(j, "-smbios type=1,manufacturer=Dell Inc.,product=Inspiron 15 5510") {
 		t.Errorf("spoof args missing: %s", j)
 	}
-	args, err = BuildArgs(&Toolchain{FirmwareDir: "/fw"}, testCfg("arm64", AccelHVF))
+	args, err = BuildArgs(&Toolchain{FirmwareDir: "/fw"}, testCfg(runtime.GOARCH, AccelHVF))
 	if err != nil {
 		t.Fatal(err)
 	}
