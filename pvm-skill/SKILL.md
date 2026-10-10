@@ -27,7 +27,7 @@ pvm 仅支持宿主原生架构：darwin/arm64 只运行 arm64 VM，linux/amd64 
 - **出口路由**：`direct`（本机出口）或 `<exit-name>`（本机现有 `us`、`us-tcp`）
 - **create 常用参数**：`--image`、`--distro`、`--version`、`--name`、`--user`、`--cpus`、`--mem`、`--disk`、`--mount`、`--tz`、`--locale`、`--git-email`、`--git-name`、`--smbios-spoof`、`--no-start`、`--no-wait`
   - `--image alpine:3.20` 与 `--distro alpine --version 3.20` 等价；冲突参数会报错。
-- **Alpine 差异**：精简定位——没有 golden 镜像、没有 docker/kasm、首次启动要跑 apk 装包（稍慢）、登录 shell 默认 `/bin/sh`。跑 Claude Code 等场景建议用 Ubuntu/Debian（Alpine/musl 不是典型桌面用户环境）。
+- **Alpine 差异**：精简定位——没有 golden 镜像、没有 docker/桌面、首次启动要跑 apk 装包（稍慢）、登录 shell 默认 `/bin/sh`。跑 Claude Code 等场景建议用 Ubuntu/Debian（Alpine/musl 不是典型桌面用户环境）。
 - **`pvm image build` 代理透传**：构建 golden 时自动使用宿主 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY`（回环代理地址自动改写为 VM 可见地址），构建结束彻底清理，不会把代理配置烘进镜像。
 
 ## 核心工作流
@@ -43,7 +43,7 @@ pvm ssh dev1 'whoami && ls /share'
 
 - `--user` 必须显式给出。缺省时 create 会交互询问用户名；**非交互环境下 stdin 遇 EOF 会静默回退默认用户 `pvm`**（不报错，可能非预期），脚本里务必显式传 `--user`。
 - create 默认进入跟随模式，显示镜像、磁盘、启动、cloud-init 进度；`--no-wait` 可后台创建。
-- golden 镜像已预装 Docker、常用开发工具和 Kasm 桌面镜像。`/share` 默认挂载宿主机 `~/.pvm/share`，用于和宿主机交换文件。
+- golden 镜像已预装 Docker、常用开发工具和原生 XFCE 桌面（TigerVNC + noVNC）。`/share` 默认挂载宿主机 `~/.pvm/share`，用于和宿主机交换文件。
 - SSH 使用 pvm 专用密钥，无需密码。`pvm ssh dev1 bash` 进入交互 shell；`pvm ssh dev1 '<cmd>'` 执行单条命令。SSH 不可达时会自动经 virtio-serial agent 通道兜底（也可显式用 `pvm exec dev1 <cmd...>`，不依赖网络）。
 - create/start 会先把 VM 的 IP/MAC 映射**同步**推送到网关 DHCP 后才开机（新 VM 立即可达）；网关不可达时 start 会失败，而不是开出一台无网 VM。
 
@@ -62,17 +62,17 @@ pvm ssh dev1 'curl -s ipinfo.io'
 - 切换 `--via` 的瞬间有秒级无网窗口（隧道 enroll/握手收敛）；隧道死亡后约 60s 内自动重建，期间绑定 VM 断网属预期。
 - 代理域名的 DNS 在 VPS 远端解析，网关本地不解析；不要把它当成故障。出口状态可用 `pvm exit test us` 验证握手与出口 IP。
 
-### 3. 网页桌面（Kasm）
+### 3. 网页桌面（VM 原生 XFCE）
 
 ```bash
-pvm kasm dev1
-# 输出 http://127.0.0.1:<port>/，浏览器直接打开即可，无登录页、无密码
+pvm desktop dev1
+# 输出 http://127.0.0.1:<port>/vnc.html?password=...，浏览器直接打开即可，无登录页
+pvm desktop dev1 --stop
 ```
 
-- kasm 要求 VM 来自 **golden 镜像**（docker 已预装、镜像已预拉 `kasmweb/core-ubuntu-jammy:1.16.0`，秒开不用等下载）。基础镜像和 Alpine VM 没有 docker，`pvm kasm` 会直接报错。core 是 KasmVNC + 最小桌面环境，按需安装应用。
-- 容器启动时会注入 VM 当前时区（`-e TZ`），浏览器读到的时区与地区画像/出口地理一致；每次 `pvm kasm` 重建容器都会刷新。
-- 需要浏览器自动化时，用本机浏览器打开该 URL；页面走 daemon 回环反代注入凭据，不要尝试绕过反代直连底层端口。
-- Claude Code 等需要避免环境特征的工具，**跑在 VM 主用户态，不要跑在 Kasm/Docker 容器里**；容器内的 `/.dockerenv` 是可探测信号。
+- desktop 要求 VM 来自 **golden 镜像**（已预装 XFCE + TigerVNC + noVNC）。基础镜像和 Alpine VM 没有桌面包，`pvm desktop` 会报清晰错误。
+- 这是 **VM 本体的桌面**（不是容器）：桌面里看到的文件系统、用户、进程与 SSH 进入的是同一台机器，`/share` 也在同一个挂载命名空间。
+- 桌面会话在 VM 内持久（关闭浏览器不影响）；时区/locale 跟随 VM 地区画像。VNC 密码以 noVNC URL 参数携带、仅监听回环；`--open` 直接打开系统浏览器，`--size 2560x1440` 可改分辨率。
 
 ### 4. 端口映射
 
@@ -83,7 +83,7 @@ pvm map ls
 ```
 
 - 宿主机只监听回环地址，链路为宿主机 relay → 网关 → VM。
-- 删除 VM 会连带清理 relay/kasm/agent 连接。
+- 删除 VM 会连带清理 relay/desktop/agent 连接。
 
 ### 5. DNS 与分流规则
 

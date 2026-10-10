@@ -172,6 +172,15 @@ func TestRenderNFTDirectVMRegisteredPair(t *testing.T) {
 	if !strings.Contains(out, `iifname "br0" oifname "enp0s1" drop`) {
 		t.Errorf("default-deny drop missing\n%s", out)
 	}
+	// Port-map (DNAT) answers return to the slirp infrastructure subnet
+	// and must pass for every VM, including exit-routed ones.
+	slirp := `iifname "br0" oifname "enp0s1" ip daddr 10.0.2.0/24 accept`
+	if !strings.Contains(out, slirp) {
+		t.Errorf("slirp infrastructure accept missing\n%s", out)
+	}
+	if strings.Index(out, slirp) > strings.Index(out, `iifname "br0" oifname "enp0s1" drop`) {
+		t.Errorf("slirp accept must come before the default drop\n%s", out)
+	}
 }
 
 // DoH/DoQ to well-known public resolvers is rejected on 443 while

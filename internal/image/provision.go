@@ -5,15 +5,20 @@ import (
 	"strings"
 )
 
-// KasmImage is the kasm desktop image pre-baked into golden images and
-// launched by `pvm kasm`; the host architecture is selected automatically.
-const KasmImage = "kasmweb/core-ubuntu-jammy:1.16.0"
-
 // GoldenPackages are apt packages baked into every golden image.
 var GoldenPackages = []string{
 	"docker.io", "qemu-guest-agent",
 	"build-essential", "git", "curl", "jq", "python3-pip",
 	"htop", "vim", "unzip", "ca-certificates", "fonts-noto-cjk",
+}
+
+// DesktopPackages are the native XFCE + TigerVNC + noVNC stack baked into
+// golden images and launched on demand by `pvm desktop`. No display
+// manager: the VNC session is started per-user only when requested.
+var DesktopPackages = []string{
+	"xfwm4", "xfce4-panel", "xfdesktop4", "xfce4-session", "xfce4-settings",
+	"xfconf", "thunar", "xfce4-terminal", "dbus-x11", "xterm",
+	"tigervnc-standalone-server", "novnc", "websockify", "x11-xserver-utils",
 }
 
 // renderProvision produces the bash script executed over SSH inside the
@@ -45,20 +50,13 @@ while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
 	}() + `
 apt-get update
 apt-get -y upgrade
-apt-get -y install ` + strings.Join(GoldenPackages, " ") + `
+apt-get -y install ` + strings.Join(GoldenPackages, " ") + ` ` + strings.Join(DesktopPackages, " ") + `
 
 systemctl enable docker
 systemctl start docker
 # wait for the daemon to come up
 for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 2; done
 docker info
-
-: > /etc/pvm-preinstalled-images
-docker pull ` + KasmImage + ` && echo ` + KasmImage + ` >> /etc/pvm-preinstalled-images
-
-echo PVM_PREINSTALLED_BEGIN
-cat /etc/pvm-preinstalled-images
-echo PVM_PREINSTALLED_END
 
 # scrub machine-specific state so clones re-run cloud-init cleanly
 apt-get clean
@@ -88,23 +86,4 @@ sync
 sync
 `)
 	return b.String(), nil
-}
-
-// parsePreinstalled extracts the docker image list captured between the
-// provision script's markers.
-func parsePreinstalled(provisionLog string) []string {
-	start := strings.Index(provisionLog, "PVM_PREINSTALLED_BEGIN\n")
-	end := strings.Index(provisionLog, "PVM_PREINSTALLED_END")
-	if start < 0 || end < 0 || end <= start {
-		return nil
-	}
-	body := provisionLog[start+len("PVM_PREINSTALLED_BEGIN\n") : end]
-	var out []string
-	for line := range strings.Lines(body) {
-		line = strings.TrimSpace(line)
-		if strings.Contains(line, "/") && !strings.HasPrefix(line, "+") {
-			out = append(out, line)
-		}
-	}
-	return out
 }

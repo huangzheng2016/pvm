@@ -153,15 +153,13 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(o.Out, "provisioning (apt upgrade, docker, kasm pull — this takes a while)...\n")
+	fmt.Fprintf(o.Out, "provisioning (apt upgrade, docker, xfce desktop — this takes a while)...\n")
 	// The provision script deletes the build user as its last action, so
 	// nothing may ssh in afterwards; capture the image list from the log.
 	var provLog strings.Builder
 	if err := r.runScript(prov, io.MultiWriter(o.Out, &provLog)); err != nil {
 		return nil, fmt.Errorf("provision: %w", err)
 	}
-	dockerImages := parsePreinstalled(provLog.String())
-	fmt.Fprintf(o.Out, "preinstalled docker images: %v\n", dockerImages)
 
 	// Graceful ACPI powerdown via QMP; ssh is gone with the build user.
 	fmt.Fprintf(o.Out, "shutting down build vm (QMP powerdown)...\n")
@@ -199,7 +197,7 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 		Version: version, Distro: ref.Distro, ImageVersion: ref.Version,
 		Arch: native.Arch, File: goldenFileName(ref.Distro, ref.Version, version),
 		BaseDigest: digest, BuiltAt: time.Now(),
-		Packages: GoldenPackages, DockerImages: dockerImages,
+		Packages: append(append([]string{}, GoldenPackages...), DesktopPackages...),
 	}
 	if err := os.MkdirAll(GoldenDir(o.P.Images), 0o755); err != nil {
 		return nil, err
