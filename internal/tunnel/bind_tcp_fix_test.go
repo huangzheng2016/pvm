@@ -22,9 +22,9 @@ func openTestBind(t *testing.T) (*TCPBind, string) {
 // An idle inbound connection must be torn down once the first-frame
 // deadline passes (it has not even started a WG handshake).
 func TestTCPBindFirstReadTimeout(t *testing.T) {
-	orig := tcpFirstReadTimeout
-	tcpFirstReadTimeout = 150 * time.Millisecond
-	defer func() { tcpFirstReadTimeout = orig }()
+	orig := tcpFirstReadTimeoutNs.Load()
+	tcpFirstReadTimeoutNs.Store(int64(150 * time.Millisecond))
+	defer func() { tcpFirstReadTimeoutNs.Store(orig) }()
 
 	_, addr := openTestBind(t)
 	c, err := net.DialTimeout("tcp", addr, time.Second)
@@ -42,9 +42,9 @@ func TestTCPBindFirstReadTimeout(t *testing.T) {
 // Per-source-IP and total connection caps refuse floods and free slots
 // when conns close.
 func TestTCPBindPerIPCap(t *testing.T) {
-	orig := tcpFirstReadTimeout
-	tcpFirstReadTimeout = time.Hour // isolate the cap from the idle deadline
-	defer func() { tcpFirstReadTimeout = orig }()
+	orig := tcpFirstReadTimeoutNs.Load()
+	tcpFirstReadTimeoutNs.Store(int64(time.Hour)) // isolate the cap from the idle deadline
+	defer func() { tcpFirstReadTimeoutNs.Store(orig) }()
 
 	_, addr := openTestBind(t)
 	var held []net.Conn

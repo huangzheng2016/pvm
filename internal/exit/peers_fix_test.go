@@ -56,7 +56,7 @@ func TestDeletePeerRemovesFromDevice(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := NewClient(serverAddr, "test-token", fp)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testOpTimeout)
 	defer cancel()
 	resp, err := client.Enroll(ctx, pub, "gw-test", "udp")
 	if err != nil {
@@ -93,7 +93,7 @@ func deviceHasPeer(s *Server, transport, ip string) bool {
 func TestClientEmptyFingerprintFails(t *testing.T) {
 	srv, _ := inProcessServer(t, "udp")
 	c := NewClient(srv.ControlAddr(), "test-token", "")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testOpTimeout)
 	defer cancel()
 	err := c.Health(ctx)
 	if err == nil || !strings.Contains(err.Error(), "no pinned server certificate fingerprint") {

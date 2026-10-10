@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
@@ -54,8 +55,12 @@ const (
 )
 
 // tcpFirstReadTimeout is the deadline for the first frame (a WG
-// handshake initiation); a var so tests can shrink it.
-var tcpFirstReadTimeout = 10 * time.Second
+// handshake initiation); atomic so tests can shrink it safely.
+var tcpFirstReadTimeoutNs = atomic.Int64{}
+
+func firstReadTimeout() time.Duration { return time.Duration(tcpFirstReadTimeoutNs.Load()) }
+
+func init() { tcpFirstReadTimeoutNs.Store(int64(10 * time.Second)) }
 
 type tcpConn struct {
 	conn    *net.TCPConn
@@ -120,8 +125,7 @@ func (t *TCPBind) copyReceivedData(bufs [][]byte, sizes []int, eps []conn.Endpoi
 	return count + 1
 }
 
-func (t *TCPBind) handleConn(entry *tcpConn, endpoint conn.Endpoint) {
-	closeChan := t.closeChan
+func (t *TCPBind) handleConn(entry *tcpConn, endpoint conn.Endpoint, closeChan chan struct{}) {
 	go func() {
 		defer func() {
 			t.deleteConn(endpoint.DstToString(), entry)
@@ -129,7 +133,7 @@ func (t *TCPBind) handleConn(entry *tcpConn, endpoint conn.Endpoint) {
 		}()
 		// the first frame (a WG handshake initiation) must arrive quickly;
 		// afterwards the deadline is lifted and WG keepalives rule.
-		entry.conn.SetReadDeadline(time.Now().Add(tcpFirstReadTimeout)) //nolint:errcheck
+		entry.conn.SetReadDeadline(time.Now().Add(firstReadTimeout())) //nolint:errcheck
 		first := true
 		for {
 			data := t.dataPool.Get().(*recvData)
@@ -181,8 +185,7 @@ func (t *TCPBind) deleteConn(endpoint string, entry *tcpConn) {
 	}
 }
 
-func (t *TCPBind) accept(listener *net.TCPListener) {
-	closeChan := t.closeChan
+func (t *TCPBind) accept(listener *net.TCPListener, closeChan chan struct{}) {
 	backoff := 10 * time.Millisecond
 	for {
 		c, err := listener.AcceptTCP()
@@ -209,7 +212,7 @@ func (t *TCPBind) accept(listener *net.TCPListener) {
 		if !t.storeConn(endpoint.DstToString(), entry) {
 			continue
 		}
-		t.handleConn(entry, endpoint)
+		t.handleConn(entry, endpoint, closeChan)
 	}
 }
 
@@ -228,7 +231,7 @@ func (t *TCPBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	go t.accept(t.listener)
+	go t.accept(t.listener, t.closeChan)
 	fn := t.makeReceive()
 	actualPort := uint16(t.listener.Addr().(*net.TCPAddr).Port)
 	return []conn.ReceiveFunc{fn}, actualPort, nil
@@ -339,7 +342,15 @@ func (t *TCPBind) getConn(endpoint conn.Endpoint) (*tcpConn, error) {
 	if !t.storeConn(key, entry) {
 		return nil, fmt.Errorf("too many tcp connections")
 	}
-	t.handleConn(entry, endpoint)
+	t.mu.Lock()
+	closeChan := t.closeChan
+	t.mu.Unlock()
+	if closeChan == nil {
+		t.deleteConn(key, entry)
+		entry.conn.Close()
+		return nil, net.ErrClosed
+	}
+	t.handleConn(entry, endpoint, closeChan)
 	return entry, nil
 }
 

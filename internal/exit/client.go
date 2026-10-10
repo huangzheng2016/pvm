@@ -45,10 +45,13 @@ func ProbeFingerprint(server string) (string, error) {
 	return fp, nil
 }
 
+// clientHTTPTimeout bounds control-plane calls (relaxed in -race test runs).
+var clientHTTPTimeout = 20 * time.Second
+
 func (c *Client) tlsClient() *http.Client {
 	expect := c.Fingerprint
 	return &http.Client{
-		Timeout: 20 * time.Second,
+		Timeout: clientHTTPTimeout,
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true, //nolint:gosec

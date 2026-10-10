@@ -16,8 +16,8 @@ import (
 func probeResult(transport string, mbps float64, err error) *TransportProbe {
 	p := &TransportProbe{Transport: transport, Err: err}
 	if err == nil {
-		p.Bytes = int64(mbps * 1e6)
-		p.Duration = time.Second
+		p.AvgMbps = mbps
+		p.Samples = []SpeedSample{{Mbps: mbps, RTT: time.Millisecond}}
 	}
 	return p
 }
@@ -137,13 +137,15 @@ func TestProbeInProcessUserspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := t.Context()
-	probes := ProbeAll(ctx, srv.ControlAddr(), "test-token", fp, []string{"udp", "tcp"}, 1<<20)
+	// small download: this test covers plumbing, and -race slows the
+	// in-process gVisor path ~10x
+	probes := ProbeAll(ctx, srv.ControlAddr(), "test-token", fp, []string{"udp", "tcp"}, 1<<18, 2)
 	for _, p := range probes {
 		if p.Err != nil {
 			t.Fatalf("%s probe: %v", p.Transport, p.Err)
 		}
-		if p.Bytes != 1<<20 {
-			t.Fatalf("%s: got %d bytes, want 1MB", p.Transport, p.Bytes)
+		if len(p.Samples) != 2 {
+			t.Fatalf("%s: got %d samples, want 2", p.Transport, len(p.Samples))
 		}
 		if p.RTT <= 0 {
 			t.Fatalf("%s: rtt not measured", p.Transport)
@@ -161,5 +163,50 @@ func TestProbeInProcessUserspace(t *testing.T) {
 	}
 	if got := len(srv.store.List()); got != 1 {
 		t.Fatalf("peers after revoke = %d, want 1 (winner only)", got)
+	}
+}
+
+func TestAggregateSamples(t *testing.T) {
+	// average across successful samples
+	rtt, mbps, err := AggregateSamples([]SpeedSample{
+		{RTT: 100 * time.Millisecond, Mbps: 10},
+		{RTT: 200 * time.Millisecond, Mbps: 20},
+		{RTT: 300 * time.Millisecond, Mbps: 30},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rtt != 200*time.Millisecond {
+		t.Fatalf("avg rtt = %v, want 200ms", rtt)
+	}
+	if mbps != 20 {
+		t.Fatalf("avg mbps = %v, want 20", mbps)
+	}
+
+	// partial failure tolerated (at least one success)
+	rtt, mbps, err = AggregateSamples([]SpeedSample{
+		{Err: errors.New("timeout")},
+		{RTT: 50 * time.Millisecond, Mbps: 5},
+		{Err: errors.New("reset")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rtt != 50*time.Millisecond || mbps != 5 {
+		t.Fatalf("partial: rtt=%v mbps=%v", rtt, mbps)
+	}
+
+	// N=1 behaves like a single measurement
+	rtt, mbps, err = AggregateSamples([]SpeedSample{{RTT: 42 * time.Millisecond, Mbps: 7}})
+	if err != nil || rtt != 42*time.Millisecond || mbps != 7 {
+		t.Fatalf("n=1: rtt=%v mbps=%v err=%v", rtt, mbps, err)
+	}
+
+	// all failed -> error
+	if _, _, err = AggregateSamples([]SpeedSample{{Err: errors.New("a")}, {Err: errors.New("b")}}); err == nil {
+		t.Fatal("want error when all samples failed")
+	}
+	if _, _, err = AggregateSamples(nil); err == nil {
+		t.Fatal("want error for no samples")
 	}
 }

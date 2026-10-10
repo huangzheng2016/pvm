@@ -14,31 +14,95 @@ import (
 // ProbeSpeedBytes is the default download size for transport probing.
 const ProbeSpeedBytes = 8 << 20
 
+// probeHandshakeTimeout marks a transport unusable when its handshake does
+// not complete in time (relaxed in -race test runs).
+var probeHandshakeTimeout = 10 * time.Second
+
+// SpeedSample is one ping+download round against the speed endpoint.
+type SpeedSample struct {
+	RTT  time.Duration
+	Mbps float64
+	Err  error
+}
+
+// SampleSpeed runs n ping+download rounds against the tunnel speed
+// endpoint. Individual failures are recorded per sample.
+func (t *Tunnel) SampleSpeed(ctx context.Context, serverIP netip.Addr, bytesN int64, n int) []SpeedSample {
+	if n < 1 {
+		n = 1
+	}
+	out := make([]SpeedSample, 0, n)
+	for i := 0; i < n; i++ {
+		var s SpeedSample
+		t0 := time.Now()
+		if _, err := t.Ping(ctx, serverIP); err != nil {
+			s.Err = fmt.Errorf("ping: %w", err)
+			out = append(out, s)
+			continue
+		}
+		s.RTT = time.Since(t0)
+		nbytes, dur, err := t.Download(ctx, serverIP, fmt.Sprintf("/speed?bytes=%d", bytesN))
+		if err != nil {
+			s.Err = fmt.Errorf("download: %w", err)
+			out = append(out, s)
+			continue
+		}
+		s.Mbps = float64(nbytes) / dur.Seconds() / 1e6
+		out = append(out, s)
+	}
+	return out
+}
+
+// AggregateSamples averages the successful samples; an error is returned
+// only when every sample failed.
+func AggregateSamples(samples []SpeedSample) (avgRTT time.Duration, avgMbps float64, err error) {
+	var cnt int
+	var rttSum time.Duration
+	var mbpsSum float64
+	var lastErr error
+	for _, s := range samples {
+		if s.Err != nil {
+			lastErr = s.Err
+			continue
+		}
+		cnt++
+		rttSum += s.RTT
+		mbpsSum += s.Mbps
+	}
+	if cnt == 0 {
+		if lastErr == nil {
+			lastErr = fmt.Errorf("no samples")
+		}
+		return 0, 0, lastErr
+	}
+	return rttSum / time.Duration(cnt), mbpsSum / float64(cnt), nil
+}
+
 // TransportProbe is the outcome of probing one transport end-to-end:
-// enroll, handshake, ping RTT, and a tunneled download.
+// enroll, handshake, and sampled ping RTT + tunneled downloads.
 type TransportProbe struct {
 	Transport string
 	Priv      string
 	Pub       string
 	Resp      *enrollResponse
-	RTT       time.Duration
-	Bytes     int64
-	Duration  time.Duration
+	RTT       time.Duration // average across successful samples
+	AvgMbps   float64       // average across successful samples
+	Samples   []SpeedSample
 	Err       error
 }
 
-// Mbps returns the measured download throughput in MB/s (10^6 bytes).
+// Mbps returns the measured average download throughput in MB/s.
 func (p *TransportProbe) Mbps() float64 {
-	if p.Err != nil || p.Duration <= 0 {
+	if p.Err != nil {
 		return 0
 	}
-	return float64(p.Bytes) / p.Duration.Seconds() / 1e6
+	return p.AvgMbps
 }
 
 // ProbeTransport enrolls with one transport and measures it. The probe
 // keeps its enrolled peer — the caller either builds an Entry from it
 // (winner) or revokes it (loser) via RevokeProbe.
-func ProbeTransport(ctx context.Context, server, token, fingerprint, transport string, bytesN int64) *TransportProbe {
+func ProbeTransport(ctx context.Context, server, token, fingerprint, transport string, bytesN int64, samples int) *TransportProbe {
 	p := &TransportProbe{Transport: transport}
 	fail := func(err error) *TransportProbe {
 		p.Err = err
@@ -83,36 +147,31 @@ func ProbeTransport(ctx context.Context, server, token, fingerprint, transport s
 	if serverIP == "" {
 		serverIP, _ = ServerIP(transport)
 	}
-	hctx, hcancel := context.WithTimeout(ctx, 10*time.Second)
+	hctx, hcancel := context.WithTimeout(ctx, probeHandshakeTimeout)
 	defer hcancel()
 	if err := tun.WaitHandshake(hctx, serverIP); err != nil {
 		return fail(fmt.Errorf("handshake: %w", err))
 	}
 
 	sip := netip.MustParseAddr(serverIP)
-	t0 := time.Now()
-	if _, err := tun.httpGet(ctx, sip, SpeedPort, serverIP, "/ping"); err != nil {
-		return fail(fmt.Errorf("ping: %w", err))
-	}
-	p.RTT = time.Since(t0)
-
-	n, dur, err := tun.download(ctx, sip, SpeedPort, fmt.Sprintf("/speed?bytes=%d", bytesN))
+	p.Samples = tun.SampleSpeed(ctx, sip, bytesN, samples)
+	rtt, mbps, err := AggregateSamples(p.Samples)
 	if err != nil {
-		return fail(fmt.Errorf("download: %w", err))
+		return fail(err)
 	}
-	p.Bytes, p.Duration = n, dur
+	p.RTT, p.AvgMbps = rtt, mbps
 	return p
 }
 
 // ProbeAll probes every given transport in parallel.
-func ProbeAll(ctx context.Context, server, token, fingerprint string, transports []string, bytesN int64) []*TransportProbe {
+func ProbeAll(ctx context.Context, server, token, fingerprint string, transports []string, bytesN int64, samples int) []*TransportProbe {
 	out := make([]*TransportProbe, len(transports))
 	var wg sync.WaitGroup
 	for i, tr := range transports {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			out[i] = ProbeTransport(ctx, server, token, fingerprint, tr, bytesN)
+			out[i] = ProbeTransport(ctx, server, token, fingerprint, tr, bytesN, samples)
 		}()
 	}
 	wg.Wait()

@@ -89,7 +89,7 @@ func enrollViaTOFU(t *testing.T, srv *Server, transport string) *Entry {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testOpTimeout)
 	defer cancel()
 	resp, err := NewClient(serverAddr, "test-token", fp).Enroll(ctx, pub, "test-host", transport)
 	if err != nil {
@@ -159,7 +159,7 @@ func TestEndToEndInProcess(t *testing.T) {
 			}
 			defer tun.Close()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), testLongTimeout)
 			defer cancel()
 			if err := tun.WaitHandshake(ctx, serverIP); err != nil {
 				t.Fatal(err)
@@ -202,7 +202,7 @@ func TestEndToEndInProcess(t *testing.T) {
 
 func TestFingerprintPinningRejectsWrongCert(t *testing.T) {
 	srv, _ := inProcessServer(t, "udp")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testOpTimeout)
 	defer cancel()
 	err := NewClient(srv.ControlAddr(), "test-token", "0000000000000000000000000000000000000000000000000000000000000000").Health(ctx)
 	if err == nil {
@@ -258,7 +258,7 @@ func TestServerRestartRestoresPeers(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tun.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testLongTimeout)
 	defer cancel()
 	if err := tun.WaitHandshake(ctx, "10.99.0.1"); err != nil {
 		t.Fatal(err)

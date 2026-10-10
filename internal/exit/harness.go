@@ -70,6 +70,13 @@ func (t *Tunnel) Close() {
 	t.Dev.Close()
 }
 
+// handshakeTimeout bounds the internal wait in WaitHandshake (relaxed in
+// -race test runs).
+var handshakeTimeout = 30 * time.Second
+
+// httpTimeout bounds single HTTP requests through the tunnel.
+var httpTimeout = 20 * time.Second
+
 // WaitHandshake triggers traffic towards the server's tunnel IP and waits
 // until the WireGuard handshake completes (or ctx expires).
 func (t *Tunnel) WaitHandshake(ctx context.Context, serverTunnelIP string) error {
@@ -80,7 +87,7 @@ func (t *Tunnel) WaitHandshake(ctx context.Context, serverTunnelIP string) error
 		return fmt.Errorf("dial trigger: %w", err)
 	}
 	defer c.Close()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(handshakeTimeout)
 	for {
 		_, _ = c.Write([]byte("knock"))
 		time.Sleep(300 * time.Millisecond)
@@ -137,7 +144,7 @@ func (t *Tunnel) FetchExitIP(ctx context.Context) (string, error) {
 }
 
 func (t *Tunnel) httpGet(ctx context.Context, ip netip.Addr, port uint16, host, path string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, httpTimeout)
 	defer cancel()
 	conn, err := t.Net.DialContextTCPAddrPort(ctx, netip.AddrPortFrom(ip, port))
 	if err != nil {

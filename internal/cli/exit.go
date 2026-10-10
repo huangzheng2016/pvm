@@ -83,12 +83,14 @@ func CmdExitAgent(args []string) int {
 // CmdExit manages local exit-node entries.
 func CmdExit(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: pvm exit <add|ls|rm|test> [args]")
+		fmt.Fprintln(os.Stderr, "usage: pvm exit <add|deploy|set|ls|rm|test> [args]")
 		return 2
 	}
 	switch args[0] {
 	case "add":
 		return exitAdd(args[1:])
+	case "deploy":
+		return cmdExitDeploy(args[1:])
 	case "set":
 		return exitSet(args[1:])
 	case "ls", "list":
@@ -116,6 +118,7 @@ func exitAdd(args []string) int {
 	server := fs.String("server", "", "control plane host:port")
 	token := fs.String("token", "", "control plane token")
 	transport := fs.String("transport", "auto", "auto | udp | tcp (auto probes both and picks the fastest)")
+	samples := fs.Int("samples", 3, "speed samples per transport when probing (averaged)")
 	fpExpect := fs.String("fingerprint", "", "expected server cert fingerprint (out-of-band; aborts on mismatch instead of blind TOFU)")
 	tz := fs.String("tz", "", "IANA timezone of this exit's region (e.g. America/Los_Angeles)")
 	locale := fs.String("locale", "", "locale matching this exit's region (e.g. en_US.UTF-8)")
@@ -178,14 +181,21 @@ func exitAdd(args []string) int {
 	if *transport == "auto" {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
-		fmt.Println("probing transports in parallel (8MB download each)...")
-		probes := exit.ProbeAll(ctx, *server, *token, fp, []string{"udp", "tcp"}, exit.ProbeSpeedBytes)
+		fmt.Printf("probing transports in parallel (%d x 8MB download each)...\n", *samples)
+		probes := exit.ProbeAll(ctx, *server, *token, fp, []string{"udp", "tcp"}, exit.ProbeSpeedBytes, *samples)
 		for _, pr := range probes {
 			if pr.Err != nil {
 				fmt.Printf("  %-4s failed: %v\n", pr.Transport, pr.Err)
-			} else {
-				fmt.Printf("  %-4s %.1f MB/s  rtt %s\n", pr.Transport, pr.Mbps(), pr.RTT.Round(time.Millisecond))
+				continue
 			}
+			for i, s := range pr.Samples {
+				if s.Err != nil {
+					fmt.Printf("  %-4s sample%d failed: %v\n", pr.Transport, i+1, s.Err)
+				} else {
+					fmt.Printf("  %-4s sample%d %.1f MB/s  rtt %s\n", pr.Transport, i+1, s.Mbps, s.RTT.Round(time.Millisecond))
+				}
+			}
+			fmt.Printf("  %-4s avg %.1f MB/s  rtt %s\n", pr.Transport, pr.Mbps(), pr.RTT.Round(time.Millisecond))
 		}
 		winner, err := exit.ChooseTransport(probes)
 		if err != nil {
@@ -368,6 +378,7 @@ func exitRm(args []string) int {
 func exitTest(args []string) int {
 	fs := newFlagSet("exit test", "<name> [--speed]")
 	speed := fs.Bool("speed", false, "also measure tunneled download throughput and RTT")
+	samples := fs.Int("samples", 3, "speed samples (averaged)")
 	name := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		name = args[0]
@@ -426,17 +437,19 @@ func exitTest(args []string) int {
 	fmt.Println("wireguard handshake: ok")
 	if *speed {
 		sip := netip.MustParseAddr(serverIP)
-		t0 := time.Now()
-		if _, err := t.Ping(ctx, sip); err != nil {
-			return fatalf("ping: %v", err)
+		results := t.SampleSpeed(ctx, sip, exit.ProbeSpeedBytes, *samples)
+		for i, s := range results {
+			if s.Err != nil {
+				fmt.Printf("sample%d failed: %v\n", i+1, s.Err)
+			} else {
+				fmt.Printf("sample%d %.1f MB/s  rtt %s\n", i+1, s.Mbps, s.RTT.Round(time.Millisecond))
+			}
 		}
-		rtt := time.Since(t0)
-		n, dur, err := t.Download(ctx, sip, fmt.Sprintf("/speed?bytes=%d", exit.ProbeSpeedBytes))
+		rtt, mbps, err := exit.AggregateSamples(results)
 		if err != nil {
-			return fatalf("download: %v", err)
+			return fatalf("speed: %v", err)
 		}
-		mbps := float64(n) / dur.Seconds() / 1e6
-		fmt.Printf("speed: %.1f MB/s (%d bytes in %s), rtt %s\n", mbps, n, dur.Round(time.Millisecond), rtt.Round(time.Millisecond))
+		fmt.Printf("avg: %.1f MB/s, rtt %s\n", mbps, rtt.Round(time.Millisecond))
 	}
 	ip, err := t.FetchExitIP(ctx)
 	if err != nil {
