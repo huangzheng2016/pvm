@@ -24,8 +24,15 @@ done
 echo "== assetpack"
 go run ./cmd/assetpack
 # Only the compressed payloads and manifest are embedded; raw guests are
-# build intermediates and would otherwise be embedded a second time.
-rm -f internal/assets/packed/gateway-linux-* internal/assets/packed/agent-linux-*
+# build intermediates and would otherwise be embedded a second time. Keep
+# the .zst payloads: the glob above matches them too, so filter by suffix.
+find internal/assets/packed -maxdepth 1 -type f \( -name 'gateway-linux-*' -o -name 'agent-linux-*' \) ! -name '*.zst' -delete
+for arch in $ARCHES; do
+  for kind in gateway agent; do
+    payload="internal/assets/packed/$kind-linux-$arch.zst"
+    [ -s "$payload" ] || { echo "missing packed asset: $payload" >&2; exit 1; }
+  done
+done
 
 echo "== pvm"
 go build -tags embedassets -buildvcs=false -trimpath -ldflags "-s -w -buildid=" -o pvm ./cmd/pvm

@@ -6,7 +6,7 @@ import (
 )
 
 // KasmImage is the kasm desktop image pre-baked into golden images and
-// launched by `pvm kasm`; multi-arch (amd64+arm64 manifests verified).
+// launched by `pvm kasm`; the host architecture is selected automatically.
 const KasmImage = "kasmweb/core-ubuntu-jammy:1.16.0"
 
 // GoldenPackages are apt packages baked into every golden image.
