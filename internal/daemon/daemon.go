@@ -164,6 +164,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /v1/routes", s.handleRouteAdd)
 	mux.HandleFunc("DELETE /v1/routes/{index}", s.handleRouteRemove)
 	mux.HandleFunc("POST /v1/vms/{name}/route", s.handleVMRoute)
+	mux.HandleFunc("POST /v1/vms/{name}/kasm", s.handleKasm)
 	mux.HandleFunc("GET /v1/dns", s.handleDNSList)
 	mux.HandleFunc("POST /v1/shutdown", s.handleShutdown)
 	return mux

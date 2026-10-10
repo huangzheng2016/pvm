@@ -27,7 +27,7 @@ func NewClient(p *paths.Paths) *Client {
 	return &Client{
 		P: p,
 		http: &http.Client{
-			Timeout: 120 * time.Second, // VM stop can take up to the 30s powerdown grace
+			Timeout: 300 * time.Second, // kasm first-start and VM stop grace can both exceed 2min
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 					return (&net.Dialer{}).DialContext(ctx, "unix", p.DaemonSock())

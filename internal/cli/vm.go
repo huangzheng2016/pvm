@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -303,12 +304,47 @@ func CmdSSH(args []string) int {
 	cmd := exec.Command("ssh", sshArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var errBuf bytes.Buffer
+	cmd.Stderr = &errBuf
 	if err := cmd.Run(); err != nil {
+		// Connection-level failures (exit 255 with a dial error) fall
+		// back to the virtio-serial agent channel; remote command
+		// failures just propagate their exit code.
+		if isSSHConnFailure(err, errBuf.String()) {
+			fmt.Fprintf(os.Stderr, "ssh unreachable (%s), using agent channel\n", firstLine(errBuf.String()))
+			execArgs := append([]string{args[0]}, args[1:]...)
+			if len(execArgs) == 1 {
+				fmt.Fprintln(os.Stderr, "note: agent channel has no TTY; starting a line-based bash")
+				execArgs = append(execArgs, "bash", "-l")
+			}
+			return CmdExec(execArgs)
+		}
+		os.Stderr.Write(errBuf.Bytes())
 		if ee, ok := err.(*exec.ExitError); ok {
 			return ee.ExitCode()
 		}
 		return fatalf("ssh: %v", err)
 	}
 	return 0
+}
+
+func isSSHConnFailure(err error, stderr string) bool {
+	ee, ok := err.(*exec.ExitError)
+	if !ok || ee.ExitCode() != 255 {
+		return false
+	}
+	s := strings.ToLower(stderr)
+	for _, pat := range []string{"connection refused", "connection timed out", "operation timed out", "no route to host", "connection closed", "connection reset", "stdio forwarding failed", "open failed", "administratively prohibited"} {
+		if strings.Contains(s, pat) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return strings.TrimSpace(s[:i])
+	}
+	return strings.TrimSpace(s)
 }

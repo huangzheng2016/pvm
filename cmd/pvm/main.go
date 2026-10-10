@@ -83,8 +83,10 @@ func main() {
 		code = cli.CmdAgent(args)
 	case "version", "--version", "-v":
 		fmt.Println(buildinfo.Version)
-	case "kasm", "gateway":
-		fmt.Printf("%s: not implemented yet (M5+)\n", os.Args[1])
+	case "kasm":
+		code = cli.CmdKasm(args)
+	case "gateway":
+		fmt.Printf("%s: not implemented yet\n", os.Args[1])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])
 		fmt.Printf(usage, buildinfo.Version)
