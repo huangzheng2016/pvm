@@ -186,11 +186,17 @@ func exitAdd(args []string) int {
 		Locale:       *locale,
 		CreatedAt:    time.Now(),
 	}
+	if *tz == "" {
+		e.AutoTZ = resp.SuggestedTZ
+	}
 	if err := exit.SaveEntry(dir, e); err != nil {
 		return fatalf("save entry: %v", err)
 	}
 	fmt.Printf("exit %q added: transport=%s tunnel_ip=%s endpoint=%s mtu=%d\n",
 		name, e.Transport, e.TunnelIP, e.Endpoint, e.MTU)
+	if e.AutoTZ != "" {
+		fmt.Printf("suggested timezone from server: %s (auto; override with `pvm exit set %s --tz ...`)\n", e.AutoTZ, name)
+	}
 	return 0
 }
 
@@ -265,9 +271,15 @@ func exitLs() int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSERVER\tTRANSPORT\tTUNNEL IP\tENDPOINT")
+	fmt.Fprintln(tw, "NAME\tSERVER\tTRANSPORT\tTUNNEL IP\tENDPOINT\tTZ")
 	for _, e := range entries {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", e.Name, e.Server, e.Transport, e.TunnelIP, e.Endpoint)
+		tz := "-"
+		if e.TZ != "" {
+			tz = e.TZ
+		} else if e.AutoTZ != "" {
+			tz = e.AutoTZ + "(auto)"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, e.Server, e.Transport, e.TunnelIP, e.Endpoint, tz)
 	}
 	tw.Flush()
 	return 0

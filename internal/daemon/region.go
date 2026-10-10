@@ -1,11 +1,14 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/huangzheng2016/pvm/internal/exit"
+	"github.com/huangzheng2016/pvm/internal/tunnel"
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
@@ -15,11 +18,30 @@ import (
 // guest are remembered in PrevTZ/PrevLocale so a later `--via direct`
 // can restore them. Returns a human note (empty when nothing to do).
 func (s *Server) applyRegionProfile(spec *vm.Spec, via string) string {
-	entry, err := exit.LoadEntry(filepath.Join(s.P.Home, "exits"), via)
-	if err != nil || (entry.TZ == "" && entry.Locale == "") {
+	dir := filepath.Join(s.P.Home, "exits")
+	entry, err := exit.LoadEntry(dir, via)
+	if err != nil {
 		return ""
 	}
+	// Manual tz wins; then the cached server-suggested zone; then a
+	// live probe (one throwaway enroll, revoked immediately) which is
+	// cached back into the entry for next time.
 	tz, locale := entry.TZ, entry.Locale
+	if tz == "" {
+		tz = entry.AutoTZ
+	}
+	if tz == "" {
+		tz = s.probeSuggestedTZ(entry)
+		if tz != "" {
+			entry.AutoTZ = tz
+			if err := exit.SaveEntry(dir, entry); err != nil {
+				return fmt.Sprintf("learned auto tz %s but entry save failed: %v", tz, err)
+			}
+		}
+	}
+	if tz == "" && locale == "" {
+		return ""
+	}
 	if tz == "" {
 		tz = "UTC"
 	}
@@ -68,6 +90,30 @@ func (s *Server) restoreRegion(spec *vm.Spec) string {
 		note = fmt.Sprintf("region restored in guest but spec save failed: %v", err)
 	}
 	return note
+}
+
+// probeSuggestedTZ learns the exit's suggested timezone via a throwaway
+// enroll (fresh key, revoked right after) so no stale peer is left.
+func (s *Server) probeSuggestedTZ(entry *exit.Entry) string {
+	priv, err := tunnel.GenerateKey()
+	if err != nil {
+		return ""
+	}
+	pub, err := tunnel.PublicKey(priv)
+	if err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cl := exit.NewClient(entry.Server, entry.Token, entry.Fingerprint)
+	resp, err := cl.Enroll(ctx, pub, "pvm-tzprobe", entry.Transport)
+	if err != nil {
+		return ""
+	}
+	if resp.TunnelIP != "" {
+		_ = cl.DeletePeer(ctx, resp.TunnelIP)
+	}
+	return resp.SuggestedTZ
 }
 
 // setGuestRegion applies timezone+locale inside the guest (NOPASSWD sudo
