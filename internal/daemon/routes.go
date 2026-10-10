@@ -46,10 +46,6 @@ func (s *Server) handleRouteAdd(w http.ResponseWriter, r *http.Request) {
 		rule.DNS = ""
 	case rules.Internal:
 		rule.Exit = ""
-		if rule.DNS == "" {
-			writeErr(w, 400, fmt.Errorf("internal rules need a dns resolver"))
-			return
-		}
 		if rule.Type != rules.DomainSuffix && rule.Type != rules.DomainPrefix && rule.Type != rules.DomainKeyword {
 			writeErr(w, 400, fmt.Errorf("internal rules need a domain match type"))
 			return

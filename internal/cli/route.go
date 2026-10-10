@@ -52,8 +52,11 @@ func CmdRoute(args []string) int {
 		fmt.Fprintln(tw, "INDEX\tTYPE\tPATTERN\tACTION\tVIA")
 		for i, r := range v.Rules {
 			via := r.Exit
-			if via == "" {
+			if r.Action == "internal" {
 				via = r.DNS
+				if via == "" {
+					via = "(host dns)"
+				}
 			}
 			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", i, r.Type, r.Pattern, r.Action, via)
 		}
@@ -134,17 +137,17 @@ func routeAdd(c *daemon.Client, args []string) int {
 	if action == "proxy" && *via == "" {
 		return fatalf("proxy rules need --via <exit>")
 	}
-	if action == "internal" && *dns == "" {
-		return fatalf("internal rules need --dns <host[:port]>")
-	}
 	body := map[string]string{"type": typ, "pattern": pattern, "action": action, "via": *via, "dns": *dns}
 	var resp map[string]any
 	if err := c.Post("/v1/routes", body, &resp); err != nil {
 		return fatalf("%v", err)
 	}
 	target := *via
-	if target == "" {
+	if action == "internal" {
 		target = *dns
+		if target == "" {
+			target = "(host dns)"
+		}
 	}
 	fmt.Printf("rule %v: %s %s -> %s %s\n", resp["index"], typ, pattern, action, target)
 	return 0
@@ -154,7 +157,7 @@ func routeUsage() int {
 	fmt.Fprintln(os.Stderr, `usage:
   pvm route ls
   pvm route add direct|proxy [--domain-suffix|--domain-prefix|--domain-keyword|--cidr] <value> [--via <exit>]
-  pvm route add internal [--domain-suffix|--domain-prefix|--domain-keyword] <value> --dns <host[:port]>
+  pvm route add internal [--domain-suffix|--domain-prefix|--domain-keyword] <value> [--dns <host[:port]>]  (no --dns = resolve via host DNS)
   pvm route rm <index>
   pvm route <vm> --via <exit|direct>`)
 	return 2
