@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/klauspost/compress/zstd"
 
@@ -25,6 +26,17 @@ type manifestEntry struct {
 	Path   string `json:"path"`   // relative target path under runtime dir
 	SHA256 string `json:"sha256"` // of the decompressed payload
 	Mode   int32  `json:"mode"`
+}
+
+// nativeAssetAllowed reports whether path is one of the guest payloads
+// built for the current host architecture.
+func nativeAssetAllowed(path string) bool {
+	switch path {
+	case "agent-linux-" + runtime.GOARCH, "gateway-linux-" + runtime.GOARCH:
+		return true
+	default:
+		return false
+	}
 }
 
 // Unpack extracts all manifest entries into dir, verifying hashes. It is
@@ -49,6 +61,9 @@ func Unpack(dir string) error {
 	defer dec.Close()
 
 	for _, e := range entries {
+		if !nativeAssetAllowed(e.Path) {
+			return fmt.Errorf("unsupported asset %q for native architecture %s", e.Path, runtime.GOARCH)
+		}
 		raw, err := packed.ReadFile("packed/" + e.Path + ".zst")
 		if err != nil {
 			return fmt.Errorf("read packed %s: %w", e.Path, err)

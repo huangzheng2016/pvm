@@ -11,18 +11,12 @@ set -euo pipefail
 
 VERSION="${1:-$(brew list --versions qemu | awk '{print $2}')}"
 SRC="/opt/homebrew/Cellar/qemu/${VERSION}"
-HOSTARCH="$(go env GOARCH 2>/dev/null || true)"
-if [ -z "$HOSTARCH" ]; then
-  case "$(uname -m)" in
-    arm64|aarch64) HOSTARCH=arm64 ;;
-    x86_64|amd64) HOSTARCH=amd64 ;;
-    *) echo "unsupported host arch: $(uname -m)" >&2; exit 1 ;;
-  esac
-fi
-case "$HOSTARCH" in
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+. "$SCRIPT_DIR/../lib/native.sh"
+pvm_native_target
+case "$PVM_HOSTARCH" in
   arm64) QARCH=aarch64; SYSTEM=qemu-system-aarch64; FW_ARCH=(edk2-aarch64-code.fd) ;;
   amd64) QARCH=x86_64; SYSTEM=qemu-system-x86_64; FW_ARCH=(edk2-x86_64-code.fd bios.bin bios-256k.bin kvmvapic.bin vgabios-stdvga.bin vgabios-virtio.bin) ;;
-  *) echo "unsupported GOARCH: $HOSTARCH" >&2; exit 1 ;;
 esac
 DEST="${2:-$HOME/.pvm/runtime/qemu/$QARCH}"
 
