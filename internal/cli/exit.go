@@ -361,7 +361,21 @@ func exitTest(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := t.WaitHandshake(ctx, serverIP); err != nil {
-		return fatalf("handshake: %v", err)
+		// The server reclaims idle peers and reassigns freed tunnel IPs,
+		// so a stored entry can go stale; re-enroll once and retry.
+		fmt.Println("handshake failed; re-enrolling peer...")
+		t.Close()
+		if rerr := reEnrollExit(dir, e); rerr != nil {
+			return fatalf("handshake: %v (re-enroll: %v)", err, rerr)
+		}
+		t, err = exit.DialEntry(e)
+		if err != nil {
+			return fatalf("tunnel after re-enroll: %v", err)
+		}
+		defer t.Close()
+		if err := t.WaitHandshake(ctx, serverIP); err != nil {
+			return fatalf("handshake after re-enroll: %v", err)
+		}
 	}
 	fmt.Println("wireguard handshake: ok")
 	ip, err := t.FetchExitIP(ctx)
@@ -389,8 +403,29 @@ func exitTest(args []string) int {
 
 type hostIPResolver func(string) ([]net.IP, error)
 
-func observedIPMatchesHost(host, observed string, resolve hostIPResolver) (bool, error) {
-	observedIP := net.ParseIP(observed)
+// reEnrollExit re-registers the entry's public key with the server (the
+// server reclaims idle peers and may hand the freed tunnel IP to another
+// peer) and persists the updated tunnel parameters.
+func reEnrollExit(dir string, e *exit.Entry) error {
+	host, err := os.Hostname()
+	if err != nil {
+		host = "pvm"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client := exit.NewClient(e.Server, e.Token, e.Fingerprint)
+	resp, err := client.Enroll(ctx, e.WGPublicKey, host, e.Transport)
+	if err != nil {
+		return err
+	}
+	e.ServerPubKey = resp.ServerPubKey
+	e.TunnelIP = resp.TunnelIP
+	e.MTU = resp.MTU
+	e.Endpoint = resp.Endpoint
+	return exit.SaveEntry(dir, e)
+}
+
+func observedIPMatchesHost(host, observed string, resolve hostIPResolver) (bool, error) {	observedIP := net.ParseIP(observed)
 	if observedIP == nil {
 		return false, fmt.Errorf("invalid observed ip %q", observed)
 	}
