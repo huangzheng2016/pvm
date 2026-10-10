@@ -104,13 +104,13 @@ func TestRenderProvision(t *testing.T) {
 }
 
 func TestParsePreinstalled(t *testing.T) {
-	log := "+ docker pull kasmweb/desktop:1.16.0\n" +
+	log := "+ docker pull kasmweb/core-ubuntu-jammy:1.16.0\n" +
 		"PVM_PREINSTALLED_BEGIN\n" +
-		"kasmweb/desktop:1.16.0\n" +
+		"kasmweb/core-ubuntu-jammy:1.16.0\n" +
 		"PVM_PREINSTALLED_END\n" +
 		"+ apt-get clean\n"
 	got := parsePreinstalled(log)
-	if len(got) != 1 || got[0] != "kasmweb/desktop:1.16.0" {
+	if len(got) != 1 || got[0] != "kasmweb/core-ubuntu-jammy:1.16.0" {
 		t.Fatalf("got %v", got)
 	}
 	if parsePreinstalled("no markers here") != nil {
