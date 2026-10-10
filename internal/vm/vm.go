@@ -30,6 +30,9 @@ type Spec struct {
 	DiskGB   int    `json:"disk_gb"`
 	SSHPort  int    `json:"ssh_port"`
 	BaseDisk string `json:"base_disk"`
+	// Golden is the golden image version the VM was cloned from
+	// (0 = plain base image). Golden clones skip first-boot apt.
+	Golden int `json:"golden,omitempty"`
 
 	CreatedAt time.Time    `json:"created_at"`
 	Mounts    []GuestMount `json:"mounts,omitempty"`
@@ -133,9 +136,17 @@ func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec, sshPub string) error
 		return fmt.Errorf("qemu-img create: %v\n%s", err, out)
 	}
 	if spec.DiskGB > 0 {
-		out, err := exec.Command(tc.Img, "resize", overlay, fmt.Sprintf("%dG", spec.DiskGB)).CombinedOutput()
+		// Never shrink: a golden base may already be larger than the
+		// requested size (e.g. baked from a 25G build disk).
+		cur, err := virtualSizeGB(tc, overlay)
 		if err != nil {
-			return fmt.Errorf("qemu-img resize: %v\n%s", err, out)
+			return err
+		}
+		if spec.DiskGB > cur {
+			out, err := exec.Command(tc.Img, "resize", overlay, fmt.Sprintf("%dG", spec.DiskGB)).CombinedOutput()
+			if err != nil {
+				return fmt.Errorf("qemu-img resize: %v\n%s", err, out)
+			}
 		}
 	}
 

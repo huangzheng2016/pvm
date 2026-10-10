@@ -21,7 +21,8 @@ vm:
 
 image:
   image fetch   download a base image (ubuntu:24.04, debian:13)
-  image list    list downloaded images
+  image build   bake a golden image (docker + kasm preinstalled)
+  image list    list base and golden images
 
 daemon:
   daemon start|stop|status|restart

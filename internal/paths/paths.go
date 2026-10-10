@@ -18,6 +18,9 @@ type Paths struct {
 }
 
 func Default() (*Paths, error) {
+	if home := os.Getenv("PVM_HOME"); home != "" {
+		return New(home), nil
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err

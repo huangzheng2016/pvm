@@ -12,6 +12,9 @@ import (
 
 	"github.com/huangzheng2016/pvm/internal/daemon"
 	"github.com/huangzheng2016/pvm/internal/image"
+	"github.com/huangzheng2016/pvm/internal/keys"
+	"github.com/huangzheng2016/pvm/internal/paths"
+	"github.com/huangzheng2016/pvm/internal/qemu"
 )
 
 type vmInfoView struct {
@@ -28,7 +31,7 @@ type vmInfoView struct {
 
 func CmdImage(args []string) int {
 	if len(args) == 0 {
-		return fatalf("usage: pvm image fetch <distro:version> | pvm image list")
+		return fatalf("usage: pvm image fetch <distro:version> | pvm image build <distro:version> [--keep-vm] | pvm image list")
 	}
 	p, err := mustPaths()
 	if err != nil {
@@ -50,24 +53,70 @@ func CmdImage(args []string) int {
 		}
 		fmt.Printf("ok: %s\n", path)
 		return 0
+	case "build":
+		fs := newFlagSet("image build", "<distro:version> [--keep-vm] [--cpus 4] [--mem 6144] [--disk 25]")
+		keep := fs.Bool("keep-vm", false, "keep the build VM for debugging")
+		cpus := fs.Int("cpus", 4, "build vm vcpus")
+		mem := fs.Int("mem", 6144, "build vm memory MB")
+		disk := fs.Int("disk", 25, "build vm disk GB")
+		if err := fs.Parse(args[1:]); err != nil {
+			return 2
+		}
+		if fs.NArg() < 1 {
+			fs.Usage()
+			return 2
+		}
+		return cmdImageBuild(p, fs.Arg(0), *keep, *cpus, *mem, *disk)
 	case "list":
 		imgs, err := image.List(p.Images)
 		if err != nil {
 			return fatalf("%v", err)
 		}
-		if len(imgs) == 0 {
+		goldens := image.ListGolden(p.Images)
+		if len(imgs) == 0 && len(goldens) == 0 {
 			fmt.Println("no images; run `pvm image fetch ubuntu:24.04`")
 			return 0
 		}
 		tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-		fmt.Fprintln(tw, "NAME\tSIZE")
+		fmt.Fprintln(tw, "NAME\tKIND\tSIZE")
 		for _, im := range imgs {
-			fmt.Fprintf(tw, "%s\t%d MB\n", im.Name, im.Size>>20)
+			fmt.Fprintf(tw, "%s\tbase\t%d MB\n", im.Name, im.Size>>20)
+		}
+		for _, g := range goldens {
+			path := p.Images + "/golden/" + g.File
+			var size int64
+			if fi, err := os.Stat(path); err == nil {
+				size = fi.Size()
+			}
+			fmt.Fprintf(tw, "%s\tgolden\t%d MB\n", g.File, size>>20)
 		}
 		tw.Flush()
 		return 0
 	}
 	return fatalf("unknown image subcommand %q", args[0])
+}
+
+func cmdImageBuild(p *paths.Paths, spec string, keep bool, cpus, mem, disk int) int {
+	tc, err := qemu.Find(p.Runtime, runtime.GOARCH)
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	accel := qemu.Detect(tc, runtime.GOOS)
+	pub, err := keys.Ensure(p.SSHKey())
+	if err != nil {
+		return fatalf("ssh key: %v", err)
+	}
+	entry, err := image.Bake(&image.BakeOptions{
+		Spec: spec, P: p, TC: tc, Accel: accel,
+		SSHKey: p.SSHKey(), SSHPub: pub, Out: os.Stderr,
+		KeepVM: keep, BuildCPUs: cpus, BuildMem: mem, BuildDisk: disk,
+	})
+	if err != nil {
+		return fatalf("image build: %v", err)
+	}
+	fmt.Printf("built golden %s v%d (%s)\n  docker: %s\n",
+		spec, entry.Version, entry.File, strings.Join(entry.DockerImages, ", "))
+	return 0
 }
 
 func CmdCreate(args []string) int {

@@ -31,27 +31,42 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 	}
 
 	doc := map[string]any{
-		"hostname":        spec.Name,
-		"fqdn":            spec.Name + ".pvm.internal",
-		"ssh_pwauth":      false,
-		"package_update":  true,
-		"packages":        []string{"qemu-guest-agent"},
-		"runcmd":          runcmd,
-		"users": []map[string]any{{
-			"name":                spec.User,
-			"groups":              []string{"sudo"},
-			"shell":               "/bin/bash",
-			"sudo":                "ALL=(ALL) NOPASSWD:ALL",
-			"lock_passwd":         true,
-			"uid":                 spec.GuestUID,
-			"ssh_authorized_keys": []string{strings.TrimSpace(sshPub)},
-		}},
-		"write_files": []map[string]any{{
-			"path":    "/etc/fstab",
-			"append":  true,
-			"content": strings.Join(fstab, "\n") + "\n",
-		}},
+		"hostname":   spec.Name,
+		"fqdn":       spec.Name + ".pvm.internal",
+		"ssh_pwauth": false,
+		"runcmd":     runcmd,
 	}
+	if spec.Golden > 0 {
+		// Golden images are already provisioned (docker, qga, dev tools):
+		// skip the first-boot apt storm and just attach the user to docker.
+		// Do not --now qemu-guest-agent: its unit waits on the qga virtio
+		// port which pvm does not attach, stalling boot for 90s.
+		doc["package_update"] = false
+		doc["runcmd"] = append(runcmd,
+			"systemctl enable --now docker",
+		)
+	} else {
+		doc["package_update"] = true
+		doc["packages"] = []string{"qemu-guest-agent"}
+	}
+	groups := []string{"sudo"}
+	if spec.Golden > 0 {
+		groups = append(groups, "docker")
+	}
+	doc["users"] = []map[string]any{{
+		"name":                spec.User,
+		"groups":              groups,
+		"shell":               "/bin/bash",
+		"sudo":                "ALL=(ALL) NOPASSWD:ALL",
+		"lock_passwd":         true,
+		"uid":                 spec.GuestUID,
+		"ssh_authorized_keys": []string{strings.TrimSpace(sshPub)},
+	}}
+	doc["write_files"] = []map[string]any{{
+		"path":    "/etc/fstab",
+		"append":  true,
+		"content": strings.Join(fstab, "\n") + "\n",
+	}}
 	out, err := yaml.Marshal(doc)
 	if err != nil {
 		return nil, err
