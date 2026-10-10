@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"time"
 
@@ -77,8 +78,11 @@ func (c *goldenCatalog) match(distro, imageVersion, arch string) []GoldenEntry {
 }
 
 // LatestGolden returns the newest golden image whose file is still
-// present, or nil when none exists.
+// present, or nil when none exists. Non-native architectures are ignored.
 func LatestGolden(imagesDir, distro, imageVersion, arch string) *GoldenEntry {
+	if arch != runtime.GOARCH {
+		return nil
+	}
 	cat, err := loadGoldenCatalog(imagesDir)
 	if err != nil {
 		return nil

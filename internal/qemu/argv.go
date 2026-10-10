@@ -3,6 +3,7 @@ package qemu
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strconv"
 )
 
@@ -36,18 +37,18 @@ type Network struct {
 }
 
 type VMConfig struct {
-	Name        string
-	Arch        string // GOARCH: arm64 / amd64
-	CPUs        int
-	MemMB       int
-	DiskPath    string
-	SeedPath    string
-	VarsPath    string // per-VM UEFI vars (aarch64)
-	ConsoleLog  string
-	QMPSock     string
-	SerialSock  string
-	AgentSock   string // unix socket for the virtio-serial agent channel; empty disables
-	Network     Network
+	Name       string
+	Arch       string // GOARCH: arm64 / amd64
+	CPUs       int
+	MemMB      int
+	DiskPath   string
+	SeedPath   string
+	VarsPath   string // per-VM UEFI vars (aarch64)
+	ConsoleLog string
+	QMPSock    string
+	SerialSock string
+	AgentSock  string // unix socket for the virtio-serial agent channel; empty disables
+	Network    Network
 	// HotplugPorts pre-creates pcie-root-ports rp10..rp(9+N) so NICs can
 	// be hot-added later (pcie.0 itself does not support hotplug).
 	// Gateway VMs get one port per possible cluster VM IP octet.
@@ -69,6 +70,9 @@ type VMConfig struct {
 
 // BuildArgs constructs the full qemu argv (excluding the binary itself).
 func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
+	if c.Arch != runtime.GOARCH {
+		return nil, fmt.Errorf("vm architecture %q is not supported on host architecture %s", c.Arch, runtime.GOARCH)
+	}
 	if c.CPUs <= 0 {
 		c.CPUs = 2
 	}
