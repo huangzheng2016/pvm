@@ -54,7 +54,7 @@ func (c *Client) tlsClient() *http.Client {
 				InsecureSkipVerify: true, //nolint:gosec
 				VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 					if expect == "" {
-						return nil
+						return fmt.Errorf("no pinned server certificate fingerprint for %s (refusing to proceed unverified)", c.Server)
 					}
 					fp, err := Fingerprint(rawCerts[0])
 					if err != nil {

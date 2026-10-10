@@ -25,16 +25,16 @@ import (
 // domain-connect service BY DOMAIN — the gateway performs no DNS
 // resolution for them at all (the exit resolves and dials on the VPS).
 type fakeProxy struct {
-	policy   *gwpolicy.Engine
-	resolver *net.Resolver
-	vmByIP   func(ip net.IP) string // config lookup, nil-safe
-	markFor  func(exitName string) int // SO_MARK selecting the exit's table; -1 = no tunnel
+	policy    *gwpolicy.Engine
+	resolver  *net.Resolver
+	vmByIP    func(ip net.IP) string               // config lookup, nil-safe
+	markFor   func(exitName string) int            // SO_MARK selecting the exit's table; -1 = no tunnel
 	dcAddrFor func(exitName string) (string, bool) // in-tunnel domain-connect addr
 
-	mu       sync.Mutex
-	ln       *net.TCPListener
-	closed   bool
-	wg       sync.WaitGroup
+	mu     sync.Mutex
+	ln     *net.TCPListener
+	closed bool
+	wg     sync.WaitGroup
 }
 
 func newFakeProxy(policy *gwpolicy.Engine, upstream string, vmByIP func(net.IP) string) *fakeProxy {
@@ -47,8 +47,8 @@ func newFakeProxy(policy *gwpolicy.Engine, upstream string, vmByIP func(net.IP) 
 				return d.DialContext(ctx, "udp", upstream+":53")
 			},
 		},
-		vmByIP: vmByIP,
-		markFor: func(string) int { return -1 },
+		vmByIP:    vmByIP,
+		markFor:   func(string) int { return -1 },
 		dcAddrFor: func(string) (string, bool) { return "", false },
 	}
 }
@@ -64,6 +64,19 @@ func (p *fakeProxy) curPolicy() *gwpolicy.Engine {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.policy
+}
+
+// SetExitHooks installs the tunnel lookup hooks on config reload.
+func (p *fakeProxy) SetExitHooks(markFor func(string) int, dcAddrFor func(string) (string, bool)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.markFor, p.dcAddrFor = markFor, dcAddrFor
+}
+
+func (p *fakeProxy) exitHooks() (func(string) int, func(string) (string, bool)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.markFor, p.dcAddrFor
 }
 
 func (p *fakeProxy) Start(port int) error {
@@ -109,6 +122,10 @@ func (p *fakeProxy) handle(src *net.TCPConn) {
 		return
 	}
 	pol := p.curPolicy()
+	if pol == nil {
+		log.Printf("fakeproxy: %s arrived before policy was set, refusing", src.RemoteAddr())
+		return
+	}
 	domain, ok := pol.LookupByFakeIP(dst.IP)
 	if !ok {
 		log.Printf("fakeproxy: %s not in fake-ip pool (expired?), dropping", dst.IP)
@@ -149,12 +166,13 @@ func (p *fakeProxy) dialDirect(src *net.TCPConn, domain string, port int) {
 // the VPS). Fail-closed: if the tunnel or the service is down the flow
 // is refused, never resolved locally.
 func (p *fakeProxy) dialProxy(src *net.TCPConn, domain string, port int, exitName string) {
-	mark := p.markFor(exitName)
+	markFor, dcAddrFor := p.exitHooks()
+	mark := markFor(exitName)
 	if mark < 0 {
 		log.Printf("fakeproxy: %s wants exit %q but tunnel is down; refusing fast", domain, exitName)
 		return
 	}
-	dcAddr, ok := p.dcAddrFor(exitName)
+	dcAddr, ok := dcAddrFor(exitName)
 	if !ok {
 		log.Printf("fakeproxy: %s wants exit %q but domain-connect is unavailable; refusing fast", domain, exitName)
 		return
