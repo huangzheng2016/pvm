@@ -97,11 +97,9 @@ func (s *Server) handleKasm(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err)
 			return
 		}
-		if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
-			if err := s.pushGatewayConfig(cl); err != nil {
-				writeErr(w, 500, err)
-				return
-			}
+		if err := s.pushGatewayConfig(spec.ClusterID); err != nil {
+			writeErr(w, 500, err)
+			return
 		}
 		hostPort, poolPort = m.HostPort, m.PoolPort
 	}

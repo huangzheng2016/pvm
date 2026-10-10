@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/cluster"
@@ -274,7 +275,7 @@ func (s *Server) deployGatewayAgent(cl *cluster.Cluster) error {
 	if out, err := s.sshRun(gwSpec, "sudo install -m 0755 /tmp/pvm-gateway /usr/local/bin/pvm-gateway"); err != nil {
 		return fmt.Errorf("install agent: %v\n%s", err, out)
 	}
-	if err := s.pushGatewayConfig(cl); err != nil {
+	if err := s.pushGatewayConfig(cl.ID); err != nil {
 		return err
 	}
 	if out, err := s.sshRun(gwSpec, "sudo systemctl restart pvm-gateway.service"); err != nil {
@@ -284,45 +285,100 @@ func (s *Server) deployGatewayAgent(cl *cluster.Cluster) error {
 	return nil
 }
 
-// pushGatewayConfig renders gateway.json from the cluster store and
-// writes it into the gateway guest.
-func (s *Server) pushGatewayConfig(cl *cluster.Cluster) error {
+// pushGatewayConfig renders gateway.json from a FRESH cluster snapshot
+// and writes it into the gateway guest. Callers pass only the cluster
+// ID: rendering re-reads the store at push time, so a stale caller-held
+// copy can never roll back someone else's newer config. All pushes for
+// one gateway are serialized through a per-cluster mutex, and the guest
+// file is replaced atomically (install to temp + mv), so concurrent
+// callers cannot interleave a truncated file.
+func (s *Server) pushGatewayConfig(clusterID int) error {
+	cl := s.Clusters.Get(clusterID)
+	if cl == nil {
+		return fmt.Errorf("cluster %d not found", clusterID)
+	}
 	gwSpec, err := s.getSpec(cl.Gateway)
 	if err != nil {
 		return err
 	}
-	cfg := gatewayConfigFromCluster(s, cl)
-	tmp, err := os.CreateTemp("", "pvm-gwcfg-*.json")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(cfg); err != nil {
+	return s.renderGatewayConfigLocked(clusterID, func(cfg []byte) error {
+		tmp, err := os.CreateTemp("", "pvm-gwcfg-*.json")
+		if err != nil {
+			return err
+		}
+		defer os.Remove(tmp.Name())
+		if _, err := tmp.Write(cfg); err != nil {
+			tmp.Close()
+			return err
+		}
 		tmp.Close()
-		return err
+		remote := gatewayRemoteTmp()
+		if err := s.scpTo(gwSpec, tmp.Name(), remote); err != nil {
+			return err
+		}
+		out, err := s.sshRun(gwSpec, gatewayInstallCmd(remote))
+		if err != nil {
+			return fmt.Errorf("install config: %v\n%s", err, out)
+		}
+		return nil
+	})
+}
+
+// renderGatewayConfigLocked serializes config renders for one cluster
+// and invokes fn with a payload rendered from a fresh store snapshot.
+// Callers must not hold any cluster-derived state across fn — the
+// point is that everything fn sends reflects the store as of this call.
+func (s *Server) renderGatewayConfigLocked(clusterID int, fn func([]byte) error) error {
+	mu, _ := s.gwPushLocks.LoadOrStore(clusterID, &sync.Mutex{})
+	lock := mu.(*sync.Mutex)
+	lock.Lock()
+	defer lock.Unlock()
+
+	cl := s.Clusters.Get(clusterID)
+	if cl == nil {
+		return fmt.Errorf("cluster %d not found", clusterID)
 	}
-	tmp.Close()
-	if err := s.scpTo(gwSpec, tmp.Name(), "/tmp/gateway.json"); err != nil {
-		return err
-	}
-	out, err := s.sshRun(gwSpec, "sudo install -m 0644 /tmp/gateway.json /etc/pvm/gateway.json")
-	if err != nil {
-		return fmt.Errorf("install config: %v\n%s", err, out)
-	}
-	return nil
+	return fn(gatewayConfigFromCluster(s, cl))
+}
+
+// gatewayRemoteTmp is the per-push unique scp target on the gateway:
+// two pushes can never scp over each other's half-written file.
+func gatewayRemoteTmp() string {
+	return fmt.Sprintf("/tmp/gateway.json.pvm-%d", time.Now().UnixNano())
+}
+
+// gatewayInstallCmd atomically moves the freshly uploaded config into
+// place (same-filesystem rename) and cleans up the upload.
+func gatewayInstallCmd(remote string) string {
+	return fmt.Sprintf("sudo install -m 0644 %s /etc/pvm/gateway.json.pvm-new && sudo mv -f /etc/pvm/gateway.json.pvm-new /etc/pvm/gateway.json; rc=$?; rm -f %s; exit $rc", remote, remote)
 }
 
 // pushGatewayConfigRetry pushes the gateway config, retrying while the
-// gateway's ssh is still coming up after a (re)start.
-func (s *Server) pushGatewayConfigRetry(cl *cluster.Cluster) error {
+// gateway's ssh is still coming up after a (re)start. Each attempt
+// re-renders from a fresh snapshot and aborts immediately if the
+// gateway qemu is dead instead of blocking for the full budget.
+func (s *Server) pushGatewayConfigRetry(clusterID int) error {
 	var err error
+	gwName := ""
 	for i := 0; i < 60; i++ {
-		if err = s.pushGatewayConfig(cl); err == nil {
+		cl := s.Clusters.Get(clusterID)
+		if cl == nil {
+			return fmt.Errorf("cluster %d not found", clusterID)
+		}
+		gwName = cl.Gateway
+		gwSpec, gerr := s.getSpec(cl.Gateway)
+		if gerr != nil {
+			return gerr
+		}
+		if st, rerr := s.instance(gwSpec).Running(); rerr != nil || st == nil {
+			return fmt.Errorf("gateway %s is not running; cannot push config: %v", cl.Gateway, rerr)
+		}
+		if err = s.pushGatewayConfig(clusterID); err == nil {
 			return nil
 		}
 		time.Sleep(3 * time.Second)
 	}
-	return fmt.Errorf("push gateway config: %w", err)
+	return fmt.Errorf("push gateway config: %w (gateway %s may still be initializing)", err, gwName)
 }
 
 // sshBaseArgs builds the ssh arguments and target for a guest. Cluster
