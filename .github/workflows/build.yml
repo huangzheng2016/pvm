@@ -28,6 +28,7 @@ jobs:
     needs: test
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -49,7 +50,11 @@ jobs:
           PVM_VERSION: ${{ github.ref_name }}
           PVM_PACK_QEMU: ${{ runner.os == 'macOS' && '1' || '0' }}
         run: |
-          ./script/build.sh
+          if [ "${{ matrix.out }}" = "pvm_linux_arm64" ]; then
+            CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w -X github.com/huangzheng2016/pvm/internal/buildinfo.Version=${PVM_VERSION}" -o pvm ./cmd/pvm
+          else
+            ./script/build.sh
+          fi
           tar -czf ${{ matrix.out }}.tar.gz pvm
           if [ "${{ runner.os }}" = "macOS" ]; then
             tar -czf pvm-qemu-runtime-aarch64.tar.gz -C "$HOME/.pvm/runtime/qemu" aarch64
