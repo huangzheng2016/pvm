@@ -47,6 +47,7 @@ daemon:
 
 other:
   version       print version
+  skill         print the embedded pvm skill doc (install into agent skills)
 
 common choices:
   images        ubuntu:24.04 | ubuntu:22.04 | debian:13 | debian:12 | alpine:3.20 | alpine:3.21
@@ -130,6 +131,8 @@ func main() {
 		code = cli.CmdAgent(args)
 	case "version", "--version", "-v":
 		fmt.Println(buildinfo.Version)
+	case "skill":
+		code = cli.CmdSkill(args)
 	case "desktop":
 		code = cli.CmdDesktop(args)
 	case "gateway":
