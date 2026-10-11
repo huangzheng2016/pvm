@@ -84,10 +84,22 @@ func (r *Ref) FileName() string {
 var httpClient = &http.Client{Timeout: 0} // no global timeout; resume handles stalls manually
 
 // Fetch downloads the image into dir with resume, progress and checksum
-// verification. Returns the final path.
-func Fetch(r *Ref, dir string, progress io.Writer) (string, error) {
+// verification. Returns the final path. A verified cached file is reused
+// unless force is set.
+func Fetch(r *Ref, dir string, progress io.Writer, force ...bool) (string, error) {
 	final := filepath.Join(dir, r.FileName())
 	part := final + ".part"
+
+	if fi, err := os.Stat(final); err == nil && fi.Size() > 0 && (len(force) == 0 || !force[0]) {
+		if err := verifyChecksum(r, final); err == nil {
+			if progress != nil {
+				fmt.Fprintf(progress, "cached: %s (checksum verified)\n", final)
+			}
+			return final, nil
+		} else {
+			os.Remove(final)
+		}
+	}
 
 	var have int64
 	if fi, err := os.Stat(part); err == nil {

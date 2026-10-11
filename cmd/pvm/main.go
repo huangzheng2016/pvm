@@ -48,6 +48,7 @@ daemon:
 other:
   version       print version
   skill         print the embedded pvm skill doc (install into agent skills)
+  upgrade       self-upgrade to the latest release: pvm upgrade [--check] [--to <tag>] [-y]
 
 common choices:
   images        ubuntu:24.04 | ubuntu:22.04 | debian:13 | debian:12 | alpine:3.20 | alpine:3.21
@@ -87,6 +88,11 @@ func main() {
 		os.Exit(2)
 	}
 	args := os.Args[2:]
+	switch os.Args[1] {
+	case "upgrade", "version", "--version", "-v", "skill", "exit-agent", "agent", "gateway", "__snapshot-pipe-out", "__snapshot-pipe-in":
+	default:
+		cli.MaybeNotifyUpgrade()
+	}
 	var code int
 	switch os.Args[1] {
 	case "daemon":
@@ -133,6 +139,8 @@ func main() {
 		fmt.Println(buildinfo.Version)
 	case "skill":
 		code = cli.CmdSkill(args)
+	case "upgrade":
+		code = cli.CmdUpgrade(args)
 	case "desktop":
 		code = cli.CmdDesktop(args)
 	case "gateway":

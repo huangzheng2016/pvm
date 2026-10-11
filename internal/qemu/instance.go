@@ -132,7 +132,9 @@ func (in *Instance) startWithAccel(accel Accel) error {
 	ident, err := IdentityOf(cmd.Process.Pid)
 	if err != nil {
 		cmd.Process.Kill()
-		return err
+		tail, _ := os.ReadFile(cfg.ConsoleLog + ".qemu")
+		console, _ := os.ReadFile(cfg.ConsoleLog)
+		return fmt.Errorf("qemu died after launch: %v\nqemu log:\n%s\nconsole:\n%s", err, lastLines(tail, 15), lastLines(console, 15))
 	}
 	st := RunState{PID: cmd.Process.Pid, Ident: ident, Args: append([]string{in.Toolchain.System}, args...), Accel: accel, Started: time.Now()}
 	data, err := json.MarshalIndent(st, "", "  ")
