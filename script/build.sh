@@ -28,6 +28,14 @@ echo "== pvm"
 GOOS="$PVM_HOSTOS" GOARCH="$PVM_HOSTARCH" go build -tags embedassets -buildvcs=false -trimpath -ldflags "-s -w -buildid=" -o pvm ./cmd/pvm
 echo "built ./pvm (with embedded guest assets: $PVM_HOSTARCH)"
 
+# Prebuilt linux/amd64 CLI for deploying pvm exit-agent to a VPS over ssh
+# (see pvm-skill "给定 SSH 部署 exit"). This is a distribution artifact,
+# not cross-arch VM support: it is never injected into guests.
+echo "== dist deploy bundle (linux/amd64)"
+mkdir -p dist "$HOME/.pvm/runtime/dist"
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -buildvcs=false -ldflags "-s -w -buildid=" -o dist/pvm-linux-amd64 ./cmd/pvm
+cp dist/pvm-linux-amd64 "$HOME/.pvm/runtime/dist/pvm-linux-amd64"
+
 if [ "${PVM_PACK_QEMU:-1}" = "1" ] && [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
   echo "== bundled qemu ($PVM_HOSTARCH)"
   ./script/qemu/pack-runtime.sh

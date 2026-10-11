@@ -83,14 +83,12 @@ func CmdExitAgent(args []string) int {
 // CmdExit manages local exit-node entries.
 func CmdExit(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: pvm exit <add|deploy|set|ls|rm|test> [args]")
+		fmt.Fprintln(os.Stderr, "usage: pvm exit <add|set|ls|rm|test> [args]")
 		return 2
 	}
 	switch args[0] {
 	case "add":
 		return exitAdd(args[1:])
-	case "deploy":
-		return cmdExitDeploy(args[1:])
 	case "set":
 		return exitSet(args[1:])
 	case "ls", "list":

@@ -155,35 +155,54 @@ pvm daemon stop && pvm daemon start
 
 ## 新增出口（仅在用户明确要求时）
 
-### 方式一：一条命令部署（推荐）
+### 给定 SSH 部署 exit（标准流程）
+
+预构建的 linux/amd64 pvm 二进制在 `~/.pvm/runtime/dist/pvm-linux-amd64`（`script/build.sh` 每次构建时刷新，仓库 `dist/` 下也有一份）。用它部署一台新 VPS：
 
 ```bash
-# 给定 SSH 即可完成：本地交叉编译 → scp → systemd → 输出 token+指纹；
-# 带 --name 顺手注册（auto 测速选传输，--fingerprint 带外核验自动带上）
-pvm exit deploy root@<vps>[:port] --name <exit名>
+VPS=root@<vps>                                     # 目标机，ssh 需免密可登
+TOKEN=$(openssl rand -hex 24)                      # 生成控制面 token
 
-# 不带 --name 只部署并打印凭据（适合生产 us 的升级维护，unit 已存在则
-# 复用原 token 并滚动重启，健康检查失败自动回滚 pvm.prev）
-pvm exit deploy root@<vps>[:port]
-```
+# 1. 探测系统是 Linux 且架构为 x86_64（其他架构需在本地按 GOARCH 另行编译）
+ssh $VPS 'uname -s; uname -m'
 
-### 方式二：手动备选路径
+# 2. 上传预构建二进制（保留旧版备份便于回滚）
+ssh $VPS '[ -f /usr/local/bin/pvm ] && cp /usr/local/bin/pvm /usr/local/bin/pvm.prev || true'
+scp ~/.pvm/runtime/dist/pvm-linux-amd64 $VPS:/usr/local/bin/pvm.new
+ssh $VPS 'chmod +x /usr/local/bin/pvm.new && mv /usr/local/bin/pvm.new /usr/local/bin/pvm'
 
-```bash
-# VPS 上手动启动（生产已有 us/us-tcp，不要重复部署）
-pvm exit-agent --listen :18443 --token <随机强 token>
+# 3. 写入并启动 systemd 服务（已存在则复用原 unit，勿覆盖 token）
+ssh $VPS 'cat > /etc/systemd/system/pvm-exit-agent.service <<EOF
+[Unit]
+Description=pvm exit agent
+After=network-online.target
+Wants=network-online.target
+[Service]
+ExecStart=/usr/local/bin/pvm exit-agent --listen :18443 --token $TOKEN
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload && systemctl enable --now pvm-exit-agent'
 
-# 本机注册（指纹建议带外核对）；--transport 默认 auto：
-# 并行实测 udp+tcp（各 Nx8MB 隧道下载取平均）选最快，UDP 吞吐不低于 TCP 80% 时优先 UDP
-# --samples N 调采样次数（默认 3）
-pvm exit add <name> --server <vps>:18443 --token <token>
-pvm exit add <name> --server <vps>:18443 --token <token> --transport tcp --fingerprint <sha256>
+# 4. 确认服务与证书指纹（升级维护时指纹应与此前一致；不一致说明证书被换）
+ssh $VPS 'systemctl is-active pvm-exit-agent && journalctl -u pvm-exit-agent --since "-30s" --no-pager | grep fingerprint'
 
-# 验证出口；--speed 打印隧道吞吐与 RTT（--samples N 多次采样取平均，默认 3）
+# 5. 本机注册（--fingerprint 填上一步的指纹做带外核验；
+#    --transport 默认 auto：并行实测 udp+tcp（各 Nx8MB 隧道下载取平均）选最快，
+#    UDP 吞吐不低于 TCP 80% 时优先 UDP；--samples N 调采样次数，默认 3）
+pvm exit add <name> --server <vps>:18443 --token $TOKEN --fingerprint <sha256指纹>
+
+# 6. 验证
 pvm exit test <name>
 pvm exit test <name> --speed --samples 5
 ```
 
+要点：
+- 部署失败需要回滚：`ssh $VPS 'mv /usr/local/bin/pvm.prev /usr/local/bin/pvm && systemctl restart pvm-exit-agent'`。
+- 生产 us/us-tcp（203.0.113.10）已在跑，不要重复部署同名出口；升级二进制用同一流程（unit 复用、token/指纹不变）。
+- VPS 不是 x86_64 时，在 pvm 仓库本地编译：`CGO_ENABLED=0 GOOS=linux GOARCH=<arm64 等> go build -trimpath -ldflags "-s -w" -o /tmp/pvm-linux-<arch> ./cmd/pvm`，其余步骤相同。
 - 控制面 HTTPS + Bearer token + TOFU 指纹 pin；数据面 WireGuard，UDP 优先、TCP 后备。
 - 测速不经公网第三方：exit-agent 在每张隧道 NIC 的 `.1:18081` 暴露 `/speed?bytes=N`（上限 64MB）与 `/ping`，仅隧道内可达。
 - exit-agent 支持 `nft` / `iptables` / `userspace` NAT 后端；userspace 不需要 root，但不转发 ICMP ping。
