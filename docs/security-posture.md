@@ -12,7 +12,6 @@ AI-service Code 等工具的运行环境检测针对的是**容器**与云主机
 
 - **ai-service 类工具跑在 VM 主用户态**，不要在 VM 内的 docker 容器里跑——容器里会出现 `/.dockerenv`。
 - `pvm desktop` 是 VM 原生 XFCE 桌面（TigerVNC + noVNC，非容器），桌面环境与 SSH 是同一台机器、同一套文件系统与身份。
-- Alpine/musl 不是典型桌面用户环境，跑 AI-service Code 等场景建议用 Ubuntu/Debian；Alpine 定位是精简工具机。
 
 ## 网络一致性
 

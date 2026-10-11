@@ -35,7 +35,7 @@ network:
   exit-agent    run the vps exit agent: pvm exit-agent --listen :18443 --token <tok>
 
 image:
-  image fetch   download a base image (ubuntu:24.04, debian:13, alpine:3.21)
+  image fetch   download a base image (ubuntu:24.04, debian:13)
   image build   bake a golden image (docker + xfce desktop preinstalled; ubuntu/debian only)
                 flags: --keep-vm --cpus N --mem MB --disk GB
   image list    list base and golden images
@@ -51,13 +51,13 @@ other:
   upgrade       self-upgrade to the latest release: pvm upgrade [--check] [--to <tag>] [-y]
 
 common choices:
-  images        ubuntu:24.04 | ubuntu:22.04 | debian:13 | debian:12 | alpine:3.20 | alpine:3.21
+  images        ubuntu:24.04 | ubuntu:22.04 | debian:13 | debian:12
   transports    udp (default, wireguard) | tcp (wireguard over tcp)
   nat backends  auto | nft | iptables | userspace (no root, no icmp)
   route via     direct | <exit-name>  (this host: us, us-tcp)
 
 create options:
-  --image IMG   ubuntu:24.04 | ubuntu:22.04 | debian:13 | debian:12 | alpine:3.20 | alpine:3.21
+  --image IMG   ubuntu:24.04 | ubuntu:22.04 | debian:13 | debian:12
   --distro D --version V  same as --image D:V (conflict with --image errors)
   --name NAME   vm name (required)
   --user USER   guest login user (required for non-interactive use)

@@ -1,9 +1,7 @@
 package image
 
 import (
-	"runtime"
 	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/hex"
 	"io"
 	"net/http"
@@ -108,8 +106,8 @@ func TestRenderProvision(t *testing.T) {
 	if strings.Contains(s, "docker system prune -af") {
 		t.Error("provision script must not nuke the docker images it just pulled")
 	}
-	if _, err := renderProvision("alpine", "baker", ProxyConfig{}); err == nil {
-		t.Error("expected error for alpine")
+	if _, err := renderProvision("fedora", "baker", ProxyConfig{}); err == nil {
+		t.Error("expected error for unsupported distro")
 	}
 	if _, err := renderProvision("ubuntu", "root", ProxyConfig{}); err == nil {
 		t.Error("expected error for root build user")
@@ -172,23 +170,6 @@ func TestResolveUsesNativeArchitecture(t *testing.T) {
 	}
 }
 
-func TestAlpineBareHashChecksum(t *testing.T) {
-	payload := []byte("alpine image bytes")
-	sum := sha512.Sum512(payload)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(hex.EncodeToString(sum[:]) + "\n"))
-	}))
-	defer srv.Close()
-	file := filepath.Join(t.TempDir(), "alpine.qcow2")
-	if err := os.WriteFile(file, payload, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	ref := &Ref{SumFile: "alpine.qcow2", SumsURL: srv.URL, SumKind: "sha512"}
-	if err := verifyChecksum(ref, file); err != nil {
-		t.Fatalf("bare Alpine sha512 was not accepted: %v", err)
-	}
-}
-
 func TestFetchSkipsAlreadyCompletePart(t *testing.T) {
 	payload := []byte("already downloaded")
 	gets := 0
@@ -202,42 +183,23 @@ func TestFetchSkipsAlreadyCompletePart(t *testing.T) {
 	}))
 	defer srv.Close()
 	dir := t.TempDir()
-	part := filepath.Join(dir, "alpine-3.20-arm64.qcow2.part")
+	part := filepath.Join(dir, "ubuntu-24.04-arm64.qcow2.part")
 	if err := os.WriteFile(part, payload, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(payload)
 	sums := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(hex.EncodeToString(sum[:]) + " alpine-3.20-arm64.qcow2\n"))
+		_, _ = w.Write([]byte(hex.EncodeToString(sum[:]) + " ubuntu-24.04-arm64.qcow2\n"))
 	}))
 	defer sums.Close()
-	final, err := Fetch(&Ref{Distro: "alpine", Version: "3.20", Arch: "arm64", URL: srv.URL, SumsURL: sums.URL, SumFile: "alpine-3.20-arm64.qcow2", SumKind: "sha256"}, dir, io.Discard)
+	final, err := Fetch(&Ref{Distro: "ubuntu", Version: "24.04", Arch: "arm64", URL: srv.URL, SumsURL: sums.URL, SumFile: "ubuntu-24.04-arm64.qcow2", SumKind: "sha256"}, dir, io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if final != filepath.Join(dir, "alpine-3.20-arm64.qcow2") {
+	if final != filepath.Join(dir, "ubuntu-24.04-arm64.qcow2") {
 		t.Fatalf("final path = %q", final)
 	}
 	if gets != 0 {
 		t.Fatalf("complete part was downloaded again (%d GETs)", gets)
-	}
-}
-
-func TestResolveAlpine(t *testing.T) {
-	qa := map[string]string{"arm64": "aarch64", "amd64": "amd64"}[runtime.GOARCH]
-	for _, tc := range []struct{ version, file string }{
-		{"3.20", "nocloud_alpine-3.20.9-" + qa + "-uefi-cloudinit-r0.qcow2"},
-		{"3.21", "alpine-3.21.8-" + qa + "-uefi-cloudinit-r0.qcow2"},
-	} {
-		ref, err := Resolve("alpine:" + tc.version)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if ref.URL != "https://dl-cdn.alpinelinux.org/alpine/v"+tc.version+"/releases/cloud/"+tc.file {
-			t.Errorf("unexpected alpine url: %s", ref.URL)
-		}
-		if ref.SumsURL != ref.URL+".sha512" || ref.SumKind != "sha512" {
-			t.Errorf("unexpected alpine checksum: %s / %s", ref.SumsURL, ref.SumKind)
-		}
 	}
 }

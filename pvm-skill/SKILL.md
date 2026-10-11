@@ -21,7 +21,7 @@ pvm 仅支持宿主原生架构：darwin/arm64 只运行 arm64 VM，linux/amd64 
 
 ## 常用选择
 
-- **镜像**：`ubuntu:24.04`、`ubuntu:22.04`、`debian:13`、`debian:12`、`alpine:3.20`、`alpine:3.21`
+- **镜像**：`ubuntu:24.04`、`ubuntu:22.04`、`debian:13`、`debian:12`
 - **出口传输**：`udp`（默认、性能优先）/ `tcp`（受限网络后备）
 - **exit-agent NAT 后端**：`auto`（自动探测）/ `nft` / `iptables` / `userspace`（免 root、无 ICMP）
 - **出口路由**：`direct`（本机出口）或 `<exit-name>`（本机现有 `us`、`us-tcp`）
@@ -32,8 +32,7 @@ pvm 仅支持宿主原生架构：darwin/arm64 只运行 arm64 VM，linux/amd64 
 - 每台 VM 默认把宿主机 `~/.pvm/share` 挂到 VM 的 `/share`（9p，**双向读写**，含子目录），临时交换文件直接丢这里，无需任何配置。
 - 额外挂载用 `--mount <宿主路径>:<VM路径>`，可重复多次：`pvm create --image ubuntu:24.04 --name dev1 --user dev --mount ~/work/proj:/home/dev/proj --mount ~/data:/mnt/data`。
 - 挂载是 virtio-9p（security_model=none + access=any，guest uid 与宿主 uid 对齐），性能适合源码/文档，不适合高 IOPS 数据库目录。
-  - `--image alpine:3.20` 与 `--distro alpine --version 3.20` 等价；冲突参数会报错。
-- **Alpine 差异**：精简定位——没有 golden 镜像、没有 docker/桌面、首次启动要跑 apk 装包（稍慢）、登录 shell 默认 `/bin/sh`。跑 Claude Code 等场景建议用 Ubuntu/Debian（Alpine/musl 不是典型桌面用户环境）。
+  - `--image debian:13` 与 `--distro debian --version 13` 等价；冲突参数会报错。
 - **`pvm image build` 代理透传**：构建 golden 时自动使用宿主 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY`（回环代理地址自动改写为 VM 可见地址），构建结束彻底清理，不会把代理配置烘进镜像。
 
 ## 核心工作流
@@ -42,7 +41,7 @@ pvm 仅支持宿主原生架构：darwin/arm64 只运行 arm64 VM，linux/amd64 
 
 ```bash
 pvm create --image ubuntu:24.04 --name dev1 --user dev
-# 别名：pvm create --distro alpine --version 3.20 --name a1 --user dev
+# 别名：pvm create --distro debian --version 13 --name d1 --user dev
 pvm list
 pvm ssh dev1 'whoami && ls /share'
 ```
@@ -76,7 +75,7 @@ pvm desktop dev1
 pvm desktop dev1 --stop
 ```
 
-- desktop 要求 VM 来自 **golden 镜像**（已预装 XFCE + TigerVNC + noVNC）。基础镜像和 Alpine VM 没有桌面包，`pvm desktop` 会报清晰错误。
+- desktop 要求 VM 来自 **golden 镜像**（已预装 XFCE + TigerVNC + noVNC）。基础镜像没有桌面包，`pvm desktop` 会报清晰错误。
 - 这是 **VM 本体的桌面**（不是容器）：桌面里看到的文件系统、用户、进程与 SSH 进入的是同一台机器，`/share` 也在同一个挂载命名空间。
 - 桌面会话在 VM 内持久（关闭浏览器不影响）；时区/locale 跟随 VM 地区画像。VNC 密码以 noVNC URL 参数携带、仅监听回环；`--open` 直接打开系统浏览器，`--size 2560x1440` 可改分辨率。
 
@@ -124,7 +123,7 @@ pvm clone dev1 dev2             # 源 VM 必须 stopped；--no-start 只克隆�
 
 - `pvm rm` 有二次确认：交互输入 y 才删；**非交互/脚本环境必须加 `-y`（或 `--force`）**，否则命令会拒绝执行。
 - clone 默认继承挂载、CPU/内存、用户、时区、SMBIOS 等配置；出口路由不继承；端口映射默认不继承，可交互选择是否继承及改配端口（`--inherit-ports` / `--no-inherit-ports`）。
-- clone 首启会自动重建 hostname、machine-id、SSH host key，避免两台 VM 身份混同（**仅 Ubuntu/Debian 克隆**；Alpine 克隆的身份重建脚本依赖 systemd 会静默失败，Alpine 请直接新建 VM）。
+- clone 首启会自动重建 hostname、machine-id、SSH host key，避免两台 VM 身份混同。
 - 注意：clone 的清洗不含 Claude 的 deviceId（`~/.claude.json` 的 userID）——clone 一台用过 Claude 的 VM，两台在服务端仍是同一台设备。要全新设备身份就新建 VM。
 
 ### 7. 快照与排障

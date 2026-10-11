@@ -1,23 +1,11 @@
 package vm
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"fmt"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
-
-// randomPassword returns an unknown single-use password used only to keep a
-// guest account unlocked (ssh password auth stays disabled everywhere).
-func randomPassword(n int) string {
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		panic(err)
-	}
-	return base64.RawURLEncoding.EncodeToString(b)[:n]
-}
 
 // GuestMount is one host->guest 9p mount beyond the default /share.
 type GuestMount struct {
@@ -30,7 +18,6 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 	if err := ValidateSpec(spec, mounts); err != nil {
 		return nil, err
 	}
-	alpine := IsAlpine(spec)
 	locale := spec.Locale
 	if locale == "" {
 		locale = "en_US.UTF-8"
@@ -58,20 +45,6 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 			fmt.Sprintf("mountpoint -q %s || mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,access=any %s %s", m.Guest, m.Tag, m.Guest),
 		)
 	}
-	if alpine {
-		if tz != "" {
-			runcmd = append(runcmd, fmt.Sprintf("ln -sf /usr/share/zoneinfo/%s /etc/localtime && echo %s > /etc/timezone", tz, tz))
-		}
-		runcmd = append(runcmd,
-			fmt.Sprintf("mkdir -p /etc/profile.d && printf 'export LANG=%s\\n' > /etc/profile.d/pvm-locale.sh", locale),
-			// The nocloud image ships an sshd runlevel entry that boots
-			// leave in stopped state; re-registering it makes OpenRC
-			// actually start sshd on every boot.
-			"rc-update del sshd default 2>/dev/null || true",
-			"rc-update add sshd default",
-			"rc-service sshd start || true",
-		)
-	}
 
 	doc := map[string]any{
 		"hostname":   spec.Name,
@@ -88,11 +61,7 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 	if tz != "" {
 		doc["timezone"] = tz
 	}
-	if alpine {
-		// Alpine uses apk + OpenRC. Keep the image lean: no docker/desktop.
-		doc["package_update"] = true
-		doc["packages"] = []string{"openssh", "sudo", "shadow", "bash", "ca-certificates", "tzdata"}
-	} else if spec.Golden > 0 {
+	if spec.Golden > 0 {
 		// Golden images are already provisioned (docker, qga, dev tools):
 		// skip the first-boot apt storm and just attach the user to docker.
 		// Do not --now qemu-guest-agent: its unit waits on the qga virtio
@@ -106,10 +75,7 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 		doc["packages"] = []string{"qemu-guest-agent"}
 	}
 	groups := []string{"sudo"}
-	if alpine {
-		groups = []string{"wheel"}
-	}
-	if spec.Golden > 0 && !alpine {
+	if spec.Golden > 0 {
 		groups = append(groups, "docker")
 	}
 	user := map[string]any{
@@ -120,20 +86,6 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 		"lock_passwd":         true,
 		"uid":                 spec.GuestUID,
 		"ssh_authorized_keys": []string{strings.TrimSpace(sshPub)},
-	}
-	if alpine {
-		// sshd denies login while the login shell does not exist yet, and
-		// bash only appears after apk finishes (which can take minutes on
-		// first boot). Use busybox sh so ssh works as soon as sshd is up.
-		user["shell"] = "/bin/sh"
-		// A random, unknown password keeps the account unlocked (alpine
-		// sshd hard-denies locked shadow entries even for pubkey logins)
-		// without enabling ssh password auth (ssh_pwauth stays false).
-		delete(user, "lock_passwd")
-		doc["chpasswd"] = map[string]any{
-			"list":   spec.User + ":" + randomPassword(24),
-			"expire": false,
-		}
 	}
 	doc["users"] = []map[string]any{user}
 	writeFiles := []map[string]any{{

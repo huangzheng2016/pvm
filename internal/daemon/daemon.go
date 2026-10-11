@@ -344,6 +344,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if _, err := image.Resolve(req.Image); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
 	base := filepath.Join(s.P.Images, fmt.Sprintf("%s-%s.qcow2", imageFileStem(req.Image), native.Arch))
 	goldenVer := 0
 	if distro, version, ok := strings.Cut(req.Image, ":"); ok {
@@ -429,7 +433,7 @@ func (s *Server) startVM(spec *vm.Spec) (*qemu.Instance, *qemu.SnapshotManifest,
 		}
 		// The DHCP mapping must be in place before the guest's first
 		// DHCP request: the async deploy races the boot and fast-give-up
-		// clients (alpine udhcpc) never get an offer.
+		// DHCP clients never get an offer.
 		if err := s.pushGatewayConfigRetry(cl.ID); err != nil {
 			return nil, nil, err
 		}

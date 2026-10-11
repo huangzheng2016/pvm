@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
@@ -61,12 +60,6 @@ type Spec struct {
 }
 
 var nameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
-
-// IsAlpine reports whether the spec uses the Alpine image. OpenRC and
-// Alpine userland need different initialization from systemd distros.
-func IsAlpine(spec *Spec) bool {
-	return strings.HasPrefix(spec.Image, "alpine:")
-}
 
 // ValidateName checks a VM name.
 func ValidateName(name string) error {

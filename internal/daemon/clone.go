@@ -224,15 +224,12 @@ func (s *Server) identityReset(spec *vm.Spec) error {
 // from the user's point of view (install Claude after cloning if both
 // machines should read as distinct devices).
 func identityResetScript(spec *vm.Spec) string {
-	if vm.IsAlpine(spec) {
-		return alpineIdentityResetScript(spec.Name)
-	}
 	return ubuntuIdentityResetScript(spec.Name)
 }
 
 // useSudo expands to `sudo` only when the caller is not root: the agent
-// channel already runs as root (and alpine's sudoers refuses root), while
-// the ssh fallback is an unprivileged user that needs it.
+// channel already runs as root, while the ssh fallback is an unprivileged
+// user that needs it.
 const useSudo = `SUDO=''; [ "$(id -u)" -ne 0 ] && SUDO='sudo'`
 
 func ubuntuIdentityResetScript(newHostname string) string {
@@ -246,20 +243,5 @@ func ubuntuIdentityResetScript(newHostname string) string {
 			"$SUDO sh -c 'rm -f /etc/machine-id /var/lib/dbus/machine-id && systemd-machine-id-setup'\n"+
 			"$SUDO rm -f /etc/ssh/ssh_host_* && $SUDO ssh-keygen -A\n"+
 			"($SUDO systemctl restart ssh.socket ssh.service 2>/dev/null || true)\n",
-		newHostname)
-}
-
-// Alpine (OpenRC) equivalent: /etc/hostname + hostname -F instead of
-// hostnamectl, a fresh random machine-id instead of systemd-machine-id-setup,
-// and rc-service instead of systemctl. Alpine's /etc/network/interfaces is
-// written by interface name (eth0), not by source MAC, so no rewrite is
-// needed for networking.
-func alpineIdentityResetScript(newHostname string) string {
-	return "set -e\n" + useSudo + "\n" + fmt.Sprintf(
-		"echo %[1]s | $SUDO tee /etc/hostname >/dev/null\n"+
-			"$SUDO hostname -F /etc/hostname\n"+
-			"$SUDO sh -c 'rm -f /etc/machine-id /var/lib/dbus/machine-id; uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid' | tr -d '-' | $SUDO tee /etc/machine-id >/dev/null\n"+
-			"$SUDO rm -f /etc/ssh/ssh_host_* && $SUDO ssh-keygen -A\n"+
-			"($SUDO rc-service sshd restart 2>/dev/null || true)\n",
 		newHostname)
 }

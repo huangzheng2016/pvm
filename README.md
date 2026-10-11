@@ -4,7 +4,7 @@
 
 ## 特性
 
-- **秒级开发机**：golden 镜像预装开发工具链与桌面组件，Ubuntu / Debian / Alpine 多版本，`pvm create` 后约 30s 可用
+- **秒级开发机**：golden 镜像预装开发工具链与桌面组件，Ubuntu / Debian 多版本，`pvm create` 后约 30s 可用
 - **出口节点（exit-node）**：整机流量经 WireGuard 隧道从你的 VPS 出海；UDP / TCP 双传输，`pvm exit add` 自动测速选最快；kill-switch fail-closed，隧道断 = VM 断网
 - **fake-ip DNS 分流**：代理域名只在 VPS 远端解析，本机与本地网络零可见；内网域名走宿主 DNS，域名/CIDR 规则热生效
 - **网页桌面**：VM 原生 XFCE + noVNC，浏览器打开即是 VM 本体（非容器），免密回环访问

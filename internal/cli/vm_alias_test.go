@@ -6,15 +6,15 @@ func TestResolveImageSpec(t *testing.T) {
 	cases := []struct {
 		name, image, distro, version, want string
 	}{
-		{"image only", "alpine:3.20", "", "", "alpine:3.20"},
-		{"distro only", "", "alpine", "", "alpine"},
-		{"distro and version", "", "alpine", "3.20", "alpine:3.20"},
-		{"image with no version plus version", "alpine", "", "3.20", "alpine:3.20"},
-		{"same version", "alpine:3.20", "", "3.20", "alpine:3.20"},
-		{"same distro keeps version", "alpine:3.20", "alpine", "", "alpine:3.20"},
-		{"version only errors", "", "", "3.20", ""},
-		{"conflicting version", "alpine:3.21", "", "3.20", ""},
-		{"conflicting distro", "ubuntu:24.04", "alpine", "", ""},
+		{"image only", "debian:13", "", "", "debian:13"},
+		{"distro only", "", "debian", "", "debian"},
+		{"distro and version", "", "debian", "13", "debian:13"},
+		{"image with no version plus version", "debian", "", "13", "debian:13"},
+		{"same version", "debian:13", "", "13", "debian:13"},
+		{"same distro keeps version", "debian:13", "debian", "", "debian:13"},
+		{"version only errors", "", "", "13", ""},
+		{"conflicting version", "debian:13", "", "12", ""},
+		{"conflicting distro", "ubuntu:24.04", "debian", "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
