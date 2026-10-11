@@ -1,6 +1,7 @@
 package qemu
 
 import (
+	"runtime"
 	"bufio"
 	"fmt"
 	"net"
@@ -12,6 +13,9 @@ import (
 )
 
 func TestBrokenLiveRestoreUnknownVersion(t *testing.T) {
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		t.Skip("HVF live-restore regression only exists on darwin/arm64")
+	}
 	tc := &Toolchain{Version: [3]int{0, 0, 0}}
 	if !tc.BrokenLiveRestore(AccelHVF) {
 		t.Fatal("unparseable version must be treated as unknown and refused (fail closed)")

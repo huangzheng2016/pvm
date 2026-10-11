@@ -1,6 +1,7 @@
 package image
 
 import (
+	"runtime"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
@@ -223,9 +224,10 @@ func TestFetchSkipsAlreadyCompletePart(t *testing.T) {
 }
 
 func TestResolveAlpine(t *testing.T) {
+	qa := map[string]string{"arm64": "aarch64", "amd64": "amd64"}[runtime.GOARCH]
 	for _, tc := range []struct{ version, file string }{
-		{"3.20", "nocloud_alpine-3.20.9-aarch64-uefi-cloudinit-r0.qcow2"},
-		{"3.21", "alpine-3.21.8-aarch64-uefi-cloudinit-r0.qcow2"},
+		{"3.20", "nocloud_alpine-3.20.9-" + qa + "-uefi-cloudinit-r0.qcow2"},
+		{"3.21", "alpine-3.21.8-" + qa + "-uefi-cloudinit-r0.qcow2"},
 	} {
 		ref, err := Resolve("alpine:" + tc.version)
 		if err != nil {

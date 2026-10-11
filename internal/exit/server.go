@@ -102,7 +102,12 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if cfg.Token == "" {
 		return nil, errors.New("--token is required")
 	}
-	nat, err := resolveNAT(cfg.NAT)
+	natChoice := cfg.NAT
+	if cfg.TunFactory != nil {
+		// in-process tests use memory tuns + netstack
+		natChoice = NATUserspace
+	}
+	nat, err := resolveNAT(natChoice)
 	if err != nil {
 		return nil, err
 	}
