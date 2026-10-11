@@ -1,6 +1,7 @@
 package qemu
 
 import (
+	"runtime"
 	"bytes"
 	"crypto/rand"
 	"errors"
@@ -135,6 +136,9 @@ func TestRemoveSnapshot(t *testing.T) {
 }
 
 func TestBrokenLiveRestore(t *testing.T) {
+	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
+		t.Skip("HVF live-restore regression only exists on darwin/arm64")
+	}
 	tc := &Toolchain{Version: [3]int{11, 0, 0}}
 	if !tc.BrokenLiveRestore(AccelHVF) {
 		t.Fatal("qemu 11.0.0 + arm64 + hvf must be flagged broken")
