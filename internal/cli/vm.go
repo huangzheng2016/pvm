@@ -51,15 +51,18 @@ func CmdImage(args []string) int {
 	}
 	switch args[0] {
 	case "fetch":
-		if len(args) < 2 {
-			return fatalf("usage: pvm image fetch <distro:version>")
+		fs := newFlagSet("image fetch", "<distro:version> [--force]")
+		force := fs.Bool("force", false, "re-download even if a verified copy is cached")
+		if err := fs.Parse(partitionFlags(args[1:])); err != nil || fs.NArg() != 1 {
+			fs.Usage()
+			return 2
 		}
-		ref, err := image.Resolve(args[1])
+		ref, err := image.Resolve(fs.Arg(0))
 		if err != nil {
 			return fatalf("%v", err)
 		}
 		fmt.Printf("fetching %s\n  %s\n", ref.FileName(), ref.URL)
-		path, err := image.Fetch(ref, p.Images, os.Stderr)
+		path, err := image.Fetch(ref, p.Images, os.Stderr, *force)
 		if err != nil {
 			return fatalf("%v", err)
 		}
