@@ -2,6 +2,17 @@
 
 与用户同语言回复。本文件只放热路径规则：项目地图、硬约束、工作流。代码是唯一事实来源，注释与文档以代码为准。
 
+## 研发规范
+
+- 代码优先，解释在后且仅在非显而易见时；注释只在逻辑不清时写，不写样板。
+- 最简单可用方案，不过度设计；一次性操作不抽象；三行相似优于过早抽象；不为不会发生的情景写错误处理。
+- 不主动添加推测性功能，不说"你可能还想..."。
+- 改文件前先读文件，不盲改。
+- Review：说清 bug、给出修复、停；不 compliment 代码，不提范围外建议。
+- Debug：未读相关代码前不猜 bug；说清发现、位置、修复，一遍过；原因不明就说不明。
+- 纯文本只用普通连字符与直引号，不用装饰性符号；代码输出必须可直接复制粘贴。
+- `master` 是主分支，构建、打 tag、发 release 都从 `master` 出。
+
 ## Project Map
 
 单个 Go 二进制按子命令承担多角色：host CLI / daemon（本机控制面）、agent（guest 内）、exit-agent（VPS 上）；`cmd/gateway` 是独立的 guest 网关二进制。数据根目录 `~/.pvm/`。
@@ -34,7 +45,7 @@
 
 - `./script/build.sh`：全流程原生构建——linux/$HOSTARCH guest 二进制（gateway+agent）→ assetpack → 带 `embedassets` 的 host `pvm`；macOS 上默认追加 bundled qemu（`PVM_PACK_QEMU=0` 跳过）。产物 `./pvm` 约 19MB。
 - 提交前 `go test ./...` 与 `go vet ./...` 必须全绿；改并发/状态路径时对相关包加 `-race` 复跑。
-- 只构建宿主原生架构，不做交叉构建发布。
+- 只构建宿主原生架构（darwin/arm64、linux/amd64 作为 host），不做跨架构 host 支持；release 产物含 linux amd64+arm64 二进制，用于 VPS exit-agent 部署。
 
 ## Hard Constraints
 
