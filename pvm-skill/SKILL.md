@@ -13,10 +13,10 @@ pvm 仅支持宿主原生架构：darwin/arm64 只运行 arm64 VM，linux/amd64 
 
 ## 使用前提
 
-- 仓库内使用 `cd ~/pvm && ./pvm ...`；若 pvm 已加入 PATH，直接用 `pvm ...`。
+- 若 pvm 已加入 PATH，直接用 `pvm ...`；仓库内使用则在仓库根目录 `./pvm ...`。
 - 先跑 `pvm daemon status` 确认 daemon 正常；`pvm list` 查看现有 VM。
 - 首次使用先 `pvm image list` 确认基础镜像已下载，缺失则 `pvm image fetch <distro:version>`；base 镜像不存在时 create 会直接报错提示 fetch。
-- 本机已注册出口 `us`（WG over UDP）和 `us-tcp`（WG over TCP），指向 203.0.113.10。用 `pvm exit ls` 确认，不要重复 add 同名出口。
+- 本机已注册出口 `us`（WG over UDP）和 `us-tcp`（WG over TCP），见 `pvm exit ls`。不要重复 add 同名出口。
 - VPS 上的 `pvm-exit-agent.service` 必须保持运行。不要停它，除非你明确要测试 kill-switch 或进行升级。
 
 ## 常用选择
@@ -157,19 +157,19 @@ pvm daemon stop && pvm daemon start
 
 ### 给定 SSH 部署 exit（标准流程）
 
-预构建的 linux/amd64 pvm 二进制在 `~/.pvm/runtime/dist/pvm-linux-amd64`（`script/build.sh` 每次构建时刷新，仓库 `dist/` 下也有一份）。用它部署一台新 VPS：
+pvm 的 release 单文件二进制直接从 GitHub Releases 下载（tag 发布产出 `pvm_linux_amd64.tar.gz` / `pvm_linux_arm64.tar.gz`，附 SHA256SUMS）。部署一台新 VPS：
 
 ```bash
 VPS=root@<vps>                                     # 目标机，ssh 需免密可登
 TOKEN=$(openssl rand -hex 24)                      # 生成控制面 token
 
-# 1. 探测系统是 Linux 且架构为 x86_64（其他架构需在本地按 GOARCH 另行编译）
+# 1. 探测系统是 Linux 并确认架构（x86_64 → amd64，aarch64 → arm64）
 ssh $VPS 'uname -s; uname -m'
 
-# 2. 上传预构建二进制（保留旧版备份便于回滚）
+# 2. VPS 上直接下载 release 二进制并安装（保留旧版备份便于回滚）
+#    amd64 用 pvm_linux_amd64.tar.gz；arm64 改用 pvm_linux_arm64.tar.gz，其余相同
 ssh $VPS '[ -f /usr/local/bin/pvm ] && cp /usr/local/bin/pvm /usr/local/bin/pvm.prev || true'
-scp ~/.pvm/runtime/dist/pvm-linux-amd64 $VPS:/usr/local/bin/pvm.new
-ssh $VPS 'chmod +x /usr/local/bin/pvm.new && mv /usr/local/bin/pvm.new /usr/local/bin/pvm'
+ssh $VPS 'curl -fsSL https://github.com/huangzheng2016/pvm/releases/latest/download/pvm_linux_amd64.tar.gz | tar xz -C /tmp && install /tmp/pvm /usr/local/bin/pvm'
 
 # 3. 写入并启动 systemd 服务（已存在则复用原 unit，勿覆盖 token）
 ssh $VPS 'cat > /etc/systemd/system/pvm-exit-agent.service <<EOF
@@ -201,8 +201,8 @@ pvm exit test <name> --speed --samples 5
 
 要点：
 - 部署失败需要回滚：`ssh $VPS 'mv /usr/local/bin/pvm.prev /usr/local/bin/pvm && systemctl restart pvm-exit-agent'`。
-- 生产 us/us-tcp（203.0.113.10）已在跑，不要重复部署同名出口；升级二进制用同一流程（unit 复用、token/指纹不变）。
-- VPS 不是 x86_64 时，在 pvm 仓库本地编译：`CGO_ENABLED=0 GOOS=linux GOARCH=<arm64 等> go build -trimpath -ldflags "-s -w" -o /tmp/pvm-linux-<arch> ./cmd/pvm`，其余步骤相同。
+- 生产 us/us-tcp 已在运行，不要重复部署同名出口；升级二进制用同一流程（unit 复用、token/指纹不变）。
+- amd64 与 arm64 均从 GitHub Releases 下载对应 tar.gz，无需本地编译；需要校验时下载同 release 的 `SHA256SUMS` 用 `sha256sum -c` 核对。
 - 控制面 HTTPS + Bearer token + TOFU 指纹 pin；数据面 WireGuard，UDP 优先、TCP 后备。
 - 测速不经公网第三方：exit-agent 在每张隧道 NIC 的 `.1:18081` 暴露 `/speed?bytes=N`（上限 64MB）与 `/ping`，仅隧道内可达。
 - exit-agent 支持 `nft` / `iptables` / `userspace` NAT 后端；userspace 不需要 root，但不转发 ICMP ping。
