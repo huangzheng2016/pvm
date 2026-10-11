@@ -111,7 +111,7 @@ func TestExecConcurrent(t *testing.T) {
 			defer wg.Done()
 			var out bytes.Buffer
 			want := fmt.Sprintf("worker-%d", i)
-			res, err := c.Exec([]string{"sh", "-c", "sleep 0.$(($RANDOM % 3)); echo " + want}, nil, &out, nil, 30)
+			res, err := c.Exec([]string{"sh", "-c", "sleep 0.1; echo " + want}, nil, &out, nil, 30)
 			if err != nil {
 				errs <- fmt.Errorf("w%d: %w", i, err)
 				return
