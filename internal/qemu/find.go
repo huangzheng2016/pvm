@@ -22,7 +22,8 @@ type Toolchain struct {
 }
 
 // probeVersion runs `qemu-system --version` and parses "QEMU emulator
-// version X.Y.Z".
+// version X.Y.Z". A binary that cannot even start (e.g. missing dylibs on
+// a brew-less machine) yields {0,0,0} and is treated as unusable.
 func probeVersion(system string) [3]int {
 	out, err := exec.Command(system, "--version").Output()
 	if err != nil {
@@ -58,7 +59,7 @@ func Find(runtimeDir string) (*Toolchain, error) {
 	binName := "qemu-system-" + arch
 
 	bundledBin := filepath.Join(runtimeDir, "qemu", arch, "bin")
-	if t, err := lookup(filepath.Join(bundledBin, binName), filepath.Join(bundledBin, "qemu-img")); err == nil {
+	if t, err := lookup(filepath.Join(bundledBin, binName), filepath.Join(bundledBin, "qemu-img")); err == nil && t.Version != [3]int{0, 0, 0} {
 		t.Bundled = true
 		return t, nil
 	}

@@ -39,6 +39,29 @@ for f in "${FW_KEEP[@]}"; do
   cp -R "$SRC/share/qemu/$f" "$DEST/share/qemu/" 2>/dev/null || echo "warn: $f missing in bottle" >&2
 done
 
+# Self-contain the runtime: copy the homebrew dylib dependency closure into
+# lib/ and rewrite references to bundle-relative paths (brew-less machines
+# have no /opt/homebrew, which silently killed the previous bundle at dyld).
+mkdir -p "$DEST/lib"
+queue=("$DEST"/bin/*)
+while [ ${#queue[@]} -gt 0 ]; do
+  cur="${queue[0]}"; queue=("${queue[@]:1}")
+  for dep in $(otool -L "$cur" 2>/dev/null | awk '{print $1}' | grep '^/opt/homebrew/.*\.dylib$' || true); do
+    name=$(basename "$dep")
+    [ -f "$DEST/lib/$name" ] || { cp "$dep" "$DEST/lib/$name"; chmod u+w "$DEST/lib/$name"; queue+=("$DEST/lib/$name"); }
+  done
+done
+for f in "$DEST"/bin/* "$DEST"/lib/*.dylib; do
+  [ -f "$f" ] || continue
+  for dep in $(otool -L "$f" 2>/dev/null | awk '{print $1}' | grep '^/opt/homebrew/.*\.dylib$' || true); do
+    install_name_tool -change "$dep" "@executable_path/../lib/$(basename "$dep")" "$f"
+  done
+  case "$f" in
+    *.dylib) install_name_tool -id "@executable_path/../lib/$(basename "$f")" "$f" ;;
+  esac
+  codesign -s - --force "$f" 2>/dev/null || true
+done
+
 (
   cd "$DEST"
   shasum -a 256 bin/* > SHA256SUMS
