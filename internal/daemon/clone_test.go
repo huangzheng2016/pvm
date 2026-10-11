@@ -31,41 +31,14 @@ func TestIdentityResetScript(t *testing.T) {
 	}
 }
 
-func TestAlpineIdentityResetScript(t *testing.T) {
-	s := identityResetScript(&vm.Spec{Name: "dev3", Image: "alpine:3.21"})
-	for _, want := range []string{
-		"tee /etc/hostname",
-		"hostname -F /etc/hostname",
-		"rm -f /etc/machine-id /var/lib/dbus/machine-id",
-		"random/uuid",
-		"rm -f /etc/ssh/ssh_host_*",
-		"ssh-keygen -A",
-		"rc-service sshd restart",
-	} {
-		if !strings.Contains(s, want) {
-			t.Errorf("alpine script missing %q\nscript: %s", want, s)
-		}
-	}
-	for _, banned := range []string{"netplan", "hostnamectl", "systemd", "systemctl"} {
-		if strings.Contains(s, banned) {
-			t.Errorf("alpine script must not use %s\nscript: %s", banned, s)
-		}
-	}
-}
-
 func TestIdentityResetScriptSudoConditional(t *testing.T) {
-	// The agent channel runs as root and alpine's sudoers refuses root;
-	// both scripts must elevate only when not already root.
-	for _, spec := range []*vm.Spec{
-		{Name: "a", Image: "ubuntu:24.04"},
-		{Name: "b", Image: "alpine:3.21"},
-	} {
-		s := identityResetScript(spec)
-		if !strings.Contains(s, `[ "$(id -u)" -ne 0 ] && SUDO='sudo'`) {
-			t.Errorf("%s: script must gate sudo on id -u\nscript: %s", spec.Image, s)
-		}
-		if strings.Contains(s, " sudo ") || strings.HasPrefix(s, "sudo ") {
-			t.Errorf("%s: bare sudo would fail as root on alpine\nscript: %s", spec.Image, s)
-		}
+	// The agent channel runs as root; the script must elevate only when
+	// not already root.
+	s := identityResetScript(&vm.Spec{Name: "a", Image: "ubuntu:24.04"})
+	if !strings.Contains(s, `[ "$(id -u)" -ne 0 ] && SUDO='sudo'`) {
+		t.Errorf("script must gate sudo on id -u\nscript: %s", s)
+	}
+	if strings.Contains(s, " sudo ") || strings.HasPrefix(s, "sudo ") {
+		t.Errorf("bare sudo would fail as root\nscript: %s", s)
 	}
 }

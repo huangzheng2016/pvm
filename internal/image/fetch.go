@@ -45,24 +45,8 @@ func Resolve(spec string) (*Ref, error) {
 		file := fmt.Sprintf("debian-%s-generic-%s.qcow2", version, qarch)
 		return &Ref{Distro: distro, Version: version, Arch: native.Arch,
 			URL: base + "/" + file, SumsURL: base + "/SHA512SUMS", SumFile: file, SumKind: "sha512"}, nil
-	case "alpine":
-		if qarch == "arm64" {
-			qarch = "aarch64" // Alpine names its arm64 images aarch64.
-		}
-		var file string
-		switch version {
-		case "3.20":
-			file = fmt.Sprintf("nocloud_alpine-3.20.9-%s-uefi-cloudinit-r0.qcow2", qarch)
-		case "3.21":
-			file = fmt.Sprintf("alpine-3.21.8-%s-uefi-cloudinit-r0.qcow2", qarch)
-		default:
-			return nil, fmt.Errorf("unsupported alpine version %q (supported: 3.20, 3.21)", version)
-		}
-		base := "https://dl-cdn.alpinelinux.org/alpine/v" + version + "/releases/cloud"
-		return &Ref{Distro: distro, Version: version, Arch: native.Arch,
-			URL: base + "/" + file, SumsURL: base + "/" + file + ".sha512", SumFile: file, SumKind: "sha512"}, nil
 	}
-	return nil, fmt.Errorf("unknown distro %q (supported: ubuntu, debian, alpine)", distro)
+	return nil, fmt.Errorf("unknown distro %q (supported: ubuntu, debian)", distro)
 }
 
 func debianCodename(v string) string {
@@ -203,11 +187,6 @@ func verifyChecksum(r *Ref, file string) error {
 	var want string
 	for line := range strings.Lines(string(sums)) {
 		fields := strings.Fields(line)
-		if len(fields) == 1 {
-			// Alpine publishes a bare hash with no filename column.
-			want = fields[0]
-			break
-		}
 		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == r.SumFile {
 			want = fields[0]
 			break

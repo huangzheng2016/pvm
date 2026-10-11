@@ -85,10 +85,6 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, fmt.Errorf("vm %s is not a cluster vm", name))
 		return
 	}
-	if vm.IsAlpine(spec) {
-		writeErr(w, 400, fmt.Errorf("desktop is not supported on alpine (no golden image); use ubuntu/debian"))
-		return
-	}
 	size := r.URL.Query().Get("size")
 	if size == "" {
 		size = "1920x1080"

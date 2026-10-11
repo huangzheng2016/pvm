@@ -112,9 +112,6 @@ func CmdImage(args []string) int {
 }
 
 func cmdImageBuild(p *paths.Paths, spec string, keep bool, cpus, mem, disk int) int {
-	if strings.HasPrefix(spec, "alpine:") {
-		return fatalf("image build for alpine is not supported; use the official nocloud image directly")
-	}
 	tc, err := qemu.Find(p.Runtime)
 	if err != nil {
 		return fatalf("%v", err)
@@ -165,9 +162,9 @@ func resolveImageSpec(image, distro, version string) (string, error) {
 }
 
 func CmdCreate(args []string) int {
-	fs := newFlagSet("create", "--image alpine:3.20 | --distro alpine --version 3.20 --name dev1 [--user U] [--cpus 2] [--mem 4096] [--disk 20] [--mount /host:/guest]... [--no-start]")
-	imageSpec := fs.String("image", "", "image spec, e.g. ubuntu:24.04 or alpine:3.20")
-	distro := fs.String("distro", "", "distro alias for --image (e.g. alpine)")
+	fs := newFlagSet("create", "--image ubuntu:24.04 | --distro ubuntu --version 24.04 --name dev1 [--user U] [--cpus 2] [--mem 4096] [--disk 20] [--mount /host:/guest]... [--no-start]")
+	imageSpec := fs.String("image", "", "image spec, e.g. ubuntu:24.04 or debian:13")
+	distro := fs.String("distro", "", "distro alias for --image (e.g. debian)")
 	version := fs.String("version", "", "version alias for --image (e.g. 3.20)")
 	name := fs.String("name", "", "vm name")
 	user := fs.String("user", "", "guest username (interactive prompt if empty)")
