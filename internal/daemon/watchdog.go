@@ -18,6 +18,7 @@ type stallInput struct {
 	ConsoleProgress bool
 	CPUPercent      float64
 	Attempts        int
+	StallTicks      int
 }
 
 type stallAction int
@@ -28,11 +29,17 @@ const (
 	stallWarn
 )
 
-// decideStall only restarts a VM that is both spinning at full CPU and
-// making no serial-console progress. A slow-but-progressing TCG boot is
-// left alone, and a second identical stall is only reported.
+// decideStall only restarts a VM that spins at full CPU with no serial
+// console progress for two consecutive checks. A slow-but-progressing
+// TCG boot is left alone, and a second identical stall is only reported.
+// Two ticks are required because the progress baseline only becomes
+// meaningful one interval after the deadline, and a single quiet phase
+// (firmware handoff, initramfs) is normal even for healthy boots.
 func decideStall(in stallInput) stallAction {
 	if in.SSHReady || in.ConsoleProgress || in.CPUPercent < 95 {
+		return stallContinue
+	}
+	if in.StallTicks < 2 {
 		return stallContinue
 	}
 	if in.Attempts < 1 {
@@ -73,8 +80,9 @@ func (s *Server) watchVMLoop(spec *vm.Spec, seq uint64) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
-	var lastConsoleSize int64 = -1
+	var lastConsoleSize = consoleSize(s.P.VMDir(spec.Name) + "/console.log")
 	attempts := 0
+	stallTicks := 0
 	for range ticker.C {
 		if s.currentWatchSeq(spec.Name) != seq {
 			return
@@ -84,22 +92,30 @@ func (s *Server) watchVMLoop(spec *vm.Spec, seq uint64) {
 		if err != nil || st == nil {
 			return
 		}
+		size := consoleSize(s.P.VMDir(spec.Name) + "/console.log")
+		progress := lastConsoleSize >= 0 && size > lastConsoleSize
+		lastConsoleSize = size
 		if time.Now().Before(deadline) {
 			continue
 		}
 		if _, err := s.sshRun(spec, "true"); err == nil {
 			return
 		}
-
-		size := consoleSize(s.P.VMDir(spec.Name) + "/console.log")
-		progress := lastConsoleSize >= 0 && size > lastConsoleSize
-		lastConsoleSize = size
+		if progress {
+			stallTicks = 0
+			continue
+		}
 		cpu, err := qemuCPUPercent(st.PID)
 		if err != nil {
 			continue
 		}
+		if cpu < 95 {
+			stallTicks = 0
+		} else {
+			stallTicks++
+		}
 		action := decideStall(stallInput{
-			SSHReady: false, ConsoleProgress: progress, CPUPercent: cpu, Attempts: attempts,
+			SSHReady: false, ConsoleProgress: false, CPUPercent: cpu, Attempts: attempts, StallTicks: stallTicks,
 		})
 		switch action {
 		case stallRestart:
@@ -109,8 +125,9 @@ func (s *Server) watchVMLoop(spec *vm.Spec, seq uint64) {
 				return
 			}
 			attempts++
+			stallTicks = 0
 			deadline = time.Now().Add(threshold)
-			lastConsoleSize = -1
+			lastConsoleSize = consoleSize(s.P.VMDir(spec.Name) + "/console.log")
 		case stallWarn:
 			log.Printf("vm %s: boot still stalled after one restart (cpu %.0f%%); giving up", spec.Name, cpu)
 			return

@@ -8,11 +8,13 @@ func TestDecideStall(t *testing.T) {
 		in   stallInput
 		want stallAction
 	}{
-		{name: "high cpu no progress restarts once", in: stallInput{CPUPercent: 99.7}, want: stallRestart},
-		{name: "ssh ready is healthy", in: stallInput{SSHReady: true, CPUPercent: 99.7}, want: stallContinue},
-		{name: "console progressing is not stalled", in: stallInput{ConsoleProgress: true, CPUPercent: 99.7}, want: stallContinue},
-		{name: "low cpu is not stalled", in: stallInput{CPUPercent: 20}, want: stallContinue},
-		{name: "second stall only warns", in: stallInput{CPUPercent: 99.7, Attempts: 1}, want: stallWarn},
+		{name: "high cpu no progress restarts once", in: stallInput{CPUPercent: 99.7, StallTicks: 2}, want: stallRestart},
+		{name: "first quiet tick is not yet a stall", in: stallInput{CPUPercent: 99.7, StallTicks: 1}, want: stallContinue},
+		{name: "ssh ready is healthy", in: stallInput{SSHReady: true, CPUPercent: 99.7, StallTicks: 2}, want: stallContinue},
+		{name: "console progressing is not stalled", in: stallInput{ConsoleProgress: true, CPUPercent: 99.7, StallTicks: 2}, want: stallContinue},
+		{name: "low cpu is not stalled", in: stallInput{CPUPercent: 20, StallTicks: 2}, want: stallContinue},
+		{name: "second stall only warns", in: stallInput{CPUPercent: 99.7, Attempts: 1, StallTicks: 2}, want: stallWarn},
+		{name: "second stall also needs two ticks", in: stallInput{CPUPercent: 99.7, Attempts: 1, StallTicks: 1}, want: stallContinue},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
