@@ -40,8 +40,16 @@ set -euxo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 # wait for the base image's own cloud-init/apt to settle
-cloud-init status --wait >/dev/null 2>&1 || true
-while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
+if command -v cloud-init >/dev/null; then cloud-init status --wait >/dev/null; fi
+for i in $(seq 1 300); do
+  fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
+  sleep 2
+done
+if fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
+  echo "dpkg lock still held after 10min:" >&2
+  fuser -v /var/lib/dpkg/lock-frontend >&2 || true
+  exit 1
+fi
 
 ` + func() string {
 		var b strings.Builder
@@ -49,6 +57,9 @@ while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
 		return b.String()
 	}() + `
 apt-get update
+# fail fast when the desktop stack does not exist on this distro release
+# (e.g. debian forky has no tigervnc) instead of dying after the upgrade
+apt-cache show tigervnc-standalone-server novnc websockify >/dev/null 2>&1 || { echo "desktop packages (tigervnc/novnc/websockify) unavailable on this release" >&2; exit 1; }
 apt-get -y upgrade
 # lightdm/xserver-xorg come in via Recommends (xfce4-session -> light-locker
 # -> lightdm -> xserver-xorg) but VMs have no GPU: lightdm fails to start a
@@ -79,7 +90,7 @@ docker builder prune -af >/dev/null 2>&1 || true
 docker image prune -f >/dev/null 2>&1 || true
 journalctl --vacuum-time=1s || true
 rm -rf /var/log/*.gz /var/log/*.[0-9] || true
-cloud-init clean --logs --seed || true
+if command -v cloud-init >/dev/null; then cloud-init clean --logs --seed; fi
 rm -rf /var/lib/cloud/instances/* || true
 # per-clone uniqueness: host keys, machine-id, fstab share entry
 rm -f /etc/ssh/ssh_host_*
@@ -95,7 +106,8 @@ sync
 		var b strings.Builder
 		proxy.writeCleanup(&b)
 		return b.String()
-	}() + `userdel -rf ` + buildUser + ` || true
+	}() + `userdel -rf ` + buildUser + `
+getent passwd ` + buildUser + ` >/dev/null && { echo "build user ` + buildUser + ` still exists; refusing to seal the golden image" >&2; exit 1; } || true
 sync
 `)
 	return b.String(), nil

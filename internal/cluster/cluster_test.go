@@ -72,8 +72,9 @@ func TestMapPool(t *testing.T) {
 	if _, err := s.AddMap(1, "dev1", "100.99.1.10", 8080, 90, "tcp"); err == nil {
 		t.Error("duplicate host port accepted")
 	}
-	if err := s.RemoveMap(1, 8080, "tcp"); err != nil {
-		t.Fatal(err)
+	removed, err := s.RemoveMap(1, 8080, "tcp")
+	if err != nil || !removed {
+		t.Fatalf("RemoveMap = %v, %v", removed, err)
 	}
 	m3, _ := s.AddMap(1, "dev1", "100.99.1.10", 8082, 82, "tcp")
 	if m3.PoolPort != c1.PoolBase {

@@ -82,13 +82,16 @@ func (s *Server) installAgent(spec *vm.Spec, bin string) error {
 
 func (s *Server) waitSSH(spec *vm.Spec, d time.Duration) error {
 	deadline := time.Now().Add(d)
+	var lastErr error
 	for time.Now().Before(deadline) {
 		if _, err := s.sshRun(spec, "true"); err == nil {
 			return nil
+		} else {
+			lastErr = err
 		}
 		time.Sleep(3 * time.Second)
 	}
-	return fmt.Errorf("ssh not reachable within %v", d)
+	return fmt.Errorf("ssh not reachable within %v (last error: %v)", d, lastErr)
 }
 
 // waitGuestProvisioned waits until sudo exists and cloud-init has
@@ -104,7 +107,7 @@ func (s *Server) waitGuestProvisioned(spec *vm.Spec, d time.Duration) error {
 	if !time.Now().Before(deadline) {
 		return fmt.Errorf("sudo not available within %v", d)
 	}
-	if _, err := s.sshRun(spec, "sudo cloud-init status --wait >/dev/null 2>&1 || true"); err != nil {
+	if _, err := s.sshRun(spec, "if command -v cloud-init >/dev/null; then sudo cloud-init status --wait >/dev/null; fi"); err != nil {
 		return fmt.Errorf("wait cloud-init: %w", err)
 	}
 	return nil

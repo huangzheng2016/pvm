@@ -79,6 +79,11 @@ func Ensure(p *paths.Paths) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Rotate an oversized log away first: a single ever-growing daemon.log
+	// buries this generation's startup errors under history.
+	if fi, err := os.Stat(p.DaemonLog()); err == nil && fi.Size() > 1<<20 {
+		os.Rename(p.DaemonLog(), p.DaemonLog()+".1")
+	}
 	logf, err := os.OpenFile(p.DaemonLog(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err

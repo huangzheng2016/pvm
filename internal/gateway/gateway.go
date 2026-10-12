@@ -118,13 +118,22 @@ func (a *Agent) Run() error {
 			a.cfg = &c
 			a.mu.Unlock()
 
-			if err := a.applyNetwork(&c); err != nil {
-				log.Printf("apply network: %v", err)
+			// Only a fully applied generation is marked: any failed step
+			// keeps lastCfg stale so the next tick retries instead of
+			// running a partially applied config forever.
+			applyErr := false
+			fail := func(step string, err error) {
+				if err != nil {
+					log.Printf("%s: %v", step, err)
+					applyErr = true
+				}
 			}
+			fail("apply network", a.applyNetwork(&c))
 			if dhcpSrv == nil {
 				dhcpSrv = NewDHCPServer(a.macIPMap(), a.br)
 				if err := dhcpSrv.Start(); err != nil {
-					log.Printf("dhcp: %v", err)
+					fail("dhcp", err)
+					dhcpSrv = nil
 				}
 			} else {
 				dhcpSrv.UpdateMap(a.macIPMap())
@@ -136,23 +145,21 @@ func (a *Agent) Run() error {
 					}
 				})
 				if err != nil {
-					log.Printf("fake dns init: %v", err)
+					fail("fake dns init", err)
 				} else if err := f.Start(c.GwIP); err != nil {
-					log.Printf("fake dns listen: %v", err)
+					fail("fake dns listen", err)
 					f.Close()
 				} else {
 					fdns = f
 					fdns.RunDumpLoop("/run/pvm/fakeip.json", 3*time.Second)
 					fproxy = newFakeProxy(nil, c.DNSUpstream, a.vmNameByIP)
 					if err := fproxy.Start(fakeProxyPort); err != nil {
-						log.Printf("fake proxy listen: %v", err)
+						fail("fake proxy listen", err)
 					}
 				}
 			}
 			if fdns != nil {
-				if err := fdns.SetRules(c.Rules); err != nil {
-					log.Printf("rules: %v", err)
-				}
+				fail("rules", fdns.SetRules(c.Rules))
 				// a rule that flipped direct -> proxy must not keep its
 				// previously learned bypass IPs.
 				a.exits.ReconcileLearned(fdns.Rules())
@@ -185,7 +192,9 @@ func (a *Agent) Run() error {
 				}
 			}
 			a.exits.Sync(c.Exits, c.VMExits, vmIPs, proxiedCIDRs, directCIDRs, c.CIDR, c.DefaultExit)
-			lastCfg = raw
+			if !applyErr {
+				lastCfg = raw
+			}
 		}
 		a.reconcileLinks()
 		a.exits.SweepLearned(time.Now())

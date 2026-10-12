@@ -73,7 +73,7 @@ func (s *Server) handleMapAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort); err != nil {
-		s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
+		_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
 		writeErr(w, 500, err)
 		return
 	}
@@ -91,11 +91,24 @@ func (s *Server) handleMapRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proto := r.PathValue("proto")
-	for _, cl := range s.Clusters.List() {
-		s.Clusters.RemoveMap(cl.ID, port, proto)
-		s.pushGatewayConfig(cl.ID)
-	}
 	s.relays.Remove(proto, port)
+	removed := false
+	for _, cl := range s.Clusters.List() {
+		ok, err := s.Clusters.RemoveMap(cl.ID, port, proto)
+		if err != nil {
+			writeErr(w, 500, fmt.Errorf("map remove: %w", err))
+			return
+		}
+		removed = removed || ok
+		if err := s.pushGatewayConfig(cl.ID); err != nil {
+			writeErr(w, 500, fmt.Errorf("map removed but gateway push failed: %w", err))
+			return
+		}
+	}
+	if !removed {
+		writeErr(w, 404, fmt.Errorf("no %s map on port %d", proto, port))
+		return
+	}
 	writeJSON(w, 200, map[string]any{"removed": port})
 }
 

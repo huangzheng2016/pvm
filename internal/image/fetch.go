@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/native"
@@ -41,23 +42,30 @@ func Resolve(spec string) (*Ref, error) {
 		return &Ref{Distro: distro, Version: version, Arch: native.Arch,
 			URL: base + "/" + file, SumsURL: base + "/SHA256SUMS", SumFile: file, SumKind: "sha256"}, nil
 	case "debian":
-		base := fmt.Sprintf("https://cloud.debian.org/images/cloud/%s/latest", debianCodename(version))
-		file := fmt.Sprintf("debian-%s-generic-%s.qcow2", version, qarch)
+		dir, file, err := debianImagePaths(version, qarch)
+		if err != nil {
+			return nil, err
+		}
+		base := "https://cloud.debian.org/images/cloud/" + dir
 		return &Ref{Distro: distro, Version: version, Arch: native.Arch,
 			URL: base + "/" + file, SumsURL: base + "/SHA512SUMS", SumFile: file, SumKind: "sha512"}, nil
 	}
 	return nil, fmt.Errorf("unknown distro %q (supported: ubuntu, debian)", distro)
 }
 
-func debianCodename(v string) string {
+// debianImagePaths returns the cloud-image directory and file name for a
+// supported release. 14 (forky) is pre-release: it only has daily builds
+// under a different directory layout and a -daily filename suffix.
+func debianImagePaths(v, qarch string) (dir, file string, err error) {
 	switch v {
 	case "12":
-		return "bookworm"
+		return "bookworm/latest", "debian-12-generic-" + qarch + ".qcow2", nil
 	case "13":
-		return "trixie"
-	default:
-		return "trixie"
+		return "trixie/latest", "debian-13-generic-" + qarch + ".qcow2", nil
+	case "14":
+		return "forky/daily/latest", "debian-14-generic-" + qarch + "-daily.qcow2", nil
 	}
+	return "", "", fmt.Errorf("unsupported debian version %q (supported: 12, 13, 14)", v)
 }
 
 // FileName is the canonical local file name for a fetched image.
@@ -65,7 +73,73 @@ func (r *Ref) FileName() string {
 	return fmt.Sprintf("%s-%s-%s.qcow2", r.Distro, r.Version, r.Arch)
 }
 
-var httpClient = &http.Client{Timeout: 0} // no global timeout; resume handles stalls manually
+var httpClient = &http.Client{
+	// No overall timeout: multi-GB downloads must not be cut mid-flight.
+	// Stalls are bounded separately (response header + per-read idle).
+	Timeout:   0,
+	Transport: defaultTransportWithHeaderTimeout(),
+}
+
+func defaultTransportWithHeaderTimeout() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.ResponseHeaderTimeout = 30 * time.Second
+	return t
+}
+
+// stallReadCloser errors the read loop when the server goes silent for d;
+// Fetch keeps the .part file, so the next invocation resumes where it
+// stopped instead of hanging forever.
+type stallReadCloser struct {
+	rc       io.ReadCloser
+	d        time.Duration
+	progress chan struct{}
+	done     chan struct{}
+	once     sync.Once
+}
+
+func withStallTimeout(rc io.ReadCloser, d time.Duration) io.ReadCloser {
+	s := &stallReadCloser{rc: rc, d: d, progress: make(chan struct{}, 1), done: make(chan struct{})}
+	go s.watch()
+	return s
+}
+
+func (s *stallReadCloser) Read(p []byte) (int, error) {
+	n, err := s.rc.Read(p)
+	if n > 0 {
+		select {
+		case s.progress <- struct{}{}:
+		default:
+		}
+	}
+	return n, err
+}
+
+func (s *stallReadCloser) Close() error {
+	s.once.Do(func() { close(s.done) })
+	return s.rc.Close()
+}
+
+func (s *stallReadCloser) watch() {
+	t := time.NewTimer(s.d)
+	defer t.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-s.progress:
+			if !t.Stop() {
+				select {
+				case <-t.C:
+				default:
+				}
+			}
+			t.Reset(s.d)
+		case <-t.C:
+			s.rc.Close() // unblocks Read with an error
+			return
+		}
+	}
+}
 
 // Fetch downloads the image into dir with resume, progress and checksum
 // verification. Returns the final path. A verified cached file is reused
@@ -137,8 +211,10 @@ func Fetch(r *Ref, dir string, progress io.Writer, force ...bool) (string, error
 	total := resp.ContentLength + have
 	buf := make([]byte, 1<<20)
 	last := time.Now()
+	body := withStallTimeout(resp.Body, 60*time.Second)
+	defer body.Close()
 	for {
-		n, err := resp.Body.Read(buf)
+		n, err := body.Read(buf)
 		if n > 0 {
 			if _, werr := f.Write(buf[:n]); werr != nil {
 				f.Close()
@@ -155,7 +231,7 @@ func Fetch(r *Ref, dir string, progress io.Writer, force ...bool) (string, error
 		}
 		if err != nil {
 			f.Close()
-			return "", err
+			return "", fmt.Errorf("download interrupted at %d/%d MB (%v); partial file kept, rerun to resume", have>>20, total>>20, err)
 		}
 	}
 	if err := f.Close(); err != nil {

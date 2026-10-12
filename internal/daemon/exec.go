@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/agent"
@@ -85,9 +84,11 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		if stdinRaw != nil {
 			stdin = bytes.NewReader(stdinRaw)
 		}
+		sawFrame := false
 		done := make(chan error, 1)
 		go func() {
 			_, err := ac.ExecStream(req.Cmd, stdin, req.TimeoutS, func(f *agent.Frame) {
+				sawFrame = true
 				enc.Encode(f)
 				flush()
 			})
@@ -103,8 +104,10 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		if execErr == nil {
 			return
 		}
-		if !errors.Is(execErr, agent.ErrUnreachable) &&
-			!strings.Contains(execErr.Error(), "hard deadline") {
+		// Only a failure before any frame came back is retried: once the
+		// guest may have started executing, a replay would run the command
+		// twice. Hard deadlines always fall into that no-retry class.
+		if !errors.Is(execErr, agent.ErrUnreachable) || sawFrame {
 			break
 		}
 		s.dropAgent(name, ac)

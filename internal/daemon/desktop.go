@@ -151,7 +151,7 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.relays.Ensure("tcp", m.HostPort, m.PoolPort); err != nil {
-			s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, "tcp")
+			_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, "tcp")
 			writeErr(w, 500, err)
 			return
 		}
@@ -187,7 +187,7 @@ func (s *Server) handleDesktopStop(w http.ResponseWriter, r *http.Request) {
 		for _, m := range cl.Maps {
 			if m.VM == spec.Name && m.GuestPort == desktopWebPort {
 				s.relays.Remove(m.Proto, m.HostPort)
-				s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
+				_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
 			}
 		}
 		_ = s.pushGatewayConfig(spec.ClusterID)

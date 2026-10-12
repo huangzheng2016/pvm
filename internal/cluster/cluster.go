@@ -304,19 +304,22 @@ func (s *Store) AddMap(id int, vmName, vmIP string, hostPort, guestPort int, pro
 	return &out, s.save()
 }
 
-func (s *Store) RemoveMap(id int, hostPort int, proto string) error {
+func (s *Store) RemoveMap(id int, hostPort int, proto string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c := s.data.Clusters[id]
 	if c == nil {
-		return nil
+		return false, nil
 	}
+	removed := false
 	var maps []*PortMap
 	for _, m := range c.Maps {
-		if !(m.HostPort == hostPort && m.Proto == proto) {
-			maps = append(maps, m)
+		if m.HostPort == hostPort && m.Proto == proto {
+			removed = true
+			continue
 		}
+		maps = append(maps, m)
 	}
 	c.Maps = maps
-	return s.save()
+	return removed, s.save()
 }

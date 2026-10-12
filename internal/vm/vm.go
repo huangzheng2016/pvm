@@ -179,6 +179,15 @@ func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec, sshPub string) error
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	// Any failure after this point must not leave a half-created vm dir:
+	// ListAll only sees vm.json, so a stale dir would be invisible to
+	// list/rm yet block a same-name retry.
+	created := false
+	defer func() {
+		if !created {
+			os.RemoveAll(dir)
+		}
+	}()
 
 	overlay := spec.Disk(p)
 	out, err := exec.Command(tc.Img, "create", "-f", "qcow2", "-b", spec.BaseDisk, "-F", "qcow2", overlay).CombinedOutput()
@@ -219,7 +228,11 @@ func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec, sshPub string) error
 	}
 
 	spec.CreatedAt = time.Now()
-	return spec.Save(p)
+	if err := spec.Save(p); err != nil {
+		return err
+	}
+	created = true
+	return nil
 }
 
 // Delete removes the VM directory. Caller must stop the VM first.

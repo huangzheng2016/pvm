@@ -143,11 +143,12 @@ func TestRenderProvisionWithoutProxyHasNoProxyArtifacts(t *testing.T) {
 }
 
 func TestFetchUsesDefaultTransport(t *testing.T) {
-	if httpClient.Transport != nil {
-		t.Fatal("custom transport configured; fetch should use the Go default proxy behavior")
+	tr, ok := httpClient.Transport.(*http.Transport)
+	if !ok || tr.Proxy == nil {
+		t.Fatal("fetch transport must keep the Go default proxy behavior")
 	}
-	if http.DefaultTransport.(*http.Transport).Proxy == nil {
-		t.Fatal("default transport no longer uses ProxyFromEnvironment")
+	if tr.ResponseHeaderTimeout == 0 {
+		t.Fatal("stall protection missing: response header timeout must be set")
 	}
 }
 

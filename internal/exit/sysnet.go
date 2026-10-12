@@ -71,16 +71,11 @@ func NFTInstall(tunNames []string, cidrs []string) error {
 
 // NFTRemove deletes our table only.
 func NFTRemove(tunNames []string) error {
-	_, err := exec.Command("nft", "delete", "table", "inet", nftTableFor(tunNames)).CombinedOutput()
-	if err != nil && !strings.Contains(string(errOutput(err)), "No such file") {
-		return fmt.Errorf("nft delete table: %w", err)
-	}
-	return nil
-}
-
-func errOutput(err error) []byte {
-	if ee, ok := err.(*exec.ExitError); ok {
-		return ee.Stderr
+	out, err := exec.Command("nft", "delete", "table", "inet", nftTableFor(tunNames)).CombinedOutput()
+	// ExitError.Stderr is only populated by Cmd.Output, never by
+	// CombinedOutput: read the captured bytes for the idempotency check.
+	if err != nil && !strings.Contains(string(out), "No such file") {
+		return fmt.Errorf("nft delete table: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

@@ -26,16 +26,17 @@ import (
 //  2. the old snap base is only replaced after the new one is fully
 //     converted (temp file + rename), never deleted beforehand.
 type SnapshotManifest struct {
-	Name       string    `json:"name"`
-	Arch       string    `json:"arch"`
-	CPUs       int       `json:"cpus"`
-	MemMB      int       `json:"mem_mb"`
-	Accel      Accel     `json:"accel"`
-	GPU        bool      `json:"gpu"`
-	Balloon    bool      `json:"balloon"`
-	PVMVersion string    `json:"pvm_version"`
-	CreatedAt  time.Time `json:"created_at"`
-	Consumed   bool      `json:"consumed"`
+	Name        string    `json:"name"`
+	Arch        string    `json:"arch"`
+	CPUs        int       `json:"cpus"`
+	MemMB       int       `json:"mem_mb"`
+	Accel       Accel     `json:"accel"`
+	GPU         bool      `json:"gpu"`
+	Balloon     bool      `json:"balloon"`
+	QEMUVersion string    `json:"qemu_version"`
+	PVMVersion  string    `json:"pvm_version"`
+	CreatedAt   time.Time `json:"created_at"`
+	Consumed    bool      `json:"consumed"`
 }
 
 var ErrNoSnapshot = errors.New("no snapshot")
@@ -82,8 +83,10 @@ func (m *SnapshotManifest) save(vmDir string) error {
 }
 
 // checkMatch verifies a manifest against the VM config it would restore
-// into; a heterogeneous restore is refused outright.
-func (m *SnapshotManifest) checkMatch(c *VMConfig) error {
+// into; a heterogeneous restore is refused outright. Migration streams
+// are only guaranteed within one qemu runtime, so the toolchain version
+// must match too.
+func (m *SnapshotManifest) checkMatch(c *VMConfig, qemuVersion string) error {
 	if m.Arch != native.Arch || m.CPUs != c.CPUs || m.MemMB != c.MemMB {
 		return fmt.Errorf("snapshot mismatch: snap %s/%dc/%dMB vs vm %s/%dc/%dMB; delete the snapshot or recreate the vm identically",
 			m.Arch, m.CPUs, m.MemMB, native.Arch, c.CPUs, c.MemMB)
@@ -103,6 +106,9 @@ func (m *SnapshotManifest) checkMatch(c *VMConfig) error {
 	}
 	if m.Balloon != c.Balloon {
 		return fmt.Errorf("snapshot balloon layout (%v) differs from the vm (%v); heterogeneous restore refused, delete the snapshot", m.Balloon, c.Balloon)
+	}
+	if m.QEMUVersion != qemuVersion {
+		return fmt.Errorf("snapshot was written by qemu %s, current runtime is %s; migration across qemu versions is not guaranteed, delete the snapshot", m.QEMUVersion, qemuVersion)
 	}
 	return nil
 }
@@ -213,15 +219,16 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 	}
 
 	m := &SnapshotManifest{
-		Name:       in.Cfg.Name,
-		Arch:       native.Arch,
-		CPUs:       in.Cfg.CPUs,
-		MemMB:      in.Cfg.MemMB,
-		Accel:      st.Accel,
-		GPU:        in.Cfg.GPU,
-		Balloon:    in.Cfg.Balloon,
-		PVMVersion: pvmVersion,
-		CreatedAt:  time.Now(),
+		Name:        in.Cfg.Name,
+		Arch:        native.Arch,
+		CPUs:        in.Cfg.CPUs,
+		MemMB:       in.Cfg.MemMB,
+		Accel:       st.Accel,
+		GPU:         in.Cfg.GPU,
+		Balloon:     in.Cfg.Balloon,
+		QEMUVersion: in.Toolchain.versionString(),
+		PVMVersion:  pvmVersion,
+		CreatedAt:   time.Now(),
 	}
 	if err := m.save(vmDir); err != nil {
 		return err
@@ -256,6 +263,13 @@ func waitMigrate(q *QMP, memMB int) error {
 	return fmt.Errorf("migration timed out after %ds", timeout)
 }
 
+func (t *Toolchain) versionString() string {
+	if t == nil || t.Version == [3]int{} {
+		return "unknown"
+	}
+	return fmt.Sprintf("%d.%d.%d", t.Version[0], t.Version[1], t.Version[2])
+}
+
 // PrepareRestore rewires the instance to boot from the snapshot: fresh
 // overlay on the snap base and -incoming on the RAM stream. Returns nil
 // (no restore needed) when there is no unconsumed snapshot.
@@ -267,11 +281,11 @@ func (in *Instance) PrepareRestore(vmDir string) (*SnapshotManifest, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := m.checkMatch(&in.Cfg); err != nil {
+	if err := m.checkMatch(&in.Cfg, in.Toolchain.versionString()); err != nil {
 		return nil, err
 	}
 	if in.Toolchain != nil && in.Toolchain.BrokenLiveRestore(in.Cfg.Accel) {
-		return nil, fmt.Errorf("qemu 11.0.0 has an hvf/arm64 live-restore regression; upgrade QEMU to >= 11.1.1 (brew upgrade qemu) or use the bundled runtime")
+		return nil, fmt.Errorf("qemu 11.0.0 has an hvf/arm64 live-restore regression; upgrade QEMU to >= 11.1.0 (brew upgrade qemu) or use the bundled runtime")
 	}
 	sp := SnapPaths(vmDir)
 	if _, err := os.Stat(sp.RAM); err != nil {

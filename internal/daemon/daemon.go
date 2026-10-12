@@ -6,6 +6,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -147,7 +148,12 @@ func (s *Server) getSpec(name string) (*vm.Spec, error) {
 	}
 	spec, err := vm.Load(s.P, name)
 	if err != nil {
-		return nil, fmt.Errorf("vm %q not found", name)
+		// Only a genuinely missing spec is a 404; a corrupted or unreadable
+		// one must surface its own cause instead of pretending the vm is gone.
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("vm %q not found", name)
+		}
+		return nil, err
 	}
 	s.mu.Lock()
 	s.vms[name] = spec
@@ -650,8 +656,11 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	lock := qemu.LockVM(name)
 	lock.Lock()
 	defer lock.Unlock()
+	// Deleting while the process failed to stop leaves an orphaned qemu
+	// with no state behind; refuse instead.
 	if err := s.instance(spec).Stop(); err != nil {
-		log.Printf("stop %s before delete: %v", name, err)
+		writeErr(w, 500, fmt.Errorf("cannot stop %s safely (%v); not deleting", name, err))
+		return
 	}
 	var cl *cluster.Cluster
 	if spec.Role != "gateway" && spec.ClusterID > 0 {

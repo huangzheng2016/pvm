@@ -127,7 +127,11 @@ func CmdUpgrade(args []string) int {
 	if err := os.Chmod(bin, 0o755); err != nil {
 		return fatalf("%v", err)
 	}
-	if err := fsutil.AtomicWrite(exe, readFileBin(bin), 0o755); err != nil {
+	data, err := os.ReadFile(bin)
+	if err != nil || len(data) == 0 {
+		return fatalf("read extracted binary: %v (refusing to replace %s)", err, exe)
+	}
+	if err := fsutil.AtomicWrite(exe, data, 0o755); err != nil {
 		return fatalf("replace %s: %v", exe, err)
 	}
 	fmt.Printf("upgraded to %s; restart the daemon to use it: pvm daemon restart\n", tag)
@@ -177,14 +181,6 @@ func verifyArchiveSum(arc, sumsFile, name string) error {
 		return fmt.Errorf("sha256 mismatch for %s", name)
 	}
 	return nil
-}
-
-func readFileBin(p string) []byte {
-	data, err := os.ReadFile(p)
-	if err != nil {
-		return nil
-	}
-	return data
 }
 
 func untarSingle(arcPath, wantName, dst string) error {

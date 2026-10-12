@@ -337,10 +337,13 @@ func (m *exitManager) BypassList() []string {
 }
 
 func (m *exitManager) reconcileRulesLocked(wantVM map[string]int, wantCIDR map[string]int, wantBypass map[string]bool) {
+	// Only a successful del forgets the rule: on error the kernel may
+	// still have it, and forgetting would strand it forever.
 	for ip, idx := range m.vmRules {
 		if _, ok := wantVM[ip]; !ok {
-			ipRuleCmd("del", "from", ip+"/32", "lookup", strconv.Itoa(ruleTableBase+idx))
-			delete(m.vmRules, ip)
+			if err := ipRuleCmd("del", "from", ip+"/32", "lookup", strconv.Itoa(ruleTableBase+idx)); err == nil {
+				delete(m.vmRules, ip)
+			}
 		}
 	}
 	for ip, idx := range wantVM {
@@ -353,8 +356,9 @@ func (m *exitManager) reconcileRulesLocked(wantVM map[string]int, wantCIDR map[s
 	}
 	for cidr, idx := range m.cidrRules {
 		if _, ok := wantCIDR[cidr]; !ok {
-			ipRuleCmd("del", "to", cidr, "lookup", strconv.Itoa(ruleTableBase+idx))
-			delete(m.cidrRules, cidr)
+			if err := ipRuleCmd("del", "to", cidr, "lookup", strconv.Itoa(ruleTableBase+idx)); err == nil {
+				delete(m.cidrRules, cidr)
+			}
 		}
 	}
 	for cidr, idx := range wantCIDR {
@@ -367,8 +371,9 @@ func (m *exitManager) reconcileRulesLocked(wantVM map[string]int, wantCIDR map[s
 	}
 	for cidr := range m.bypass {
 		if !wantBypass[cidr] {
-			ipRuleCmd("del", "to", cidr, "lookup", "main")
-			delete(m.bypass, cidr)
+			if err := ipRuleCmd("del", "to", cidr, "lookup", "main"); err == nil {
+				delete(m.bypass, cidr)
+			}
 		}
 	}
 	for cidr := range wantBypass {
@@ -388,8 +393,9 @@ func (m *exitManager) reconcileRulesLocked(wantVM map[string]int, wantCIDR map[s
 func (m *exitManager) reconcileDefaultLocked(wantDirect map[string]bool, wantCluster string, defIdx int) {
 	for ip := range m.vmDirect {
 		if !wantDirect[ip] {
-			ipRuleCmd("del", "from", ip+"/32", "lookup", "main")
-			delete(m.vmDirect, ip)
+			if err := ipRuleCmd("del", "from", ip+"/32", "lookup", "main"); err == nil {
+				delete(m.vmDirect, ip)
+			}
 		}
 	}
 	for ip := range wantDirect {

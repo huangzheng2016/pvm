@@ -42,11 +42,13 @@ func IdentityOf(pid int) (*ProcIdentity, error) {
 // Alive reports whether a process matching this identity still exists.
 // Comparison is pid + exact start time + exact comm: macOS truncates
 // comm to 16 bytes so a "contains qemu" test would fail, but a recycled
-// PID can never share both start time and comm.
+// PID can never share both start time and comm. Only a definitive
+// not-found means dead; a transient probe failure must not convince the
+// caller to kill or double-start the process, so those read as alive.
 func (id *ProcIdentity) Alive() bool {
 	cur, err := IdentityOf(id.PID)
 	if err != nil {
-		return false
+		return err != errNoProc
 	}
 	return cur.Started == id.Started && cur.Comm == id.Comm
 }

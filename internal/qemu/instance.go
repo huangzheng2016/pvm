@@ -74,6 +74,12 @@ func (in *Instance) Running() (*RunState, error) {
 	return st, nil
 }
 
+// errEarlyExit marks a qemu that died during its first moments (accel or
+// argv errors); only this class is eligible for the accel fallback.
+type errEarlyExit struct{ error }
+
+func (e errEarlyExit) Unwrap() error { return e.error }
+
 // Start launches QEMU. On early hardware-accel failure it retries once
 // with TCG, mirroring the platform fallback.
 func (in *Instance) Start() error {
@@ -90,7 +96,8 @@ func (in *Instance) Start() error {
 		return nil
 	} else {
 		fb, ok := in.Cfg.Accel.Fallback()
-		if !ok {
+		var ee errEarlyExit
+		if !ok || !errors.As(err, &ee) {
 			return err
 		}
 		log.Printf("qemu: accel %s failed, falling back to %s: %s%s", in.Cfg.Accel, fb, firstLine(err.Error()), FallbackHint(err))
@@ -128,7 +135,7 @@ func (in *Instance) startWithAccel(accel Accel) error {
 	select {
 	case err := <-exited:
 		tail, _ := os.ReadFile(cfg.ConsoleLog + ".qemu")
-		return fmt.Errorf("qemu exited early: %v\n%s", err, lastLines(tail, 20))
+		return errEarlyExit{fmt.Errorf("qemu exited early: %v\n%s", err, lastLines(tail, 20))}
 	case <-time.After(800 * time.Millisecond):
 	}
 
@@ -137,14 +144,19 @@ func (in *Instance) startWithAccel(accel Accel) error {
 		cmd.Process.Kill()
 		tail, _ := os.ReadFile(cfg.ConsoleLog + ".qemu")
 		console, _ := os.ReadFile(cfg.ConsoleLog)
-		return fmt.Errorf("qemu died after launch: %v\nqemu log:\n%s\nconsole:\n%s", err, lastLines(tail, 15), lastLines(console, 15))
+		return errEarlyExit{fmt.Errorf("qemu died after launch: %v\nqemu log:\n%s\nconsole:\n%s", err, lastLines(tail, 15), lastLines(console, 15))}
 	}
 	st := RunState{PID: cmd.Process.Pid, Ident: ident, Args: append([]string{in.Toolchain.System}, args...), Accel: accel, Started: time.Now()}
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
+		cmd.Process.Kill()
 		return err
 	}
 	if err := fsutil.AtomicWrite(in.StatePath, data, 0o600); err != nil {
+		// The process is up but untracked; without the state file the next
+		// start would spawn a second qemu, so do not leave it running.
+		cmd.Process.Kill()
+		<-exited
 		return err
 	}
 	go func() {

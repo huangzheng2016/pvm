@@ -167,12 +167,21 @@ func (s *Server) createGatewayVM(cl *cluster.Cluster) (*vm.Spec, error) {
 	if err != nil {
 		return nil, err
 	}
-	base := filepath.Join(s.P.Images, fmt.Sprintf("ubuntu-24.04-%s.qcow2", native.Arch))
-	if _, err := os.Stat(base); err != nil {
-		return nil, fmt.Errorf("gateway needs the ubuntu:24.04 base image; run `pvm image fetch ubuntu:24.04`")
+	// The gateway is distro-agnostic inside; boot it off the newest cached
+	// ubuntu base image instead of pinning a version the user may not have.
+	base, imgSpec := "", ""
+	for _, v := range []string{"26.04", "24.04", "22.04"} {
+		cand := filepath.Join(s.P.Images, fmt.Sprintf("ubuntu-%s-%s.qcow2", v, native.Arch))
+		if _, err := os.Stat(cand); err == nil {
+			base, imgSpec = cand, "ubuntu:"+v
+			break
+		}
+	}
+	if base == "" {
+		return nil, fmt.Errorf("gateway needs an ubuntu base image; run `pvm image fetch ubuntu:26.04`")
 	}
 	spec := &vm.Spec{
-		Name: cl.Gateway, Image: "ubuntu:24.04", Role: "gateway",
+		Name: cl.Gateway, Image: imgSpec, Role: "gateway",
 		User: "pvmgw", GuestUID: os.Getuid(),
 		CPUs: 1, MemMB: 512, DiskGB: 10,
 		SSHPort: port, BaseDisk: base, ClusterID: cl.ID,
@@ -410,13 +419,23 @@ func (s *Server) sshBaseArgs(spec *vm.Spec) ([]string, string, error) {
 	return args, fmt.Sprintf("%s@%s", spec.User, spec.IP), nil
 }
 
+// sshRun executes cmd in the guest over the gateway jump. Only stdout is
+// returned on success: banners and remote-shell warnings land on stderr
+// and would otherwise corrupt machine-parsed output (json, version
+// strings, region profiles). Failures include stderr for diagnosis.
 func (s *Server) sshRun(spec *vm.Spec, cmd string) (string, error) {
 	args, target, err := s.sshBaseArgs(spec)
 	if err != nil {
 		return "", err
 	}
-	out, err := exec.Command("ssh", append(args, target, cmd)...).CombinedOutput()
-	return string(out), err
+	c := exec.Command("ssh", append(args, target, cmd)...)
+	var stdout, stderr strings.Builder
+	c.Stdout = &stdout
+	c.Stderr = &stderr
+	if err := c.Run(); err != nil {
+		return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
 }
 
 func (s *Server) scpTo(spec *vm.Spec, local, remote string) error {

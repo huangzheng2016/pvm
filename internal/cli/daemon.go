@@ -46,15 +46,23 @@ func CmdDaemon(args []string) int {
 		for i := 0; i < 150 && c.Healthy(); i++ {
 			time.Sleep(200 * time.Millisecond)
 		}
+		if c.Healthy() {
+			return fatalf("daemon is still running after 30s; not stopped")
+		}
 		fmt.Println("daemon stopped")
 		return 0
 	case "restart":
 		os.Remove(p.DaemonStopMark())
 		c := daemon.NewClient(p)
 		if c.Healthy() {
-			c.Post("/v1/shutdown", nil, nil)
+			if err := c.Post("/v1/shutdown", nil, nil); err != nil {
+				return fatalf("shutdown: %v", err)
+			}
 			for i := 0; i < 150 && c.Healthy(); i++ {
 				time.Sleep(200 * time.Millisecond)
+			}
+			if c.Healthy() {
+				return fatalf("old daemon is still running after 30s; refusing to start a second one")
 			}
 		}
 		if _, err := daemon.Ensure(p); err != nil {

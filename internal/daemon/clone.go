@@ -128,7 +128,7 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.relays.Ensure(pm.Proto, pm.HostPort, pm.PoolPort); err != nil {
-			s.Clusters.RemoveMap(cl.ID, pm.HostPort, pm.Proto)
+			_, _ = s.Clusters.RemoveMap(cl.ID, pm.HostPort, pm.Proto)
 			writeErr(w, 500, err)
 			return
 		}

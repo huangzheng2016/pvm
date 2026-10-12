@@ -155,7 +155,11 @@ func consoleSize(path string) int64 {
 }
 
 func qemuCPUPercent(pid int) (float64, error) {
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "%cpu=").Output()
+	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "%cpu=")
+	// %cpu follows LC_NUMERIC (decimal comma in de/fr locales), which
+	// ParseFloat rejects and the caller then skips the stall decision.
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.Output()
 	if err != nil {
 		return 0, err
 	}

@@ -47,9 +47,9 @@ func TestManifestSaveLoad(t *testing.T) {
 }
 
 func TestCheckMatch(t *testing.T) {
-	m := &SnapshotManifest{Arch: native.Arch, CPUs: 2, MemMB: 2048, Accel: AccelHVF}
+	m := &SnapshotManifest{Arch: native.Arch, CPUs: 2, MemMB: 2048, Accel: AccelHVF, QEMUVersion: "11.1.2"}
 	ok := &VMConfig{CPUs: 2, MemMB: 2048, Accel: AccelHVF}
-	if err := m.checkMatch(ok); err != nil {
+	if err := m.checkMatch(ok, "11.1.2"); err != nil {
 		t.Fatalf("identical config should match: %v", err)
 	}
 	cases := []VMConfig{
@@ -57,20 +57,20 @@ func TestCheckMatch(t *testing.T) {
 		{CPUs: 2, MemMB: 4096, Accel: AccelHVF},
 	}
 	for i := range cases {
-		if err := m.checkMatch(&cases[i]); err == nil {
+		if err := m.checkMatch(&cases[i], "11.1.2"); err == nil {
 			t.Fatalf("case %d: expected mismatch error", i)
 		}
 	}
 	m.Arch = "incompatible"
-	if err := m.checkMatch(ok); err == nil {
+	if err := m.checkMatch(ok, "11.1.2"); err == nil {
 		t.Fatal("incompatible snapshot architecture must be rejected")
 	}
 }
 
 func TestCheckMatchAccelFallback(t *testing.T) {
-	m := &SnapshotManifest{Arch: native.Arch, CPUs: 2, MemMB: 2048, Accel: AccelHVF}
+	m := &SnapshotManifest{Arch: native.Arch, CPUs: 2, MemMB: 2048, Accel: AccelHVF, QEMUVersion: "11.1.2"}
 	c := &VMConfig{CPUs: 2, MemMB: 2048, Accel: AccelTCG}
-	if err := m.checkMatch(c); err != nil {
+	if err := m.checkMatch(c, "11.1.2"); err != nil {
 		t.Fatalf("hvf snapshot must be restorable on tcg host: %v", err)
 	}
 	if c.Accel != m.Accel {
@@ -78,24 +78,28 @@ func TestCheckMatchAccelFallback(t *testing.T) {
 	}
 	m.Accel = AccelTCG
 	c.Accel = AccelHVF
-	if err := m.checkMatch(c); err == nil {
+	if err := m.checkMatch(c, "11.1.2"); err == nil {
 		t.Fatal("tcg snapshot on hvf host must remain incompatible")
 	}
 }
 
 func TestCheckMatchGPUOverride(t *testing.T) {
-	m := &SnapshotManifest{Arch: native.Arch, CPUs: 2, MemMB: 2048, Accel: AccelHVF, GPU: true}
+	m := &SnapshotManifest{Arch: native.Arch, CPUs: 2, MemMB: 2048, Accel: AccelHVF, GPU: true, QEMUVersion: "11.1.2"}
 	c := &VMConfig{CPUs: 2, MemMB: 2048, Accel: AccelHVF, GPU: true}
-	if err := m.checkMatch(c); err != nil {
+	if err := m.checkMatch(c, "11.1.2"); err != nil {
 		t.Fatal(err)
 	}
 	m.GPU = false
-	if err := m.checkMatch(c); err == nil {
+	if err := m.checkMatch(c, "11.1.2"); err == nil {
 		t.Fatal("gpu layout mismatch must refuse the heterogeneous restore")
 	}
 	m.GPU, m.Balloon = true, true
-	if err := m.checkMatch(c); err == nil {
+	if err := m.checkMatch(c, "11.1.2"); err == nil {
 		t.Fatal("balloon layout mismatch must refuse the heterogeneous restore")
+	}
+	m.Balloon = false
+	if err := m.checkMatch(c, "11.2.0"); err == nil {
+		t.Fatal("qemu version drift must refuse the restore")
 	}
 }
 
