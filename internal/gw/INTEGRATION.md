@@ -9,13 +9,13 @@ eng, _ := rules.NewEngine(paths.GatewayRulesJSON, rules.DefaultInternal()) // �
 pool, _ := dns.NewPool("198.18.0.0/16", 65534)
 dnsSrv := dns.NewServer(dns.UDPUpstream{Addr: "10.0.2.3:53"}, eng, pool) // 上行 = slirp DNS
 dnsSrv.SetStatic("gw.pvm.internal", net.ParseIP(cluster.GatewayIP))
-go dnsSrv.ListenAndServe("192.168.x.1:53") // 绑定集群网桥地址
+go dnsSrv.ListenAndServe("100.99.x.1:53") // 绑定集群网桥地址
 pol := policy.New(eng, pool)
 ```
 
 ## DHCP
 
-DHCP 应答把 DNS 和 default route 都指到 192.168.x.1（网关自己），
+DHCP 应答把 DNS 和 default route 都指到 100.99.x.1（网关自己），
 这样 VM 的全部 DNS 查询天然到达 dns.Server，无需额外劫持。
 
 ## DNS 强制接管（防硬编码 DNS 泄露）
@@ -23,8 +23,8 @@ DHCP 应答把 DNS 和 default route 都指到 192.168.x.1（网关自己），
 nftables 在网桥上拦截 VM 出方向 53/853，非到网关的统统 DNAT 回网关：
 
 ```
-nft add rule inet pvm_gw prerouting iifname "br0" ip saddr != 192.168.x.1 \
-    udp dport {53, 853} ip daddr != 192.168.x.1 dnat to 192.168.x.1
+nft add rule inet pvm_gw prerouting iifname "br0" ip saddr != 100.99.x.1 \
+    udp dport {53, 853} ip daddr != 100.99.x.1 dnat to 100.99.x.1
 # tcp 53/853 同理
 ```
 

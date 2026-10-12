@@ -117,8 +117,8 @@ func (s *Store) Ensure(id int) (*Cluster, error) {
 	}
 	c := &Cluster{
 		ID:       id,
-		CIDR:     fmt.Sprintf("192.168.%d.0/24", id),
-		GwIP:     fmt.Sprintf("192.168.%d.1", id),
+		CIDR:     fmt.Sprintf("100.99.%d.0/24", id),
+		GwIP:     fmt.Sprintf("100.99.%d.1", id),
 		Gateway:  fmt.Sprintf("%s%d", GatewayVMNamePrefix, id),
 		PoolBase: poolBase,
 		PoolSize: PoolSize,
@@ -238,7 +238,7 @@ func (s *Store) AddVM(id int, name string) (*VMNet, error) {
 	}
 	vn := &VMNet{
 		Name: name,
-		IP:   fmt.Sprintf("192.168.%d.%d", c.ID, last),
+		IP:   fmt.Sprintf("100.99.%d.%d", c.ID, last),
 		MAC:  fmt.Sprintf("52:54:00:%02x:%02x:%02x", c.ID, last>>8, last&0xff),
 	}
 	c.VMs[name] = vn

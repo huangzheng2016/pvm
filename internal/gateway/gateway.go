@@ -35,8 +35,8 @@ type MapEntry struct {
 }
 
 type Config struct {
-	CIDR        string            `json:"cidr"`         // e.g. 192.168.1.0/24
-	GwIP        string            `json:"gw_ip"`        // e.g. 192.168.1.1
+	CIDR        string            `json:"cidr"`         // e.g. 100.99.1.0/24
+	GwIP        string            `json:"gw_ip"`        // e.g. 100.99.1.1
 	DNSUpstream string            `json:"dns_upstream"` // slirp DNS, 10.0.2.3
 	VMs         []VMEntry         `json:"vms"`
 	Maps        []MapEntry        `json:"maps"`
