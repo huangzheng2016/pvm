@@ -18,7 +18,6 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/huangzheng2016/pvm/internal/buildinfo"
 	"github.com/huangzheng2016/pvm/internal/native"
 )
 
@@ -76,27 +75,6 @@ func Unpack(dir string) error {
 		}
 		if err := os.WriteFile(dst, payload, os.FileMode(e.Mode)); err != nil {
 			return err
-		}
-	}
-	return nil
-}
-
-// CleanStaleVersions removes runtime/<version> dirs that are not the
-// current build version. Layout: runtime/assets/<version>/...
-func CleanStaleVersions(root string) error {
-	base := filepath.Join(root, "assets")
-	entries, err := os.ReadDir(base)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		if e.IsDir() && e.Name() != buildinfo.Version {
-			if err := os.RemoveAll(filepath.Join(base, e.Name())); err != nil {
-				return err
-			}
 		}
 	}
 	return nil

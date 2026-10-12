@@ -102,7 +102,6 @@ func daemonRun(p *paths.Paths) int {
 	if err := assets.Unpack(p.Runtime); err != nil {
 		return fatalf("assets: %v", err)
 	}
-	assets.CleanStaleVersions(p.Runtime)
 
 	tc, err := qemu.Find(p.Runtime)
 	if err != nil {

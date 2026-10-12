@@ -165,7 +165,7 @@ func CmdCreate(args []string) int {
 	fs := newFlagSet("create", "--image ubuntu:24.04 | --distro ubuntu --version 24.04 --name dev1 [--user U] [--cpus 2] [--mem 4096] [--disk 20] [--mount /host:/guest]... [--no-start]")
 	imageSpec := fs.String("image", "", "image spec, e.g. ubuntu:24.04 or debian:13")
 	distro := fs.String("distro", "", "distro alias for --image (e.g. debian)")
-	version := fs.String("version", "", "version alias for --image (e.g. 3.20)")
+	version := fs.String("version", "", "version alias for --image (e.g. 13)")
 	name := fs.String("name", "", "vm name")
 	user := fs.String("user", "", "guest username (interactive prompt if empty)")
 	cpus := fs.Int("cpus", 0, "vcpus")
@@ -319,9 +319,6 @@ func CmdList(args []string) int {
 			ip = "-"
 		}
 		role := in.Spec.Role
-		if role == "" {
-			role = "user"
-		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			in.Spec.Name, in.Spec.Image, role, status, ip, in.Spec.User, in.Uptime)
 	}

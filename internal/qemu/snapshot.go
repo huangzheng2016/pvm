@@ -97,9 +97,9 @@ func (m *SnapshotManifest) checkMatch(c *VMConfig) error {
 		// value, so an hvf snapshot on a tcg host is a valid restore.
 		c.Accel = m.Accel
 	}
-	// The device layout must match the frozen state: restore with the GPU
-	// presence recorded in the snapshot, whatever the current spec says.
-	c.GPU = m.GPU
+	if m.GPU != c.GPU {
+		return fmt.Errorf("snapshot gpu layout (%v) differs from the vm (%v); heterogeneous restore refused, delete the snapshot", m.GPU, c.GPU)
+	}
 	return nil
 }
 

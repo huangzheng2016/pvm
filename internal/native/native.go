@@ -36,16 +36,3 @@ func GuestBinary(kind string) string {
 		panic(fmt.Sprintf("unknown guest binary kind %q", kind))
 	}
 }
-
-// Validate rejects a serialized architecture that is not the native one.
-// It is used for legacy specs, snapshots, and golden catalogs; these fields
-// remain useful as metadata, but never as an architecture selector.
-func Validate(arch string) error {
-	if arch != Arch {
-		return fmt.Errorf("incompatible architecture %q (native is %s)", arch, Arch)
-	}
-	return nil
-}
-
-// Compatible reports whether a serialized architecture is the native one.
-func Compatible(arch string) bool { return arch == Arch }

@@ -12,11 +12,6 @@ import (
 	"github.com/huangzheng2016/pvm/internal/paths"
 )
 
-func notImpl(name string) int {
-	fmt.Printf("%s: not implemented yet (M2+)\n", name)
-	return 0
-}
-
 func fatalf(format string, args ...any) int {
 	fmt.Fprintf(os.Stderr, "pvm: "+format+"\n", args...)
 	return 1

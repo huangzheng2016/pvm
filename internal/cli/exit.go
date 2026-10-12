@@ -28,7 +28,7 @@ func CmdExitAgent(args []string) int {
 	transports := fs.String("transport", "both", "udp | tcp | both")
 	nat := fs.String("nat", "auto", "nat backend: auto | nft | iptables | userspace")
 	tunPrefix := fs.String("tun-prefix", "pvmexit", "OS TUN name prefix (change when running multiple agents)")
-	subnetBase := fs.Int("subnet-base", 99, "tunnel subnet octet: 10.<base>.0/1.0/24 (change when running multiple agents)")
+	subnetBase := fs.Int("subnet-base", 99, "tunnel subnet octet: 10.<base>.0.0/24 + 10.<base>.1.0/24 (change when running multiple agents)")
 	status := fs.Bool("status", false, "print the effective nat backend and exit")
 	udpPort := fs.Int("udp-port", 18443, "wireguard UDP port")
 	tcpPort := fs.Int("tcp-port", 18444, "wireguard TCP port")
@@ -407,12 +407,6 @@ func exitTest(args []string) int {
 	}
 	defer t.Close()
 	serverIP := e.ServerIP
-	if serverIP == "" {
-		serverIP, err = exit.ServerIP(e.Transport)
-		if err != nil {
-			return fatalf("%v", err)
-		}
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := t.WaitHandshake(ctx, serverIP); err != nil {

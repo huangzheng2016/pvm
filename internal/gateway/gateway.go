@@ -43,8 +43,8 @@ type Config struct {
 	Rules       []rules.Rule      `json:"rules,omitempty"`    // routing rules (fake-ip engine)
 	VMExits     map[string]string `json:"vm_exits,omitempty"` // vm name -> exit name; ""/absent = direct
 	// DefaultExit is the cluster-wide fallback exit ("", absent = direct)
-	// used when neither a rule nor a per-VM route matches. The daemon's
-	// `pvm route` CLI exposes it as the cluster default route.
+	// used when neither a rule nor a per-VM route matches. Wired through
+	// the gateway config but not yet exposed by the daemon/CLI.
 	DefaultExit string `json:"default_exit,omitempty"`
 	// Exits carries the connection defs for every exit referenced by
 	// Rules or VMExits (keyed by exit name).

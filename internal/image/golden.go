@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
-	"github.com/huangzheng2016/pvm/internal/native"
 )
 
 // GoldenEntry describes one baked golden image. Golden images are
@@ -18,7 +17,6 @@ type GoldenEntry struct {
 	Version      int       `json:"version"`
 	Distro       string    `json:"distro"`
 	ImageVersion string    `json:"image_version"`
-	Arch         string    `json:"arch"`
 	File         string    `json:"file"` // relative to the golden dir
 	BaseDigest   string    `json:"base_digest"`
 	BuiltAt      time.Time `json:"built_at"`
@@ -69,7 +67,7 @@ func (c *goldenCatalog) save(imagesDir string) error {
 func (c *goldenCatalog) match(distro, imageVersion string) []GoldenEntry {
 	var out []GoldenEntry
 	for _, e := range c.Entries {
-		if e.Distro == distro && e.ImageVersion == imageVersion && native.Compatible(e.Arch) {
+		if e.Distro == distro && e.ImageVersion == imageVersion {
 			out = append(out, e)
 		}
 	}
@@ -78,7 +76,7 @@ func (c *goldenCatalog) match(distro, imageVersion string) []GoldenEntry {
 }
 
 // LatestGolden returns the newest golden image whose file is still
-// present, or nil when none exists. Non-native architectures are ignored.
+// present, or nil when none exists.
 func LatestGolden(imagesDir, distro, imageVersion string) *GoldenEntry {
 	cat, err := loadGoldenCatalog(imagesDir)
 	if err != nil {

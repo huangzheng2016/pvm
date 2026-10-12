@@ -1,12 +1,12 @@
 package qemu
 
 import (
-	"runtime"
 	"bytes"
 	"crypto/rand"
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -85,19 +85,13 @@ func TestCheckMatchAccelFallback(t *testing.T) {
 
 func TestCheckMatchGPUOverride(t *testing.T) {
 	m := &SnapshotManifest{Arch: native.Arch, CPUs: 2, MemMB: 2048, Accel: AccelHVF, GPU: true}
-	c := &VMConfig{CPUs: 2, MemMB: 2048, Accel: AccelHVF}
+	c := &VMConfig{CPUs: 2, MemMB: 2048, Accel: AccelHVF, GPU: true}
 	if err := m.checkMatch(c); err != nil {
 		t.Fatal(err)
-	}
-	if !c.GPU {
-		t.Fatal("restore must adopt the snapshot's gpu device layout")
 	}
 	m.GPU = false
-	if err := m.checkMatch(c); err != nil {
-		t.Fatal(err)
-	}
-	if c.GPU {
-		t.Fatal("pre-gpu snapshot must restore without the device")
+	if err := m.checkMatch(c); err == nil {
+		t.Fatal("gpu layout mismatch must refuse the heterogeneous restore")
 	}
 }
 

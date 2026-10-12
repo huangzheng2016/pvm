@@ -18,7 +18,7 @@ type NetMode string
 
 const (
 	// NetSlirp is QEMU user-mode networking with hostfwd (gateway VMs
-	// and pre-M2 standalone VMs).
+	// and standalone VMs such as image bake).
 	NetSlirp NetMode = "slirp"
 	// NetCluster attaches the only NIC to a cluster L2 segment via a
 	// point-to-point stream socket to the gateway VM.

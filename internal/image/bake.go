@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/huangzheng2016/pvm/internal/native"
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 	"github.com/huangzheng2016/pvm/internal/vm"
@@ -195,7 +194,7 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 	}
 	entry := GoldenEntry{
 		Version: version, Distro: ref.Distro, ImageVersion: ref.Version,
-		Arch: native.Arch, File: goldenFileName(ref.Distro, ref.Version, version),
+		File:       goldenFileName(ref.Distro, ref.Version, version),
 		BaseDigest: digest, BuiltAt: time.Now(),
 		Packages: append(append([]string{}, GoldenPackages...), DesktopPackages...),
 	}

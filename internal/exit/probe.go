@@ -144,9 +144,6 @@ func ProbeTransport(ctx context.Context, server, token, fingerprint, transport s
 	defer tun.Close()
 
 	serverIP := resp.ServerIP
-	if serverIP == "" {
-		serverIP, _ = ServerIP(transport)
-	}
 	hctx, hcancel := context.WithTimeout(ctx, probeHandshakeTimeout)
 	defer hcancel()
 	if err := tun.WaitHandshake(hctx, serverIP); err != nil {

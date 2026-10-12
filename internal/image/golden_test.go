@@ -36,13 +36,8 @@ func TestGoldenVersionIncrementAndLatest(t *testing.T) {
 	if g := LatestGolden(dir, "ubuntu", "24.04"); g != nil {
 		t.Fatalf("expected nil, got %+v", g)
 	}
-	mk(GoldenEntry{Version: 1, Distro: "ubuntu", ImageVersion: "24.04", Arch: native.Arch, File: goldenFileName("ubuntu", "24.04", 1)})
-	mk(GoldenEntry{Version: 2, Distro: "ubuntu", ImageVersion: "24.04", Arch: native.Arch, File: goldenFileName("ubuntu", "24.04", 2)})
-	other := "amd64"
-	if native.Arch == other {
-		other = "arm64"
-	}
-	mk(GoldenEntry{Version: 1, Distro: "ubuntu", ImageVersion: "24.04", Arch: other, File: "ubuntu-24.04-other-v1.qcow2"})
+	mk(GoldenEntry{Version: 1, Distro: "ubuntu", ImageVersion: "24.04", File: goldenFileName("ubuntu", "24.04", 1)})
+	mk(GoldenEntry{Version: 2, Distro: "ubuntu", ImageVersion: "24.04", File: goldenFileName("ubuntu", "24.04", 2)})
 
 	g := LatestGolden(dir, "ubuntu", "24.04")
 	if g == nil || g.Version != 2 {
@@ -57,17 +52,13 @@ func TestGoldenVersionIncrementAndLatest(t *testing.T) {
 	if next != 3 {
 		t.Fatalf("next version want 3, got %d", next)
 	}
-	// the other architecture is never selected.
-	if g == nil || g.Arch != native.Arch {
-		t.Fatalf("non-native golden was selected: %+v", g)
-	}
 }
 
 func TestLatestGoldenSkipsMissingFile(t *testing.T) {
 	dir := t.TempDir()
 	cat := &goldenCatalog{Entries: []GoldenEntry{
-		{Version: 2, Distro: "ubuntu", ImageVersion: "24.04", Arch: native.Arch, File: goldenFileName("ubuntu", "24.04", 2)},
-		{Version: 1, Distro: "ubuntu", ImageVersion: "24.04", Arch: native.Arch, File: goldenFileName("ubuntu", "24.04", 1)},
+		{Version: 2, Distro: "ubuntu", ImageVersion: "24.04", File: goldenFileName("ubuntu", "24.04", 2)},
+		{Version: 1, Distro: "ubuntu", ImageVersion: "24.04", File: goldenFileName("ubuntu", "24.04", 1)},
 	}}
 	if err := os.MkdirAll(GoldenDir(dir), 0o755); err != nil {
 		t.Fatal(err)

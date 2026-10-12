@@ -14,10 +14,10 @@ SRC="/opt/homebrew/Cellar/qemu/${VERSION}"
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 . "$SCRIPT_DIR/../lib/native.sh"
 pvm_native_target
-case "$PVM_HOSTARCH" in
-  arm64) QARCH=aarch64; SYSTEM=qemu-system-aarch64; FW_ARCH=(edk2-aarch64-code.fd) ;;
-  amd64) QARCH=x86_64; SYSTEM=qemu-system-x86_64; FW_ARCH=(edk2-x86_64-code.fd bios.bin bios-256k.bin kvmvapic.bin vgabios-stdvga.bin vgabios-virtio.bin) ;;
-esac
+# The bundled runtime ships only for darwin/arm64 (homebrew bottle layout,
+# dylib rewrite, codesign); linux hosts use the system qemu instead.
+[ "$PVM_HOSTOS/$PVM_HOSTARCH" = "darwin/arm64" ] || { echo "bundled runtime is darwin/arm64 only" >&2; exit 1; }
+QARCH=aarch64; SYSTEM=qemu-system-aarch64; FW_ARCH=(edk2-aarch64-code.fd)
 DEST="${2:-$HOME/.pvm/runtime/qemu/$QARCH}"
 
 [ -d "$SRC" ] || { echo "bottle not found: $SRC (brew install qemu)" >&2; exit 1; }

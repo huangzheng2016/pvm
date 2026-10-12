@@ -2,8 +2,6 @@ package vm
 
 import (
 	"testing"
-
-	"github.com/huangzheng2016/pvm/internal/native"
 )
 
 func TestCloneSpec(t *testing.T) {
@@ -48,19 +46,6 @@ func TestCloneSpec(t *testing.T) {
 	dst.Mounts[0].Host = "/changed"
 	if src.Mounts[0].Host != "/h" {
 		t.Error("CloneSpec shares the mounts slice with the source")
-	}
-}
-
-func TestNativeValidate(t *testing.T) {
-	other := "amd64"
-	if native.Arch == other {
-		other = "arm64"
-	}
-	if err := native.Validate(other); err == nil {
-		t.Fatalf("native.Validate(%q) passed on %s", other, native.Arch)
-	}
-	if err := native.Validate(native.Arch); err != nil {
-		t.Fatalf("native arch rejected: %v", err)
 	}
 }
 

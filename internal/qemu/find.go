@@ -75,7 +75,7 @@ func Find(runtimeDir string) (*Toolchain, error) {
 			return t, nil
 		}
 	}
-	return nil, fmt.Errorf("qemu-system-%s (and qemu-img) not found; install qemu or run `pvm runtime fetch` (M2)", arch)
+	return nil, fmt.Errorf("qemu-system-%s (and qemu-img) not found; install qemu (e.g. brew install qemu)", arch)
 }
 
 func lookup(system, img string) (*Toolchain, error) {

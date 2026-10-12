@@ -2,11 +2,9 @@
 # build-qemu.sh — pvm bundled QEMU recipe for the native host.
 #
 # QEMU >= 11.1.0 already carries the upstream darwin/arm64 HVF
-# live-restore fix (06fd39e426), so no source patches are needed
-# anymore; hvf-fix.patch is kept in this directory as historical
-# record of the 11.0.0 era workaround. ParavirtualizedGraphics is
-# still disabled: headless VMs don't need it and it fails to link
-# against some macOS SDKs.
+# live-restore fix (06fd39e426), so no source patches are needed.
+# ParavirtualizedGraphics is disabled: headless VMs don't need it and
+# it fails to link against some macOS SDKs.
 #
 # Usage: QEMU_VERSION=11.1.2 ./script/qemu/build-qemu.sh <output-prefix>
 set -euo pipefail

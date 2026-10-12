@@ -79,27 +79,17 @@ func (s *Spec) SpecPath(p *paths.Paths) string {
 	return filepath.Join(s.dir(p), "vm.json")
 }
 
-// Load reads a VM spec by name. A legacy or hand-written arch field is
-// accepted only when it matches the native target; a heterogeneous disk is
-// never started silently.
+// Load reads a VM spec by name.
 func Load(p *paths.Paths, name string) (*Spec, error) {
 	data, err := os.ReadFile(p.VMs + "/" + name + "/vm.json")
 	if err != nil {
 		return nil, err
 	}
-	var wire struct {
-		Spec
-		Arch string `json:"arch"`
-	}
-	if err := json.Unmarshal(data, &wire); err != nil {
+	var spec Spec
+	if err := json.Unmarshal(data, &spec); err != nil {
 		return nil, err
 	}
-	if wire.Arch != "" {
-		if err := native.Validate(wire.Arch); err != nil {
-			return nil, fmt.Errorf("vm %s: %w", name, err)
-		}
-	}
-	return &wire.Spec, nil
+	return &spec, nil
 }
 
 // ListAll returns specs for every VM directory with a vm.json.
