@@ -182,21 +182,21 @@ func (in *Instance) Stop() error {
 	if q, err := DialQMP(in.Cfg.QMPSock); err == nil {
 		q.Powerdown()
 		q.Close()
-		if waitDead(st.Ident, 90*time.Second) {
+		if waitDead(st.Ident, 30*time.Second) {
 			return nil
 		}
 	}
 	if err := killVerified(st, syscall.SIGTERM); err != nil {
 		return err
 	}
-	if waitDead(st.Ident, 30*time.Second) {
+	if waitDead(st.Ident, 10*time.Second) {
 		return nil
 	}
 	if err := killVerified(st, syscall.SIGKILL); err != nil {
 		return err
 	}
 	// discard=unmap hole punching can keep a killed process in disk io for minutes.
-	if !waitDead(st.Ident, 150*time.Second) {
+	if !waitDead(st.Ident, 30*time.Second) {
 		return fmt.Errorf("process %d still alive after SIGKILL", st.PID)
 	}
 	return nil

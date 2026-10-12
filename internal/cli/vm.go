@@ -364,10 +364,15 @@ func cmdVMSimple(args []string, action string) int {
 		return fatalf("%v", err)
 	}
 	name := args[0]
+	start := time.Now()
 	if err := c.Post(fmt.Sprintf("/v1/vms/%s/%s", name, action), nil, nil); err != nil {
 		return fatalf("%v", err)
 	}
-	fmt.Printf("%s %s\n", action, name)
+	if action == "stop" {
+		fmt.Printf("%s %s (%.0fs)\n", action, name, time.Since(start).Seconds())
+	} else {
+		fmt.Printf("%s %s\n", action, name)
+	}
 	return 0
 }
 

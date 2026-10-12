@@ -43,11 +43,14 @@ func CmdDaemon(args []string) int {
 		if err := c.Post("/v1/shutdown", nil, nil); err != nil {
 			return fatalf("%v", err)
 		}
-		for i := 0; i < 300 && c.Healthy(); i++ {
+		for i := 0; i < 900 && c.Healthy(); i++ {
+			if i > 0 && i%50 == 0 {
+				fmt.Printf("  waiting for daemon to stop (%ds; vms shutting down in parallel)\n", i/5)
+			}
 			time.Sleep(200 * time.Millisecond)
 		}
 		if c.Healthy() {
-			return fatalf("daemon is still running after 60s; not stopped")
+			return fatalf("daemon is still running after 180s; not stopped")
 		}
 		fmt.Println("daemon stopped")
 		return 0
@@ -58,11 +61,14 @@ func CmdDaemon(args []string) int {
 			if err := c.Post("/v1/shutdown", nil, nil); err != nil {
 				return fatalf("shutdown: %v", err)
 			}
-			for i := 0; i < 300 && c.Healthy(); i++ {
+			for i := 0; i < 900 && c.Healthy(); i++ {
+				if i > 0 && i%50 == 0 {
+					fmt.Printf("  waiting for old daemon to stop (%ds)\n", i/5)
+				}
 				time.Sleep(200 * time.Millisecond)
 			}
 			if c.Healthy() {
-				return fatalf("old daemon is still running after 60s; refusing to start a second one")
+				return fatalf("old daemon is still running after 180s; refusing to start a second one")
 			}
 		}
 		if _, err := daemon.Ensure(p); err != nil {

@@ -168,12 +168,15 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 		q.Close()
 	}
 	deadline := time.Now().Add(8 * time.Minute)
+	shutStart := time.Now()
+	lastBeat := 0
 	for {
 		st, err := inst.Running()
 		if err != nil {
 			return nil, err
 		}
 		if st == nil {
+			fmt.Fprintf(o.Out, "build vm exited (%.0fs)\n", time.Since(shutStart).Seconds())
 			break
 		}
 		if !time.Now().Before(deadline) {
@@ -181,6 +184,10 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 				return nil, fmt.Errorf("stop build vm: %w", err)
 			}
 			break
+		}
+		if elapsed := int(time.Since(shutStart).Seconds()); elapsed-lastBeat >= 15 {
+			fmt.Fprintf(o.Out, "  waiting for build vm to exit (%ds; guests flushing large disks can take minutes)\n", elapsed)
+			lastBeat = elapsed
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -209,10 +216,13 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 	dst := filepath.Join(GoldenDir(o.P.Images), entry.File)
 	tmp := dst + ".tmp"
 	fmt.Fprintf(o.Out, "flattening %s -> %s\n", spec.Disk(o.P), dst)
-	out, err := exec.Command(o.TC.Img, "convert", "-O", "qcow2", spec.Disk(o.P), tmp).CombinedOutput()
-	if err != nil {
+	var convErr strings.Builder
+	conv := exec.Command(o.TC.Img, "convert", "-p", "-O", "qcow2", spec.Disk(o.P), tmp)
+	conv.Stdout = io.MultiWriter(o.Out, &convErr)
+	conv.Stderr = io.MultiWriter(o.Out, &convErr)
+	if err := conv.Run(); err != nil {
 		os.Remove(tmp)
-		return nil, fmt.Errorf("qemu-img convert: %v\n%s", err, out)
+		return nil, fmt.Errorf("qemu-img convert: %v\n%s", err, tailString(convErr.String(), 2048))
 	}
 	if err := os.Rename(tmp, dst); err != nil {
 		os.Remove(tmp)
@@ -228,6 +238,7 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 
 func waitSSH(r *sshRunner, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	start := time.Now()
 	var last error
 	for time.Now().Before(deadline) {
 		cmd := exec.Command("ssh", r.args("true")...)
@@ -235,6 +246,9 @@ func waitSSH(r *sshRunner, timeout time.Duration) error {
 			return nil
 		} else {
 			last = err
+		}
+		if elapsed := int(time.Since(start).Seconds()); elapsed > 0 && elapsed%15 < 5 {
+			fmt.Fprintf(os.Stderr, "  still waiting for ssh (%ds elapsed)\n", elapsed)
 		}
 		time.Sleep(5 * time.Second)
 	}
@@ -252,4 +266,11 @@ func fileSHA256(path string) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func tailString(s string, n int) string {
+	if len(s) > n {
+		return s[len(s)-n:]
+	}
+	return s
 }
