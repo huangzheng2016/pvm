@@ -22,7 +22,7 @@ pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, l
 
 ## Common choices
 
-- **Images**: `ubuntu:24.04`, `ubuntu:22.04`, `debian:13`, `debian:12`
+- **Images**: `ubuntu:26.04`, `ubuntu:24.04`, `debian:13`, `debian:12`
 - **Exit transport**: `udp` (default, fastest) / `tcp` (fallback for restricted networks that throttle or block UDP)
 - **exit-agent NAT backend**: `auto` (probe) / `nft` / `iptables` / `userspace` (no root, no ICMP)
 - **Route targets**: `direct` (host egress) or an exit name (this machine: `us`, `us-tcp`)
