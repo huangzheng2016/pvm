@@ -38,7 +38,7 @@
 - `internal/config`: 加载 `~/.pvm/config.yaml`。
 - `internal/fsutil`: `AtomicWrite`（tmp+fsync+rename）与文件锁。
 - `internal/buildinfo`: 版本号，构建期 ldflags 注入。
-- `script/build.sh`: 原生构建入口；`script/qemu/`: bundled QEMU 运行时组装与补丁。
+- `script/build.sh`: 原生构建入口；`script/qemu/`: bundled QEMU 运行时组装与补丁（重签必须带 hv-entitlements.plist 的 hypervisor entitlement，否则 macOS 拒绝 HVF；签名身份经 `PVM_CODESIGN_IDENTITY` 注入，默认 ad-hoc）；`script/codesign/pvm-codesign.crt`: CI 使用的自签名证书公钥（私钥仅存 GitHub secrets）。
 - `SKILL.md`/`SECURITY.md`（仓库根）: 面向 agent 的使用手册与安全姿态指南，构建期经 `skilldoc.go` embed 进二进制（`pvm skill`/`pvm security`）。
 
 ## Build & Test

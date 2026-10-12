@@ -1,6 +1,7 @@
 package qemu
 
 import (
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -15,7 +16,12 @@ type ProcIdentity struct {
 }
 
 func IdentityOf(pid int) (*ProcIdentity, error) {
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=,lstart=").Output()
+	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=,lstart=")
+	// ps renders lstart in the caller's locale (LC_TIME); a CJK date has
+	// fewer whitespace fields and breaks the field-count parse, which used
+	// to kill healthy qemus as "process not found".
+	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}

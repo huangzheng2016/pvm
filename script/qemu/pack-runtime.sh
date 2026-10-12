@@ -51,6 +51,7 @@ while [ ${#queue[@]} -gt 0 ]; do
     [ -f "$DEST/lib/$name" ] || { cp "$dep" "$DEST/lib/$name"; chmod u+w "$DEST/lib/$name"; queue+=("$DEST/lib/$name"); }
   done
 done
+IDENTITY="${PVM_CODESIGN_IDENTITY:--}"
 for f in "$DEST"/bin/* "$DEST"/lib/*.dylib; do
   [ -f "$f" ] || continue
   for dep in $(otool -L "$f" 2>/dev/null | awk '{print $1}' | grep '^/opt/homebrew/.*\.dylib$' || true); do
@@ -59,7 +60,13 @@ for f in "$DEST"/bin/* "$DEST"/lib/*.dylib; do
   case "$f" in
     *.dylib) install_name_tool -id "@executable_path/../lib/$(basename "$f")" "$f" ;;
   esac
-  codesign -s - --force "$f" 2>/dev/null || true
+  # rpath rewrites invalidate the bottle's signature; re-sign or macOS
+  # denies hvf. The entitlement is mandatory for qemu-system-* and a
+  # signing failure must fail the pack (a silent one shipped once).
+  case "$f" in
+    */qemu-system-*) codesign -s "$IDENTITY" --force --entitlements "$SCRIPT_DIR/hv-entitlements.plist" "$f" ;;
+    *) codesign -s "$IDENTITY" --force "$f" ;;
+  esac
 done
 
 (

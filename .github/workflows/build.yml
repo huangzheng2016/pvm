@@ -45,15 +45,45 @@ jobs:
       - name: Install qemu (macOS, for the bundled runtime)
         if: runner.os == 'macOS'
         run: brew install qemu
+      - name: Import macOS signing certificate
+        if: runner.os == 'macOS'
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MACOS_CERTIFICATE_P12_BASE64:-}" ]; then
+            echo "no signing certificate configured; falling back to ad-hoc"
+            exit 0
+          fi
+          CERT_PATH="$RUNNER_TEMP/pvm-codesign.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/pvm-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          # the cert is self-signed: trust it for codesigning or
+          # find-identity / codesign cannot use it
+          security add-trusted-cert -r trustRoot -k "$KEYCHAIN_PATH" -p codeSign script/codesign/pvm-codesign.crt
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/[ "]//g')
+          security default-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
       - name: Build ${{ matrix.out }}
         env:
           PVM_VERSION: ${{ github.ref_name }}
           PVM_PACK_QEMU: ${{ runner.os == 'macOS' && '1' || '0' }}
+          PVM_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
         run: |
           if [ "${{ matrix.out }}" = "pvm_linux_arm64" ]; then
             CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w -X github.com/huangzheng2016/pvm/internal/buildinfo.Version=${PVM_VERSION}" -o pvm ./cmd/pvm
           else
             ./script/build.sh
+          fi
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            codesign -s "${PVM_CODESIGN_IDENTITY:--}" --force pvm
           fi
           tar -czf ${{ matrix.out }}.tar.gz pvm
           if [ "${{ runner.os }}" = "macOS" ]; then
