@@ -80,9 +80,13 @@ var httpTimeout = 20 * time.Second
 // WaitHandshake triggers traffic towards the server's tunnel IP and waits
 // until the WireGuard handshake completes (or ctx expires).
 func (t *Tunnel) WaitHandshake(ctx context.Context, serverTunnelIP string) error {
+	sip, err := netip.ParseAddr(serverTunnelIP)
+	if err != nil {
+		return fmt.Errorf("bad server tunnel ip %q: %w", serverTunnelIP, err)
+	}
 	// Any outbound packet forces a handshake; no reply is needed. Keep the
 	// conn open so queued packets are not dropped by an early Close.
-	c, err := t.Net.DialUDPAddrPort(netip.AddrPort{}, netip.AddrPortFrom(netip.MustParseAddr(serverTunnelIP), 9))
+	c, err := t.Net.DialUDPAddrPort(netip.AddrPort{}, netip.AddrPortFrom(sip, 9))
 	if err != nil {
 		return fmt.Errorf("dial trigger: %w", err)
 	}

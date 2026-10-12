@@ -61,3 +61,19 @@ func (s *Store) SetVMExit(id int, vmName, exit string) error {
 	}
 	return s.save()
 }
+
+// SetDefaultExit sets the cluster-wide fallback route; "" or "direct"
+// restores direct egress for unmatched traffic.
+func (s *Store) SetDefaultExit(id int, exit string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.data.Clusters[id]
+	if c == nil {
+		return fmt.Errorf("cluster %d does not exist", id)
+	}
+	if exit == "direct" {
+		exit = ""
+	}
+	c.DefaultExit = exit
+	return s.save()
+}

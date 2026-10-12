@@ -174,3 +174,38 @@ func TestRenderGatewayConfigValidJSON(t *testing.T) {
 		}
 	}
 }
+
+// The cluster default route is rendered into the payload and omitted
+// once cleared.
+func TestRenderGatewayConfigDefaultExit(t *testing.T) {
+	s := newPushTestServer(t)
+	if _, err := s.Clusters.Ensure(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Clusters.SetDefaultExit(1, "us"); err != nil {
+		t.Fatal(err)
+	}
+	render := func() []byte {
+		var out []byte
+		if err := s.renderGatewayConfigLocked(1, func(cfg []byte) error {
+			out = cfg
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(render(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["default_exit"] != "us" {
+		t.Fatalf("default_exit = %v", doc["default_exit"])
+	}
+	if err := s.Clusters.SetDefaultExit(1, "direct"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(render()), "default_exit") {
+		t.Fatal("cleared default exit must be omitted from the payload")
+	}
+}

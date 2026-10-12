@@ -19,8 +19,9 @@ type ruleView struct {
 }
 
 type routeListView struct {
-	Rules   []ruleView        `json:"rules"`
-	VMExits map[string]string `json:"vm_exits"`
+	Rules       []ruleView        `json:"rules"`
+	VMExits     map[string]string `json:"vm_exits"`
+	DefaultExit string            `json:"default_exit"`
 }
 
 // CmdRoute implements:
@@ -30,6 +31,7 @@ type routeListView struct {
 //	pvm route add proxy  [--domain-suffix|...] <value> --via <exit>
 //	pvm route rm <index>
 //	pvm route <vm> --via <exit|direct>
+//	pvm route default --via <exit|direct>
 func CmdRoute(args []string) int {
 	p, err := mustPaths()
 	if err != nil {
@@ -60,12 +62,14 @@ func CmdRoute(args []string) int {
 			}
 			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", i, r.Type, r.Pattern, r.Action, via)
 		}
-		if len(v.VMExits) > 0 {
-			fmt.Fprintln(tw, "---\t\t\t\t")
-			for vm, exit := range v.VMExits {
-				fmt.Fprintf(tw, "\tvm\t%s\tproxy\t%s\n", vm, exit)
-			}
+		for vm, exit := range v.VMExits {
+			fmt.Fprintf(tw, "\tvm\t%s\tproxy\t%s\n", vm, exit)
 		}
+		def := v.DefaultExit
+		if def == "" {
+			def = "direct"
+		}
+		fmt.Fprintf(tw, "\tcluster-default\t*\troute\t%s\n", def)
 		tw.Flush()
 		return 0
 	case "add":
@@ -81,6 +85,23 @@ func CmdRoute(args []string) int {
 			return fatalf("%v", err)
 		}
 		fmt.Printf("removed rule %s\n", args[1])
+		return 0
+	case "default":
+		// pvm route default --via <exit|direct>
+		fs := flag.NewFlagSet("route default", flag.ContinueOnError)
+		via := fs.String("via", "", "exit-node name, or direct")
+		if err := fs.Parse(args[1:]); err != nil {
+			return fatalf("%v", err)
+		}
+		if *via == "" {
+			return routeUsage()
+		}
+		var resp map[string]any
+		if err := c.Post("/v1/routes/default", map[string]string{"via": *via}, &resp); err != nil {
+			return fatalf("%v", err)
+		}
+		fmt.Printf("cluster default route -> %s\n", *via)
+		fmt.Println("config pushed; the gateway converges within a few seconds.")
 		return 0
 	default:
 		// pvm route <vm> --via <exit|direct>
@@ -160,6 +181,7 @@ func routeUsage() int {
   pvm route add direct|proxy [--domain-suffix|--domain-prefix|--domain-keyword|--cidr] <value> [--via <exit>]
   pvm route add internal [--domain-suffix|--domain-prefix|--domain-keyword] <value> [--dns <host[:port]>]  (no --dns = resolve via host DNS)
   pvm route rm <index>
-  pvm route <vm> --via <exit|direct>`)
+  pvm route <vm> --via <exit|direct>
+  pvm route default --via <exit|direct>  (cluster-wide fallback for unmatched traffic)`)
 	return 2
 }

@@ -98,6 +98,7 @@ type exitManager struct {
 	cidrRules    map[string]int  // proxied cidr -> exit idx
 	cluster      string          // cluster cidr with a default exit, "" = none
 	clusterTable string          // its lookup table, re-added on index drift
+	clusterLocal string          // cluster cidr pinned to main (replies, vm-to-vm)
 	bypass       map[string]bool // direct cidrs/ips -> lookup main
 	// learned holds runtime-learned bypass /32s indexed by the domain
 	// that produced them (domain -> ip -> last seen). Entries survive
@@ -218,6 +219,21 @@ func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, 
 
 	m.reconcileRulesLocked(wantVM, wantCIDR, wantBypass)
 	m.reconcileDefaultLocked(wantDirect, wantCluster, defIdx)
+
+	// Cluster-local destinations (gateway replies, vm-to-vm) must never
+	// enter a tunnel table: the from-rules above match gateway-local
+	// sources too, and tunnel tables carry only a default route.
+	if m.clusterLocal != clusterCIDR {
+		if m.clusterLocal != "" {
+			ipRuleCmd("del", "to", m.clusterLocal, "lookup", "main")
+		}
+		m.clusterLocal = ""
+		if clusterCIDR != "" {
+			if err := ipRuleCmd("add", "to", clusterCIDR, "lookup", "main", "pref", "45"); err == nil {
+				m.clusterLocal = clusterCIDR
+			}
+		}
+	}
 }
 
 // AddBypassIP records a freshly resolved direct/internal-domain IP so

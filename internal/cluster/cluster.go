@@ -54,6 +54,9 @@ type Cluster struct {
 	// a VM's default route to an exit-node name.
 	Rules   []rules.Rule     `json:"rules,omitempty"`
 	VMExits map[string]string `json:"vm_exits,omitempty"`
+	// DefaultExit is the cluster-wide fallback route used when neither a
+	// rule nor a per-VM exit matches ("" = direct).
+	DefaultExit string `json:"default_exit,omitempty"`
 }
 
 type Store struct {

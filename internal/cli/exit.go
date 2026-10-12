@@ -401,31 +401,39 @@ func exitTest(args []string) int {
 		return fatalf("exit %q not found", name)
 	}
 	fmt.Printf("dialing %s (%s %s)...\n", e.Name, e.Transport, e.Endpoint)
-	t, err := exit.DialEntry(e)
-	if err != nil {
-		return fatalf("tunnel: %v", err)
+	if e.ServerIP == "" {
+		// Enrolled before server_ip was part of the response: learn it.
+		if err := reEnrollExit(dir, e); err != nil {
+			return fatalf("re-enroll: %v", err)
+		}
 	}
-	defer t.Close()
-	serverIP := e.ServerIP
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	if err := t.WaitHandshake(ctx, serverIP); err != nil {
+	dial := func() (*exit.Tunnel, error) {
+		t, err := exit.DialEntry(e)
+		if err != nil {
+			return nil, err
+		}
+		if err := t.WaitHandshake(ctx, e.ServerIP); err != nil {
+			t.Close()
+			return nil, err
+		}
+		return t, nil
+	}
+	t, err := dial()
+	if err != nil {
 		// The server reclaims idle peers and reassigns freed tunnel IPs,
 		// so a stored entry can go stale; re-enroll once and retry.
 		fmt.Println("handshake failed; re-enrolling peer...")
-		t.Close()
 		if rerr := reEnrollExit(dir, e); rerr != nil {
 			return fatalf("handshake: %v (re-enroll: %v)", err, rerr)
 		}
-		t, err = exit.DialEntry(e)
-		if err != nil {
-			return fatalf("tunnel after re-enroll: %v", err)
-		}
-		defer t.Close()
-		if err := t.WaitHandshake(ctx, serverIP); err != nil {
+		if t, err = dial(); err != nil {
 			return fatalf("handshake after re-enroll: %v", err)
 		}
 	}
+	defer t.Close()
+	serverIP := e.ServerIP
 	fmt.Println("wireguard handshake: ok")
 	if *speed {
 		sip := netip.MustParseAddr(serverIP)

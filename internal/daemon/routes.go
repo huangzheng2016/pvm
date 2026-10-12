@@ -24,7 +24,7 @@ type routeRuleRequest struct {
 
 func (s *Server) handleRouteList(w http.ResponseWriter, r *http.Request) {
 	cl := s.Clusters.Get(cluster.DefaultClusterID)
-	out := map[string]any{"rules": []rules.Rule{}, "vm_exits": map[string]string{}}
+	out := map[string]any{"rules": []rules.Rule{}, "vm_exits": map[string]string{}, "default_exit": ""}
 	if cl != nil {
 		if cl.Rules != nil {
 			out["rules"] = cl.Rules
@@ -32,8 +32,42 @@ func (s *Server) handleRouteList(w http.ResponseWriter, r *http.Request) {
 		if cl.VMExits != nil {
 			out["vm_exits"] = cl.VMExits
 		}
+		out["default_exit"] = cl.DefaultExit
 	}
 	writeJSON(w, 200, out)
+}
+
+// handleDefaultRoute sets the cluster-wide fallback route: an exit name,
+// or "direct"/"" to clear it.
+func (s *Server) handleDefaultRoute(w http.ResponseWriter, r *http.Request) {
+	var req vmRouteRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if req.Via != "" && req.Via != "direct" {
+		if _, err := exit.LoadEntry(filepath.Join(s.P.Home, "exits"), req.Via); err != nil {
+			writeErr(w, 400, fmt.Errorf("exit %q is not registered (see `pvm exit ls`)", req.Via))
+			return
+		}
+	}
+	if _, err := s.Clusters.Ensure(cluster.DefaultClusterID); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	if err := s.Clusters.SetDefaultExit(cluster.DefaultClusterID, req.Via); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	if err := s.pushGatewayConfig(cluster.DefaultClusterID); err != nil {
+		writeErr(w, 500, fmt.Errorf("route stored but gateway push failed: %w", err))
+		return
+	}
+	via := req.Via
+	if via == "" {
+		via = "direct"
+	}
+	writeJSON(w, 200, map[string]any{"default_exit": via})
 }
 
 func (s *Server) handleRouteAdd(w http.ResponseWriter, r *http.Request) {

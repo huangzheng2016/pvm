@@ -176,6 +176,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/maps/{port}/{proto}", s.handleMapRemove)
 	mux.HandleFunc("GET /v1/routes", s.handleRouteList)
 	mux.HandleFunc("POST /v1/routes", s.handleRouteAdd)
+	mux.HandleFunc("POST /v1/routes/default", s.handleDefaultRoute)
 	mux.HandleFunc("DELETE /v1/routes/{index}", s.handleRouteRemove)
 	mux.HandleFunc("POST /v1/vms/{name}/route", s.handleVMRoute)
 	mux.HandleFunc("POST /v1/vms/{name}/desktop", s.handleDesktop)

@@ -36,10 +36,11 @@ func gatewayConfigFromCluster(s *Server, cl *cluster.Cluster) []byte {
 		Maps        []mapEntry         `json:"maps"`
 		Rules       []rules.Rule       `json:"rules,omitempty"`
 		VMExits     map[string]string  `json:"vm_exits,omitempty"`
+		DefaultExit string             `json:"default_exit,omitempty"`
 		Exits       map[string]exitDef `json:"exits,omitempty"`
 	}{
 		CIDR: cl.CIDR, GwIP: cl.GwIP, DNSUpstream: "10.0.2.3",
-		Rules: cl.Rules, VMExits: cl.VMExits,
+		Rules: cl.Rules, VMExits: cl.VMExits, DefaultExit: cl.DefaultExit,
 	}
 	for _, v := range cl.VMs {
 		doc.VMs = append(doc.VMs, vmEntry{Name: v.Name, MAC: v.MAC, IP: v.IP})
@@ -47,12 +48,16 @@ func gatewayConfigFromCluster(s *Server, cl *cluster.Cluster) []byte {
 	for _, m := range cl.Maps {
 		doc.Maps = append(doc.Maps, mapEntry{HostPort: m.PoolPort, VMIP: m.VMIP, GuestPort: m.GuestPort, Proto: m.Proto})
 	}
-	// only exits referenced by a rule or a per-VM route are pushed
+	// only exits referenced by a rule, a per-VM route, or the cluster
+	// default route are pushed
 	want := map[string]bool{}
 	for _, exitName := range cl.VMExits {
 		if exitName != "" && exitName != "direct" {
 			want[exitName] = true
 		}
+	}
+	if cl.DefaultExit != "" {
+		want[cl.DefaultExit] = true
 	}
 	for _, r := range cl.Rules {
 		if r.Action == rules.Proxy && r.Exit != "" {
