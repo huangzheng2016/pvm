@@ -93,6 +93,10 @@ func TestCheckMatchGPUOverride(t *testing.T) {
 	if err := m.checkMatch(c); err == nil {
 		t.Fatal("gpu layout mismatch must refuse the heterogeneous restore")
 	}
+	m.GPU, m.Balloon = true, true
+	if err := m.checkMatch(c); err == nil {
+		t.Fatal("balloon layout mismatch must refuse the heterogeneous restore")
+	}
 }
 
 func TestActiveDisk(t *testing.T) {

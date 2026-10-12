@@ -69,6 +69,10 @@ type VMConfig struct {
 	// GPU attaches a virtio-gpu display device (guest gets /dev/dri);
 	// headless VMs (gateway, image bake) leave it off.
 	GPU bool
+	// Balloon attaches virtio-balloon with free-page-reporting: the guest
+	// continuously returns idle pages to the host, which is what makes
+	// ram overcommit across vms safe. User VMs default it on.
+	Balloon bool
 }
 
 // BuildArgs constructs the full qemu argv (excluding the binary itself).
@@ -121,6 +125,9 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 	)
 	if c.GPU {
 		args = append(args, "-device", "virtio-gpu-pci")
+	}
+	if c.Balloon {
+		args = append(args, "-device", "virtio-balloon-pci,free-page-reporting=on")
 	}
 	if c.Incoming != "" {
 		args = append(args, "-incoming", c.Incoming)

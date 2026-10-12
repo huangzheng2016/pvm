@@ -18,6 +18,7 @@ vm:
   list          list vms
   start|stop    start/stop a vm
   rm            stop and delete a vm (asks for confirmation; -y|--force to skip)
+  resize        grow a stopped vm's disk (grow-only): pvm resize dev1 40
   ssh           ssh into a vm: pvm ssh dev1 [cmd...]
   snapshot      ram snapshots: create <name> | ls [name] | rm <name>
                 (create needs a running vm; rm needs the vm stopped)
@@ -63,7 +64,7 @@ create options:
   --name NAME   vm name (required)
   --user USER   guest login user (required for non-interactive use)
   --cpus N      vcpus (default: all host cores)
-  --mem MB      memory in mb (default: host total; vms overcommit on purpose)
+  --mem MB      memory in mb (default: half of host ram; idle pages return via balloon)
   --disk GB     disk size in gb (default 20)
   --mount H:G   extra host:guest mount; ~/.pvm/share is always at /share
   --tz TZ       iana timezone, e.g. America/Los_Angeles
@@ -110,6 +111,8 @@ func main() {
 		code = cli.CmdStop(args)
 	case "rm":
 		code = cli.CmdRm(args)
+	case "resize":
+		code = cli.CmdResize(args)
 	case "clone":
 		code = cli.CmdClone(args)
 	case "ssh":

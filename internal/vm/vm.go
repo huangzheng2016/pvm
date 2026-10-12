@@ -36,6 +36,9 @@ type Spec struct {
 	Golden int `json:"golden,omitempty"`
 	// GPU attaches a virtio-gpu display device; user VMs default on.
 	GPU bool `json:"gpu,omitempty"`
+	// Balloon attaches virtio-balloon (free-page-reporting); user VMs
+	// default on so idle guest memory flows back to the host.
+	Balloon bool `json:"balloon,omitempty"`
 
 	// cluster membership (user VMs)
 	ClusterID int    `json:"cluster_id,omitempty"`
@@ -156,6 +159,7 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 		Accel:        accel,
 		SmbiosSpoof:  s.SmbiosSpoof,
 		GPU:          s.GPU,
+		Balloon:      s.Balloon,
 	}
 }
 

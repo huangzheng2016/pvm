@@ -355,6 +355,40 @@ func cmdVMSimple(args []string, action string) int {
 func CmdStart(args []string) int { return cmdVMSimple(args, "start") }
 func CmdStop(args []string) int  { return cmdVMSimple(args, "stop") }
 
+// CmdResize grows a vm's disk (grow-only): pvm resize <name> <gb>.
+// The vm must be stopped; the guest expands into the new space on boot.
+func CmdResize(args []string) int {
+	fs := newFlagSet("resize", "<name> <size-gb>")
+	if err := fs.Parse(partitionFlags(args)); err != nil {
+		return 2
+	}
+	if fs.NArg() < 2 {
+		fs.Usage()
+		return 2
+	}
+	gb, err := strconv.Atoi(fs.Arg(1))
+	if err != nil || gb < 1 {
+		return fatalf("size must be a whole number of GB, e.g. `pvm resize %s 40`", fs.Arg(0))
+	}
+	p, err := mustPaths()
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	c, err := daemon.Ensure(p)
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	var resp map[string]any
+	if err := c.Post(fmt.Sprintf("/v1/vms/%s/resize", fs.Arg(0)), map[string]int{"size_gb": gb}, &resp); err != nil {
+		return fatalf("%v", err)
+	}
+	fmt.Printf("%s: disk resized to %dG\n", fs.Arg(0), gb)
+	if note, _ := resp["note"].(string); note != "" {
+		fmt.Println(note)
+	}
+	return 0
+}
+
 func CmdRm(args []string) int {
 	fs := newFlagSet("rm", "<name> [-y|--force]")
 	yes := fs.Bool("y", false, "confirm deletion (non-interactive)")

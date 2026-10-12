@@ -32,6 +32,7 @@ type SnapshotManifest struct {
 	MemMB      int       `json:"mem_mb"`
 	Accel      Accel     `json:"accel"`
 	GPU        bool      `json:"gpu"`
+	Balloon    bool      `json:"balloon"`
 	PVMVersion string    `json:"pvm_version"`
 	CreatedAt  time.Time `json:"created_at"`
 	Consumed   bool      `json:"consumed"`
@@ -99,6 +100,9 @@ func (m *SnapshotManifest) checkMatch(c *VMConfig) error {
 	}
 	if m.GPU != c.GPU {
 		return fmt.Errorf("snapshot gpu layout (%v) differs from the vm (%v); heterogeneous restore refused, delete the snapshot", m.GPU, c.GPU)
+	}
+	if m.Balloon != c.Balloon {
+		return fmt.Errorf("snapshot balloon layout (%v) differs from the vm (%v); heterogeneous restore refused, delete the snapshot", m.Balloon, c.Balloon)
 	}
 	return nil
 }
@@ -215,6 +219,7 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 		MemMB:      in.Cfg.MemMB,
 		Accel:      st.Accel,
 		GPU:        in.Cfg.GPU,
+		Balloon:    in.Cfg.Balloon,
 		PVMVersion: pvmVersion,
 		CreatedAt:  time.Now(),
 	}

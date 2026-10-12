@@ -166,6 +166,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /v1/vms/{name}/start", s.handleStart)
 	mux.HandleFunc("POST /v1/vms/{name}/stop", s.handleStop)
 	mux.HandleFunc("POST /v1/vms/{name}/clone", s.handleClone)
+	mux.HandleFunc("POST /v1/vms/{name}/resize", s.handleResize)
 	mux.HandleFunc("POST /v1/vms/{name}/snapshot", s.handleSnapshotCreate)
 	mux.HandleFunc("GET /v1/vms/{name}/snapshot", s.handleSnapshotGet)
 	mux.HandleFunc("DELETE /v1/vms/{name}/snapshot", s.handleSnapshotDelete)
@@ -382,7 +383,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		Name: req.Name, Image: req.Image, Role: "user", User: req.User,
 		GuestUID: os.Getuid(),
 		CPUs:     req.CPUs, MemMB: req.MemMB, DiskGB: req.DiskGB,
-		BaseDisk: base, Mounts: mounts, Golden: goldenVer, GPU: true,
+		BaseDisk: base, Mounts: mounts, Golden: goldenVer, GPU: true, Balloon: true,
 		ClusterID: cl.ID, IP: vnet.IP, MAC: vnet.MAC,
 		TZ: req.TZ, Locale: req.Locale,
 		GitEmail: req.GitEmail, GitName: req.GitName,

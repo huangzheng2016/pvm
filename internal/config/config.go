@@ -20,7 +20,7 @@ type Defaults struct {
 }
 
 func Default() *Config {
-	return &Config{Defaults: Defaults{CPUs: native.HostCPUs(), MemMB: native.HostMemMB(), DiskGB: 20}}
+	return &Config{Defaults: Defaults{CPUs: native.HostCPUs(), MemMB: native.DefaultMemMB(), DiskGB: 20}}
 }
 
 func Load(path string) (*Config, error) {

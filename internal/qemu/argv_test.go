@@ -99,6 +99,17 @@ func TestBuildArgsGPU(t *testing.T) {
 	if !strings.Contains(joined(args), "-device virtio-gpu-pci") {
 		t.Error("gpu on must add virtio-gpu-pci")
 	}
+	if strings.Contains(joined(args), "virtio-balloon") {
+		t.Error("balloon off must not add virtio-balloon")
+	}
+	cfg.Balloon = true
+	args, err = BuildArgs(&Toolchain{FirmwareDir: "/fw"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(joined(args), "virtio-balloon-pci,free-page-reporting=on") {
+		t.Error("balloon on must add virtio-balloon with free-page-reporting")
+	}
 }
 
 func TestAccelArgsAndFallback(t *testing.T) {
