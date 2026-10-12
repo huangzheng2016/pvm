@@ -54,6 +54,17 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 		// cloud-image fallback.
 		"locale": "en_US.UTF-8",
 	}
+	loc := locale
+	if loc == "" {
+		loc = "en_US.UTF-8"
+	}
+	if strings.HasPrefix(spec.Image, "debian") {
+		// debian's locale-gen ignores locale-name arguments: uncomment in
+		// locale.gen first, otherwise the locale module fails the boot.
+		doc["bootcmd"] = []string{fmt.Sprintf("sed -i 's/^# *%s UTF-8/%s UTF-8/' /etc/locale.gen && locale-gen", loc, loc)}
+	} else if locale != "" {
+		doc["bootcmd"] = []string{fmt.Sprintf("locale-gen %s || true", locale)}
+	}
 	if locale != "" {
 		doc["locale"] = locale
 	}
