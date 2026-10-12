@@ -66,6 +66,9 @@ type VMConfig struct {
 	// SmbiosSpoof presents common commodity hardware in DMI instead of
 	// the QEMU defaults.
 	SmbiosSpoof bool
+	// GPU attaches a virtio-gpu display device (guest gets /dev/dri);
+	// headless VMs (gateway, image bake) leave it off.
+	GPU bool
 }
 
 // BuildArgs constructs the full qemu argv (excluding the binary itself).
@@ -109,6 +112,9 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 		"-device", "virtio-rng-pci,rng=rng0",
 		"-qmp", fmt.Sprintf("unix:%s,server=on,wait=off", c.QMPSock),
 	)
+	if c.GPU {
+		args = append(args, "-device", "virtio-gpu-pci")
+	}
 	if c.Incoming != "" {
 		args = append(args, "-incoming", c.Incoming)
 	}

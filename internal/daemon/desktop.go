@@ -105,13 +105,16 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 	s.deskMu.Lock()
 	defer s.deskMu.Unlock()
 
-	if out, err := s.sshRun(spec, "command -v vncserver >/dev/null && command -v websockify >/dev/null && echo HAVE_DESKTOP"); err != nil || !strings.Contains(out, "HAVE_DESKTOP") {
+	st := s.loadDesktopState(name)
+	running := s.desktopSessionRunning(spec)
+
+	if out, err := s.sshRun(spec, "command -v vncserver >/dev/null && command -v websockify >/dev/null && echo HAVE_DESKTOP"); err != nil {
+		writeErr(w, 503, fmt.Errorf("ssh to %s is not ready yet (%v); the vm may still be booting, retry shortly", name, err))
+		return
+	} else if !strings.Contains(out, "HAVE_DESKTOP") {
 		writeErr(w, 400, fmt.Errorf("desktop packages missing in %s; create the vm from a golden image built with desktop support (pvm image build)", name))
 		return
 	}
-
-	st := s.loadDesktopState(name)
-	running := s.desktopSessionRunning(spec)
 
 	if running && st != nil {
 		writeJSON(w, 200, desktopResponse{URL: desktopURL(st), HostPort: st.HostPort})

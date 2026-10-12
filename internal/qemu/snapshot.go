@@ -31,6 +31,7 @@ type SnapshotManifest struct {
 	CPUs       int       `json:"cpus"`
 	MemMB      int       `json:"mem_mb"`
 	Accel      Accel     `json:"accel"`
+	GPU        bool      `json:"gpu"`
 	PVMVersion string    `json:"pvm_version"`
 	CreatedAt  time.Time `json:"created_at"`
 	Consumed   bool      `json:"consumed"`
@@ -96,6 +97,9 @@ func (m *SnapshotManifest) checkMatch(c *VMConfig) error {
 		// value, so an hvf snapshot on a tcg host is a valid restore.
 		c.Accel = m.Accel
 	}
+	// The device layout must match the frozen state: restore with the GPU
+	// presence recorded in the snapshot, whatever the current spec says.
+	c.GPU = m.GPU
 	return nil
 }
 
@@ -210,6 +214,7 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 		CPUs:       in.Cfg.CPUs,
 		MemMB:      in.Cfg.MemMB,
 		Accel:      st.Accel,
+		GPU:        in.Cfg.GPU,
 		PVMVersion: pvmVersion,
 		CreatedAt:  time.Now(),
 	}

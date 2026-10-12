@@ -61,6 +61,16 @@ systemctl start docker
 for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 2; done
 docker info
 
+# colord prompts for polkit auth ("create a color managed device") on every
+# X session start; pvm users have no password, so the dialog is unanswerable.
+cat > /etc/polkit-1/rules.d/49-pvm-colord.rules <<'EOF'
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.color-manager.") === 0) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+
 # scrub machine-specific state so clones re-run cloud-init cleanly
 apt-get clean
 rm -rf /var/lib/apt/lists/*

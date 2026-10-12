@@ -381,7 +381,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		Name: req.Name, Image: req.Image, Role: "user", User: req.User,
 		GuestUID: os.Getuid(),
 		CPUs:     req.CPUs, MemMB: req.MemMB, DiskGB: req.DiskGB,
-		BaseDisk: base, Mounts: mounts, Golden: goldenVer,
+		BaseDisk: base, Mounts: mounts, Golden: goldenVer, GPU: true,
 		ClusterID: cl.ID, IP: vnet.IP, MAC: vnet.MAC,
 		TZ: req.TZ, Locale: req.Locale,
 		GitEmail: req.GitEmail, GitName: req.GitName,

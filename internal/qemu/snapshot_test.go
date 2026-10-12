@@ -83,6 +83,24 @@ func TestCheckMatchAccelFallback(t *testing.T) {
 	}
 }
 
+func TestCheckMatchGPUOverride(t *testing.T) {
+	m := &SnapshotManifest{Arch: native.Arch, CPUs: 2, MemMB: 2048, Accel: AccelHVF, GPU: true}
+	c := &VMConfig{CPUs: 2, MemMB: 2048, Accel: AccelHVF}
+	if err := m.checkMatch(c); err != nil {
+		t.Fatal(err)
+	}
+	if !c.GPU {
+		t.Fatal("restore must adopt the snapshot's gpu device layout")
+	}
+	m.GPU = false
+	if err := m.checkMatch(c); err != nil {
+		t.Fatal(err)
+	}
+	if c.GPU {
+		t.Fatal("pre-gpu snapshot must restore without the device")
+	}
+}
+
 func TestActiveDisk(t *testing.T) {
 	dir := t.TempDir()
 	def := filepath.Join(dir, "disk.qcow2")

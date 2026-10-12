@@ -34,6 +34,8 @@ type Spec struct {
 	// Golden is the golden image version the VM was cloned from
 	// (0 = plain base image). Golden clones skip first-boot apt.
 	Golden int `json:"golden,omitempty"`
+	// GPU attaches a virtio-gpu display device; user VMs default on.
+	GPU bool `json:"gpu,omitempty"`
 
 	// cluster membership (user VMs)
 	ClusterID int    `json:"cluster_id,omitempty"`
@@ -163,6 +165,7 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 		ExtraMounts:  mounts,
 		Accel:        accel,
 		SmbiosSpoof:  s.SmbiosSpoof,
+		GPU:          s.GPU,
 	}
 }
 

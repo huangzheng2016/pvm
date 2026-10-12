@@ -82,6 +82,25 @@ func TestBuildArgsNativeNeedsFirmware(t *testing.T) {
 	}
 }
 
+func TestBuildArgsGPU(t *testing.T) {
+	cfg := testCfg(AccelHVF)
+	args, err := BuildArgs(&Toolchain{FirmwareDir: "/fw"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(joined(args), "virtio-gpu") {
+		t.Error("gpu off must not add virtio-gpu")
+	}
+	cfg.GPU = true
+	args, err = BuildArgs(&Toolchain{FirmwareDir: "/fw"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(joined(args), "-device virtio-gpu-pci") {
+		t.Error("gpu on must add virtio-gpu-pci")
+	}
+}
+
 func TestAccelArgsAndFallback(t *testing.T) {
 	if got := AccelTCG.Args(); !strings.Contains(joined(got), "thread=multi") {
 		t.Errorf("tcg args: %v", got)
