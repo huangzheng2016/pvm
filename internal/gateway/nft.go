@@ -74,6 +74,10 @@ func RenderNFT(c *Config, uplink, br string, bypassIPs []string) string {
 	// kill-switch below is v4-only. (The gateway also sets
 	// net.ipv6.conf.all.disable_ipv6=1; this is the belt-and-suspenders.)
 	fmt.Fprintf(&b, "    iifname %q oifname %q meta nfproto ipv6 drop\n", br, uplink)
+	// Cloud metadata endpoints (169.254.169.254 etc.) are an environment
+	// probe target; link-local destinations must never be attempted via
+	// the uplink (they are unroutable anyway).
+	fmt.Fprintf(&b, "    iifname %q oifname %q ip daddr 169.254.0.0/16 drop\n", br, uplink)
 	// Answers to host port-map (DNAT) connections go to the slirp
 	// infrastructure subnet, never to the internet; they must pass even
 	// for exit-routed VMs or every map breaks as soon as the VM is routed

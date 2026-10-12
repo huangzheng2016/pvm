@@ -52,7 +52,7 @@ type Cluster struct {
 	Maps     []*PortMap        `json:"maps"`
 	// Rules is the routing rule set (fake-ip engine input); VMExits pins
 	// a VM's default route to an exit-node name.
-	Rules   []rules.Rule     `json:"rules,omitempty"`
+	Rules   []rules.Rule      `json:"rules,omitempty"`
 	VMExits map[string]string `json:"vm_exits,omitempty"`
 	// DefaultExit is the cluster-wide fallback route used when neither a
 	// rule nor a per-VM exit matches ("" = direct).
@@ -209,7 +209,9 @@ func (s *Store) LinkSock(id int, vmName string) string {
 	return filepath.Join(s.LinksDir(id), vmName+".sock")
 }
 
-// AddVM assigns the lowest free IP (from .10) and a derived MAC.
+// AddVM assigns the lowest free IP (from .10) and a derived MAC. The OUI
+// is Dell's (10:65:30) instead of QEMU's (52:54:00): a guest reading its
+// own NIC address must not see a hypervisor vendor tell.
 func (s *Store) AddVM(id int, name string) (*VMNet, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -239,7 +241,7 @@ func (s *Store) AddVM(id int, name string) (*VMNet, error) {
 	vn := &VMNet{
 		Name: name,
 		IP:   fmt.Sprintf("100.99.%d.%d", c.ID, last),
-		MAC:  fmt.Sprintf("52:54:00:%02x:%02x:%02x", c.ID, last>>8, last&0xff),
+		MAC:  fmt.Sprintf("10:65:30:%02x:%02x:%02x", c.ID, last>>8, last&0xff),
 	}
 	c.VMs[name] = vn
 	out := *vn

@@ -27,7 +27,7 @@ func TestEnsureAndIPAM(t *testing.T) {
 	if v1.IP != "100.99.1.10" || v2.IP != "100.99.1.11" {
 		t.Errorf("ipam: %s %s", v1.IP, v2.IP)
 	}
-	if v1.MAC == v2.MAC || v1.MAC != "52:54:00:01:00:0a" {
+	if v1.MAC == v2.MAC || v1.MAC != "10:65:30:01:00:0a" {
 		t.Errorf("macs: %s %s", v1.MAC, v2.MAC)
 	}
 	// idempotent

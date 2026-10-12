@@ -48,6 +48,7 @@ daemon:
 other:
   version       print version
   skill         print the embedded pvm skill doc (install into agent skills)
+  security      print the embedded security/risk-control guide
   upgrade       self-upgrade to the latest release: pvm upgrade [--check] [--to <tag>] [-y]
 
 common choices:
@@ -69,7 +70,7 @@ create options:
   --locale LOC  guest locale (default en_US.UTF-8)
   --git-email E optional neutral git identity (never inherited from host)
   --git-name N  optional neutral git name (requires --git-email)
-  --smbios-spoof  spoof dmi as a dell inspiron laptop
+  --smbios-spoof  spoof dmi as a dell optiplex desktop
   --no-start    create disk and metadata without starting the vm
   --no-wait     return before cloud-init finishes
 
@@ -89,7 +90,7 @@ func main() {
 	}
 	args := os.Args[2:]
 	switch os.Args[1] {
-	case "upgrade", "version", "--version", "-v", "skill", "exit-agent", "agent", "gateway", "__snapshot-pipe-out", "__snapshot-pipe-in":
+	case "upgrade", "version", "--version", "-v", "skill", "security", "exit-agent", "agent", "gateway", "__snapshot-pipe-out", "__snapshot-pipe-in":
 	default:
 		cli.MaybeNotifyUpgrade()
 	}
@@ -139,6 +140,8 @@ func main() {
 		fmt.Println(buildinfo.Version)
 	case "skill":
 		code = cli.CmdSkill(args)
+	case "security":
+		code = cli.CmdSecurity(args)
 	case "upgrade":
 		code = cli.CmdUpgrade(args)
 	case "desktop":

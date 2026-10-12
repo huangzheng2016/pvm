@@ -176,8 +176,10 @@ func TestBuildArgsSmbiosSpoof(t *testing.T) {
 		t.Fatal(err)
 	}
 	j := joined(args)
-	if !strings.Contains(j, "-smbios type=1,manufacturer=Dell Inc.,product=Inspiron 15 5510") {
-		t.Errorf("spoof args missing: %s", j)
+	for _, want := range []string{"product=OptiPlex 7010", "type=0,vendor=Dell Inc.", "type=3,manufacturer=Dell Inc."} {
+		if !strings.Contains(j, want) {
+			t.Errorf("spoof args missing %q: %s", want, j)
+		}
 	}
 	args, err = BuildArgs(&Toolchain{FirmwareDir: "/fw"}, testCfg(AccelHVF))
 	if err != nil {

@@ -98,7 +98,14 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 
 	args = append(args, c.Accel.Args()...)
 	if c.SmbiosSpoof {
-		args = append(args, "-smbios", "type=1,manufacturer=Dell Inc.,product=Inspiron 15 5510")
+		// A coherent desktop persona: VMs have no battery/ACPI power
+		// supply, so a laptop model would contradict itself.
+		args = append(args,
+			"-smbios", "type=0,vendor=Dell Inc.,version=2.7.0,date=03/16/2023",
+			"-smbios", "type=1,manufacturer=Dell Inc.,product=OptiPlex 7010,version=01",
+			"-smbios", "type=2,manufacturer=Dell Inc.,product=0GY6YJ,version=A01",
+			"-smbios", "type=3,manufacturer=Dell Inc.,version=01",
+		)
 	}
 	args = append(args,
 		"-m", strconv.Itoa(c.MemMB),

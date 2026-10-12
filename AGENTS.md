@@ -39,7 +39,7 @@
 - `internal/fsutil`: `AtomicWrite`（tmp+fsync+rename）与文件锁。
 - `internal/buildinfo`: 版本号，构建期 ldflags 注入。
 - `script/build.sh`: 原生构建入口；`script/qemu/`: bundled QEMU 运行时组装与补丁。
-- `pvm-skill/`: 面向 agent 的 pvm 使用 skill；`docs/`: 设计文档（安全姿态等）。
+- `SKILL.md`/`SECURITY.md`（仓库根）: 面向 agent 的使用手册与安全姿态指南，构建期经 `skilldoc.go` embed 进二进制（`pvm skill`/`pvm security`）。
 
 ## Build & Test
 

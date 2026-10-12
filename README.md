@@ -43,12 +43,12 @@ pvm route dev1 --via direct                            # 切回本机出口
 
 ## 部署 exit（VPS 出口端）
 
-在 VPS 上从 Releases 下载对应架构的 tar.gz，以 `pvm exit-agent --listen :18443 --token <token>` 常驻（systemd），本机 `pvm exit add` 注册即可。完整流程（含 systemd unit、指纹核验、回滚）：[pvm-skill/SKILL.md](pvm-skill/SKILL.md) 的「给定 SSH 部署 exit」一节。
+在 VPS 上从 Releases 下载对应架构的 tar.gz，以 `pvm exit-agent --listen :18443 --token <token>` 常驻（systemd），本机 `pvm exit add` 注册即可。完整流程（含 systemd unit、指纹核验、回滚）：[SKILL.md](SKILL.md) 的「给定 SSH 部署 exit」一节。
 
 ## 文档
 
-- [pvm-skill/SKILL.md](pvm-skill/SKILL.md)：完整使用手册（面向 agent，同样适合人读）
-- [docs/security-posture.md](docs/security-posture.md)：网络/设备身份的安全与风控姿态
+- [SKILL.md](SKILL.md)：完整使用手册（面向 agent，同样适合人读）
+- [SECURITY.md](SECURITY.md)：网络/设备身份的安全与风控姿态
 - [AGENTS.md](AGENTS.md)：仓库结构、构建测试与研发规范
 
 ## 从源码构建
