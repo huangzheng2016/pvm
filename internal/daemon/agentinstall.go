@@ -23,8 +23,7 @@ RestartSec=2
 WantedBy=multi-user.target
 `
 
-// ensureAgentAsync pushes the guest agent once ssh is reachable. Runs
-// in the background; failures are logged, never fatal to the VM.
+// Agent installation is best-effort so failures do not fail VM startup.
 func (s *Server) ensureAgentAsync(spec *vm.Spec) {
 	bin := s.P.AgentBin()
 	if _, err := os.Stat(bin); err != nil {
@@ -94,8 +93,6 @@ func (s *Server) waitSSH(spec *vm.Spec, d time.Duration) error {
 	return fmt.Errorf("ssh not reachable within %v (last error: %v)", d, lastErr)
 }
 
-// waitGuestProvisioned waits until sudo exists and cloud-init has
-// finished, so install commands never race the guest's own provisioning.
 func (s *Server) waitGuestProvisioned(spec *vm.Spec, d time.Duration) error {
 	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {

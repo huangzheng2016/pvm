@@ -35,7 +35,6 @@ func TestPeerStoreAllocateAndPersist(t *testing.T) {
 	if p3.IP != "10.99.1.2" {
 		t.Fatalf("first tcp peer = %s, want 10.99.1.2", p3.IP)
 	}
-	// re-enroll is idempotent
 	again, _, err := s.Allocate("key-a", "host-a", "udp")
 	if err != nil {
 		t.Fatal(err)

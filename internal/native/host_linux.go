@@ -8,7 +8,6 @@ import (
 	"strings"
 )
 
-// HostMemMB returns the host's physical memory in MiB.
 func HostMemMB() int {
 	data, err := os.ReadFile("/proc/meminfo")
 	if err != nil {

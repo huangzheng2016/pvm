@@ -15,8 +15,6 @@ import (
 // can distinguish it from in-guest command failures and fall back.
 var ErrUnreachable = errors.New("agent channel unreachable")
 
-// Client is the host side of the channel, dialing the unix socket QEMU
-// exposes for the VM's virtio-serial port.
 type Client struct {
 	sock string
 	conn net.Conn
@@ -94,7 +92,6 @@ func (c *Client) write(f *Frame) error {
 	return nil
 }
 
-// Ping checks agent liveness, returning its version and hostname.
 func (c *Client) Ping() (*Frame, error) {
 	id := newID()
 	ch := c.register(id)
@@ -112,13 +109,10 @@ func (c *Client) Ping() (*Frame, error) {
 	}
 }
 
-// ExecResult collects a completed exec.
 type ExecResult struct {
 	ExitCode int
 }
 
-// Exec runs cmd in the guest, streaming output to stdout/stderr
-// (nil sinks discard). stdin may be nil.
 func (c *Client) Exec(cmd []string, stdin io.Reader, stdout, stderr io.Writer, timeoutS int) (*ExecResult, error) {
 	return c.ExecStream(cmd, stdin, timeoutS, func(f *Frame) {
 		if f.Stream != StreamStdout && f.Stream != StreamStderr {
@@ -138,10 +132,7 @@ func (c *Client) Exec(cmd []string, stdin io.Reader, stdout, stderr io.Writer, t
 	})
 }
 
-// ExecStream runs cmd in the guest, invoking onFrame for every frame
-// (output, done) as it arrives; stdin may be nil. The command's exit
-// code is in the result; in-guest spawn failures come back as plain
-// errors, transport failures as ErrUnreachable.
+// In-guest spawn failures are plain errors; transport failures wrap ErrUnreachable.
 func (c *Client) ExecStream(cmd []string, stdin io.Reader, timeoutS int, onFrame func(*Frame)) (*ExecResult, error) {
 	if len(cmd) == 0 {
 		return nil, fmt.Errorf("empty cmd")
@@ -204,7 +195,6 @@ func (c *Client) register(id string) chan Frame {
 
 func (c *Client) Close() error { return c.conn.Close() }
 
-// Closed reports whether the read loop has ended (peer gone or error).
 func (c *Client) Closed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()

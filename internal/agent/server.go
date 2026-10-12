@@ -15,8 +15,6 @@ import (
 	"github.com/huangzheng2016/pvm/internal/buildinfo"
 )
 
-// Server is the guest-side agent: one host connection, many concurrent
-// exec sessions keyed by frame id.
 type Server struct {
 	Version string
 
@@ -64,10 +62,8 @@ func (s *Server) Run(sysfsRoot string) error {
 	}
 }
 
-// Serve handles one host session on rw until EOF/hangup or a fatal
-// write error. rw stays open — the caller reuses it for the next
-// session. All execs spawned during the session are killed on return.
-// Exported for tests, which can drive it over net.Pipe.
+// Serve leaves rw open for the next host session and kills all session
+// execs on return.
 func (s *Server) Serve(rw io.ReadWriteCloser) error {
 	serveCtx, cancelExecs := context.WithCancel(context.Background())
 	defer cancelExecs()

@@ -18,7 +18,7 @@ func TestConfirmAction(t *testing.T) {
 		{"\n", false},
 		{"no\n", false},
 		{"whatever\n", false},
-		{"", false}, // EOF
+		{"", false},
 	}
 	for _, c := range cases {
 		var w strings.Builder

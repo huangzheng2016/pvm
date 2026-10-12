@@ -9,7 +9,6 @@ import (
 	"github.com/huangzheng2016/pvm/internal/daemon"
 )
 
-// CmdDNS implements `pvm dns ls`: show the gateway's live fake-ip table.
 func CmdDNS(args []string) int {
 	p, err := mustPaths()
 	if err != nil {

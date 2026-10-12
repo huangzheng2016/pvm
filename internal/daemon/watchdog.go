@@ -29,12 +29,9 @@ const (
 	stallWarn
 )
 
-// decideStall only restarts a VM that spins at full CPU with no serial
-// console progress for two consecutive checks. A slow-but-progressing
-// TCG boot is left alone, and a second identical stall is only reported.
-// Two ticks are required because the progress baseline only becomes
-// meaningful one interval after the deadline, and a single quiet phase
-// (firmware handoff, initramfs) is normal even for healthy boots.
+// Require two quiet ticks: the progress baseline becomes meaningful one
+// interval after the deadline, and firmware/initramfs handoffs are normal.
+// Slow-but-progressing TCG boots and repeated stalls must not be restarted.
 func decideStall(in stallInput) stallAction {
 	if in.SSHReady || in.ConsoleProgress || in.CPUPercent < 95 {
 		return stallContinue
@@ -64,8 +61,7 @@ func (s *Server) currentWatchSeq(name string) uint64 {
 	return s.watchSeq[name]
 }
 
-// watchVM starts a best-effort boot-stall watchdog for one VM. A newer
-// start of the same VM supersedes older watchers.
+// A newer start supersedes older watchers.
 func (s *Server) watchVM(spec *vm.Spec) {
 	seq := s.nextWatchSeq(spec.Name)
 	go s.watchVMLoop(spec, seq)
@@ -156,9 +152,7 @@ func consoleSize(path string) int64 {
 
 func qemuCPUPercent(pid int) (float64, error) {
 	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "%cpu=")
-	// %cpu follows LC_NUMERIC (decimal comma in de/fr locales), which
-	// ParseFloat rejects and the caller then skips the stall decision.
-	cmd.Env = append(os.Environ(), "LC_ALL=C")
+	cmd.Env = append(os.Environ(), "LC_ALL=C") // %cpu follows LC_NUMERIC
 	out, err := cmd.Output()
 	if err != nil {
 		return 0, err

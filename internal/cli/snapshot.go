@@ -83,8 +83,7 @@ func CmdSnapshot(args []string) int {
 	return fatalf("unknown snapshot subcommand %q", args[0])
 }
 
-// CmdSnapshotPipeOut/In are hidden helpers invoked by QEMU exec:
-// migration URIs; not user-facing commands.
+// QEMU migration exec URIs invoke these hidden helpers.
 func CmdSnapshotPipeOut(args []string) int {
 	if len(args) != 1 {
 		fmt.Fprintln(os.Stderr, "usage: pvm __snapshot-pipe-out <file>")

@@ -247,7 +247,6 @@ func (p *fakeProxy) dialProxy(src *net.TCPConn, domain string, port int, exitNam
 	relay(src, up)
 }
 
-// relay shuttles bytes both ways, propagating half-closes.
 func relay(a, b net.Conn) {
 	if tc, ok := a.(*net.TCPConn); ok {
 		tc.SetNoDelay(true)

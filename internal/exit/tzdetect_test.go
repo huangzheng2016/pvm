@@ -84,5 +84,5 @@ func TestSystemTZReadsEtcTimezone(t *testing.T) {
 	if tz := systemTZ(); tz != "" && parseZoneinfoPath("/usr/share/zoneinfo/"+tz) == "" {
 		t.Errorf("systemTZ returned garbage %q", tz)
 	}
-	_ = os.Getenv("TZ") // placate unused-import lint pattern
+	_ = os.Getenv("TZ")
 }

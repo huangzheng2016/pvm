@@ -19,8 +19,7 @@ type upgradeCheckCache struct {
 	Latest    string    `json:"latest"`
 }
 
-// MaybeNotifyUpgrade prints a one-line hint to stderr when a newer release
-// exists. Cached for 24h, silent on any error, PVM_NO_UPDATE_CHECK=1 disables.
+// Update checks must not delay or disrupt routine commands.
 func MaybeNotifyUpgrade() {
 	if os.Getenv("PVM_NO_UPDATE_CHECK") == "1" || buildinfo.Version == "dev" {
 		return
@@ -51,8 +50,7 @@ func MaybeNotifyUpgrade() {
 	}
 }
 
-// versionNewer reports whether a is a newer semver than b (v-prefix and
-// pre-release suffix tolerated; release outranks pre-release of the same triple).
+// A release outranks a pre-release with the same numeric version.
 func versionNewer(a, b string) bool {
 	at, apre := parseVersion(a)
 	bt, bpre := parseVersion(b)

@@ -6,9 +6,6 @@ import (
 	"testing"
 )
 
-// TestExecNoOutputLoss is a regression test for the pipe-drain ordering
-// race: Wait() used to run before the stdout/stderr drain completed,
-// truncating output ~15% of the time for write-then-exit commands.
 func TestExecNoOutputLoss(t *testing.T) {
 	_, c := pipePair(t)
 	for i := 0; i < 100; i++ {

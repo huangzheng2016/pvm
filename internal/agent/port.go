@@ -6,9 +6,7 @@ import (
 	"path/filepath"
 )
 
-// FindVirtioPort locates the /dev/vportNpM device for the named
-// virtio-serial port by scanning sysfs, instead of assuming a fixed
-// device index. root is overridable for tests.
+// Scan sysfs by port name because virtio device indices are not stable.
 func FindVirtioPort(root, name string) (string, error) {
 	dir := filepath.Join(root, "sys", "class", "virtio-ports")
 	entries, err := os.ReadDir(dir)

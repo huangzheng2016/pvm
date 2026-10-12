@@ -19,7 +19,6 @@ type mapView struct {
 	Proto     string `json:"proto"`
 }
 
-// CmdMap implements `pvm map <vm> <host>:<guest> [--udp] | ls | rm <port> [--udp]`.
 func CmdMap(args []string) int {
 	p, err := mustPaths()
 	if err != nil {

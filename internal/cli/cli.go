@@ -25,7 +25,6 @@ func mustPaths() (*paths.Paths, error) {
 	return p, p.Ensure()
 }
 
-// newFlagSet with consistent usage output.
 func newFlagSet(name, usage string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprintf(os.Stderr, "usage: pvm %s %s\n", name, usage) }

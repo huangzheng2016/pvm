@@ -13,7 +13,6 @@ type resizeRequest struct {
 	SizeGB int `json:"size_gb"`
 }
 
-// handleResize grows a VM's qcow2 (grow-only; shrinking is refused).
 // The VM must be stopped: qemu-img cannot touch a live disk, and the
 // guest's cloud-init growpart/resizefs modules expand the partition and
 // filesystem to the new ceiling automatically on the next boot.

@@ -15,7 +15,6 @@ func TestFindVirtioPort(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(vp, "name"), []byte("pvm.agent\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// a decoy port that must not match
 	decoy := filepath.Join(root, "sys", "class", "virtio-ports", "vport0p2")
 	os.MkdirAll(decoy, 0o755)
 	os.WriteFile(filepath.Join(decoy, "name"), []byte("org.qemu.guest_agent.0\n"), 0o644)

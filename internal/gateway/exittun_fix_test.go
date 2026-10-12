@@ -62,7 +62,6 @@ func TestLearnedBypassSurvivesSync(t *testing.T) {
 		t.Fatalf("learn rule not installed: %v", log.calls)
 	}
 
-	// a config push with no direct CIDRs used to wipe the learned rule
 	m.Sync(nil, nil, nil, nil, nil, "", "")
 	if log.has("del", "to 203.0.113.9/32") {
 		t.Fatal("learned bypass was dropped by Sync")

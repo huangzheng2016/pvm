@@ -1,6 +1,4 @@
-// Package native is the single source of truth for architecture selection.
-// pvm intentionally supports only the host's native architecture; there is
-// no cross-architecture guest, image, or runtime fallback.
+// Package native restricts images, guests, and runtimes to the host architecture.
 package native
 
 import (
@@ -8,12 +6,8 @@ import (
 	"runtime"
 )
 
-// Arch is the host's native GOARCH. Every image, VM, and guest binary is
-// built for exactly this target.
 const Arch = runtime.GOARCH
 
-// QemuArch returns the QEMU system target for the native architecture.
-// The two supported native mappings are kept explicit.
 func QemuArch() string {
 	switch Arch {
 	case "amd64":
@@ -25,9 +19,7 @@ func QemuArch() string {
 	}
 }
 
-// GuestBinary returns the filename of a native guest binary. Only the two
-// supported roles are accepted so unexpected architectures or payloads
-// cannot slip into the packed manifest.
+// GuestBinary only accepts roles allowed in the packed manifest.
 func GuestBinary(kind string) string {
 	switch kind {
 	case "agent", "gateway":

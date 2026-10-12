@@ -12,11 +12,7 @@ import (
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
-// applyRegionProfile aligns the guest timezone/locale with the exit
-// node's geography when a VM is routed via it. The VM's create-time
-// baseline (spec.TZ/Locale) stays untouched; the values found in the
-// guest are remembered in PrevTZ/PrevLocale so a later `--via direct`
-// can restore them. Returns a human note (empty when nothing to do).
+// Preserve the create-time baseline so a later --via direct can restore it.
 func (s *Server) applyRegionProfile(spec *vm.Spec, via string) string {
 	dir := filepath.Join(s.P.Home, "exits")
 	entry, err := exit.LoadEntry(dir, via)
@@ -77,7 +73,6 @@ func (s *Server) applyRegionProfile(spec *vm.Spec, via string) string {
 	return s.setGuestRegion(spec, tz, locale)
 }
 
-// restoreRegion rolls back a region profile applied by applyRegionProfile.
 func (s *Server) restoreRegion(spec *vm.Spec) string {
 	if spec.PrevTZ == "" && spec.PrevLocale == "" {
 		return ""
@@ -108,8 +103,6 @@ func (s *Server) restoreRegion(spec *vm.Spec) string {
 	return note
 }
 
-// probeSuggestedTZ learns the exit's suggested timezone via a throwaway
-// enroll (fresh key, revoked right after) so no stale peer is left.
 func (s *Server) probeSuggestedTZ(entry *exit.Entry) string {
 	priv, err := tunnel.GenerateKey()
 	if err != nil {
@@ -132,8 +125,6 @@ func (s *Server) probeSuggestedTZ(entry *exit.Entry) string {
 	return resp.SuggestedTZ
 }
 
-// setGuestRegion applies timezone+locale inside the guest (NOPASSWD sudo
-// is provisioned by cloud-init).
 func (s *Server) setGuestRegion(spec *vm.Spec, tz, locale string) string {
 	if err := vm.ValidateTZ(tz); err != nil {
 		return fmt.Sprintf("skip region apply: %v", err)
@@ -156,9 +147,7 @@ func (s *Server) setGuestRegion(spec *vm.Spec, tz, locale string) string {
 	return fmt.Sprintf("region applied: tz=%s locale=%s", tz, locale)
 }
 
-// sanitizeTZ takes the first non-empty line of guest-provided output and
-// validates it as an IANA timezone, falling back to UTC. Used on any TZ
-// string read from a guest before it is embedded into shell commands.
+// Guest-provided timezone strings must be validated before embedding them in shell commands.
 func sanitizeTZ(out string) string {
 	tz := ""
 	for line := range strings.Lines(out) {

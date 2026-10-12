@@ -61,7 +61,6 @@ func TestVMDefaultExit(t *testing.T) {
 	if d := e.DecideFlow("api.anthropic.com", nil, "dev1"); d.Route != Proxy || d.Exit != "jp" {
 		t.Fatalf("vm default exit not applied: %+v", d)
 	}
-	// other VMs unaffected
 	if d := e.DecideFlow("api.anthropic.com", nil, "dev2"); d.Route != Direct {
 		t.Fatalf("vm exit leaked to another vm: %+v", d)
 	}

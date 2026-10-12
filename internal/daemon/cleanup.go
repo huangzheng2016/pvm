@@ -2,10 +2,8 @@ package daemon
 
 import "github.com/huangzheng2016/pvm/internal/cluster"
 
-// closeVMResources tears down in-memory resources bound to a VM: host
-// relays for its maps and the shared agent connection. Called before the
-// cluster forgets the VM, so nothing is left holding a port that a later
-// VM could silently inherit.
+// Close resources before the cluster forgets the VM so no port remains
+// bound for a later VM to inherit.
 func (s *Server) closeVMResources(name string, cl *cluster.Cluster) {
 	if cl != nil {
 		for _, m := range cl.Maps {

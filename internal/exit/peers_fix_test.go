@@ -38,8 +38,7 @@ last_handshake_time_nsec=0
 	}
 }
 
-// Enroll then delete: the peer must be gone from BOTH the store and the
-// wireguard device (device removal used to be fire-and-forget).
+// Deleting a peer must remove it from both the store and the WireGuard device.
 func TestDeletePeerRemovesFromDevice(t *testing.T) {
 	srv, _ := inProcessServer(t, "udp")
 	serverAddr := srv.ControlAddr()

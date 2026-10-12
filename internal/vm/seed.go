@@ -10,10 +10,8 @@ import (
 	"github.com/diskfs/go-diskfs/filesystem"
 )
 
-// WriteSeed builds a cloud-init NoCloud seed: a FAT32 image labeled
-// "cidata" holding user-data and meta-data. Chosen over ISO9660 because
-// diskfs ignores the volume label for ISO9660 (hardcodes ISOIMAGE) and
-// cloud-init NoCloud accepts vfat just the same. Generated purely in Go.
+// WriteSeed uses FAT32 because diskfs hardcodes the ISO9660 volume label
+// to ISOIMAGE, while NoCloud requires "cidata" and accepts vfat.
 func WriteSeed(path string, userData, metaData []byte) error {
 	tmp := path + ".tmp"
 	os.Remove(tmp)

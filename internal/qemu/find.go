@@ -1,7 +1,5 @@
-// Package qemu locates the QEMU toolchain and probes accelerators.
-// Search order: bundled under ~/.pvm/runtime/qemu first, then PATH, then
-// well-known install prefixes. Missing qemu-img is a hard error (the
-// platform bug of silently booting diskless is not repeated here).
+// Package qemu requires a complete native toolchain: missing qemu-img is
+// fatal because silently booting without a disk is unsafe.
 package qemu
 
 import (
@@ -36,13 +34,10 @@ func probeVersion(system string) [3]int {
 	return v
 }
 
-// BrokenLiveRestore reports the QEMU 11.0.0 darwin/arm64 HVF regression
-// (cpu_pre_load assertion on incoming migration, fixed upstream by
-// 06fd39e426 which first ships in 11.1.0). Only the exact 11.0.0
-// release is broken; 11.1+ stock builds pass, and bundled runtimes are
-// pvm's own known-good builds and are always exempt. An unparseable
-// version ({0,0,0}) is treated as unknown and refused too — the restore
-// crash is worse than a false positive.
+// BrokenLiveRestore refuses QEMU 11.0.0 and unknown versions on darwin/arm64
+// HVF: 11.0.0 asserts on incoming migration (fixed in 11.1.0), and restoring
+// on an unknown runtime is riskier than rejecting it. Bundled runtimes are
+// known-good and exempt.
 func (t *Toolchain) BrokenLiveRestore(accel Accel) bool {
 	if t.Bundled || native.Arch != "arm64" || accel != AccelHVF {
 		return false
@@ -50,10 +45,8 @@ func (t *Toolchain) BrokenLiveRestore(accel Accel) bool {
 	return t.Version == [3]int{11, 0, 0} || t.Version == [3]int{0, 0, 0}
 }
 
-// QemuArch returns the native QEMU system target.
 func QemuArch() string { return native.QemuArch() }
 
-// Find locates the native qemu-system and qemu-img.
 func Find(runtimeDir string) (*Toolchain, error) {
 	arch := QemuArch()
 	binName := "qemu-system-" + arch

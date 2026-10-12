@@ -16,12 +16,10 @@ import (
 	"github.com/huangzheng2016/pvm/internal/gw/rules"
 )
 
-// Upstream resolves queries the relay does not answer itself.
 type Upstream interface {
 	Exchange(ctx context.Context, req *mdns.Msg) (*mdns.Msg, error)
 }
 
-// UDPUpstream forwards to a plain DNS server (e.g. slirp's 10.0.2.3).
 type UDPUpstream struct{ Addr string }
 
 func (u UDPUpstream) Exchange(ctx context.Context, req *mdns.Msg) (*mdns.Msg, error) {
@@ -76,14 +74,12 @@ func (s *Server) SetRules(eng *rules.Engine) {
 	s.rules = eng
 }
 
-// Rules returns the current rules engine.
 func (s *Server) Rules() *rules.Engine {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.rules
 }
 
-// SetStatic pins an internal name (e.g. gw.pvm.internal) to a fixed IP.
 func (s *Server) SetStatic(name string, ip net.IP) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -92,8 +88,6 @@ func (s *Server) SetStatic(name string, ip net.IP) {
 
 func (s *Server) Pool() *Pool { return s.pool }
 
-// ListenAndServe starts UDP and TCP listeners on addr and blocks until
-// Shutdown or a listener error.
 func (s *Server) ListenAndServe(addr string) error {
 	handler := mdns.HandlerFunc(s.serve)
 	errc := make(chan error, 2)

@@ -12,7 +12,7 @@ func TestVersionNewer(t *testing.T) {
 		{"v0.1.0", "0.1.0-m1", true},  // release outranks pre-release of same triple
 		{"v0.1.0", "v0.1.0", false},
 		{"v0.1.0", "v0.2.0", false},
-		{"0.1.0-m1", "v0.1.0", false}, // current pre-release, latest release: covered above
+		{"0.1.0-m1", "v0.1.0", false},
 		{"garbage", "v0.1.0", false},
 	}
 	for _, c := range cases {

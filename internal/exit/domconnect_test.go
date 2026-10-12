@@ -18,8 +18,6 @@ func TestDomainConnectAddr(t *testing.T) {
 	}
 }
 
-// startTestDCServer runs the domain-connect handler on a local listener
-// with a stub dialer, returning the address and a channel of dialed targets.
 func startTestDCServer(t *testing.T, dialErr error) (string, chan string) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

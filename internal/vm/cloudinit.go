@@ -7,7 +7,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// GuestMount is one host->guest 9p mount beyond the default /share.
 type GuestMount struct {
 	Tag   string
 	Host  string
@@ -121,9 +120,6 @@ func metaData(spec *Spec) []byte {
 	return []byte(fmt.Sprintf("instance-id: pvm-%s\nlocal-hostname: %s\n", spec.Name, spec.Name))
 }
 
-// gatewayUserData provisions a gateway VM: pvmgw user, nftables, the
-// pvm-gateway systemd unit (enabled once the host pushes the binary)
-// and ip_forward.
 func gatewayUserData(spec *Spec, sshPub string) ([]byte, error) {
 	unit := `[Unit]
 Description=pvm gateway agent

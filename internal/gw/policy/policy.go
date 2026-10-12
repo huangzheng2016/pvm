@@ -1,5 +1,3 @@
-// Package policy turns DNS results and routing rules into a per-flow
-// decision for the gateway's data plane.
 package policy
 
 import (
@@ -68,12 +66,8 @@ func (e *Engine) LookupByFakeIP(ip net.IP) (string, bool) {
 	return e.pool.Lookup(ip)
 }
 
-// IsFakeIP reports whether ip came from the fake-ip pool.
 func (e *Engine) IsFakeIP(ip net.IP) bool { return e.pool.Contains(ip) }
 
-// DecideFlow decides where a flow from vmID goes. domain may be ""
-// (then dstIP is reverse-resolved through the fake-ip pool); dstIP may
-// be nil when the caller only has a name.
 func (e *Engine) DecideFlow(domain string, dstIP net.IP, vmID string) Decision {
 	if domain == "" && dstIP != nil && e.pool.Contains(dstIP) {
 		domain, _ = e.pool.Lookup(dstIP)

@@ -11,8 +11,7 @@ import (
 // 127.0.0.1:PoolPort (the gateway slirp hostfwd). It lets users pick any
 // host port while the gateway keeps one small pre-mapped pool.
 type relaySet struct {
-	mu sync.Mutex
-	// key: "tcp/8080"
+	mu   sync.Mutex
 	tcp  map[string]net.Listener
 	udp  map[string]*udpRelay
 	pool map[string]int // key -> poolPort, mismatch is an error not a silent alias
@@ -24,9 +23,7 @@ func newRelaySet() *relaySet {
 
 func relayKey(proto string, port int) string { return fmt.Sprintf("%s/%d", proto, port) }
 
-// Ensure starts the relay for one map if not already running. An
-// existing relay bound to a different pool port is a hard error: an
-// orphaned relay must never quietly serve a new VM's traffic.
+// An orphaned relay must never quietly serve a new VM's traffic.
 func (r *relaySet) Ensure(proto string, hostPort, poolPort int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -99,7 +96,7 @@ func proxyTCP(src net.Conn, poolPort int) {
 	dst.Close()
 }
 
-// udpRelay maintains per-source sessions to the pool port.
+// Per-source sessions let UDP replies return to the original sender.
 type udpRelay struct {
 	conn     *net.UDPConn
 	poolPort int

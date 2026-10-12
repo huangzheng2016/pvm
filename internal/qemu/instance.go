@@ -16,7 +16,6 @@ import (
 	"github.com/huangzheng2016/pvm/internal/fsutil"
 )
 
-// Instance is one running (or startable) QEMU process.
 type Instance struct {
 	Cfg       VMConfig
 	StatePath string
@@ -37,9 +36,8 @@ type RunState struct {
 	Started time.Time     `json:"started"`
 }
 
-var keyedLocks sync.Map // name -> *sync.Mutex
+var keyedLocks sync.Map
 
-// LockVM returns a per-VM mutex to serialise lifecycle operations.
 func LockVM(name string) *sync.Mutex {
 	v, _ := keyedLocks.LoadOrStore(name, &sync.Mutex{})
 	return v.(*sync.Mutex)
@@ -57,9 +55,8 @@ func (in *Instance) loadState() (*RunState, error) {
 	return &st, nil
 }
 
-// Running reports the current run state if the recorded process is alive.
-// A missing state file is not an error, but a corrupted one is: callers
-// must not mistake that for "not running" and start a second QEMU.
+// Corrupted state must remain an error so callers cannot mistake it for
+// "not running" and start a second QEMU.
 func (in *Instance) Running() (*RunState, error) {
 	st, err := in.loadState()
 	if err != nil {
@@ -74,14 +71,10 @@ func (in *Instance) Running() (*RunState, error) {
 	return st, nil
 }
 
-// errEarlyExit marks a qemu that died during its first moments (accel or
-// argv errors); only this class is eligible for the accel fallback.
 type errEarlyExit struct{ error }
 
 func (e errEarlyExit) Unwrap() error { return e.error }
 
-// Start launches QEMU. On early hardware-accel failure it retries once
-// with TCG, mirroring the platform fallback.
 func (in *Instance) Start() error {
 	in.mu.Lock()
 	defer in.mu.Unlock()
@@ -153,8 +146,6 @@ func (in *Instance) startWithAccel(accel Accel) error {
 		return err
 	}
 	if err := fsutil.AtomicWrite(in.StatePath, data, 0o600); err != nil {
-		// The process is up but untracked; without the state file the next
-		// start would spawn a second qemu, so do not leave it running.
 		cmd.Process.Kill()
 		<-exited
 		return err
@@ -191,20 +182,21 @@ func (in *Instance) Stop() error {
 	if q, err := DialQMP(in.Cfg.QMPSock); err == nil {
 		q.Powerdown()
 		q.Close()
-		if waitDead(st.Ident, 30*time.Second) {
+		if waitDead(st.Ident, 90*time.Second) {
 			return nil
 		}
 	}
 	if err := killVerified(st, syscall.SIGTERM); err != nil {
 		return err
 	}
-	if waitDead(st.Ident, 5*time.Second) {
+	if waitDead(st.Ident, 30*time.Second) {
 		return nil
 	}
 	if err := killVerified(st, syscall.SIGKILL); err != nil {
 		return err
 	}
-	if !waitDead(st.Ident, 5*time.Second) {
+	// discard=unmap hole punching can keep a killed process in disk io for minutes.
+	if !waitDead(st.Ident, 150*time.Second) {
 		return fmt.Errorf("process %d still alive after SIGKILL", st.PID)
 	}
 	return nil

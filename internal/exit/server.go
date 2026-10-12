@@ -21,7 +21,6 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-// ServerConfig controls the exit-agent server.
 type ServerConfig struct {
 	Listen         string // control plane TLS listen, e.g. :18443
 	Token          string
@@ -80,7 +79,6 @@ type transportRT struct {
 	publicPort int
 }
 
-// Server is the VPS-side exit agent.
 type Server struct {
 	cfg     ServerConfig
 	store   *PeerStore
@@ -155,8 +153,6 @@ func loadOrCreateWGKey(path string) (string, error) {
 	return k, nil
 }
 
-// Start brings up the data plane transports and the TLS control plane.
-// Returns the certificate fingerprint clients should TOFU-pin.
 func (s *Server) Start() (string, error) {
 	cert, fp, err := EnsureCert(s.cfg.StateDir)
 	if err != nil {
@@ -477,7 +473,6 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// ControlAddr returns the bound control-plane address (e.g. 127.0.0.1:port).
 func (s *Server) ControlAddr() string {
 	if s.ln == nil {
 		return ""
@@ -485,7 +480,6 @@ func (s *Server) ControlAddr() string {
 	return s.ln.Addr().String()
 }
 
-// Close tears down the control plane, devices, and the NAT backend.
 func (s *Server) Close() {
 	s.once.Do(func() {
 		close(s.closed)

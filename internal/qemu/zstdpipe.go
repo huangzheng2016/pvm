@@ -8,8 +8,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 )
 
-// SnapshotPipeOut compresses stdin into path with zstd. It runs as the
-// hidden `pvm __snapshot-pipe-out <path>` helper inside a QMP exec: URI.
+// SnapshotPipeOut is the hidden helper used by QMP exec: migration URIs.
 func SnapshotPipeOut(path string) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
@@ -22,7 +21,6 @@ func SnapshotPipeOut(path string) error {
 	return f.Sync()
 }
 
-// SnapshotPipeIn decompresses path to stdout (the -incoming counterpart).
 func SnapshotPipeIn(path string) error {
 	f, err := os.Open(path)
 	if err != nil {

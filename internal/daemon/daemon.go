@@ -98,7 +98,6 @@ func (s *Server) agentClient(name string) (*agent.Client, error) {
 	return c, nil
 }
 
-// dropAgent discards a broken shared connection.
 func (s *Server) dropAgent(name string, c *agent.Client) {
 	s.agentMu.Lock()
 	defer s.agentMu.Unlock()
@@ -148,8 +147,6 @@ func (s *Server) getSpec(name string) (*vm.Spec, error) {
 	}
 	spec, err := vm.Load(s.P, name)
 	if err != nil {
-		// Only a genuinely missing spec is a 404; a corrupted or unreadable
-		// one must surface its own cause instead of pretending the vm is gone.
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("vm %q not found", name)
 		}
@@ -271,20 +268,20 @@ func (s *Server) handleClusters(w http.ResponseWriter, r *http.Request) {
 }
 
 type createRequest struct {
-	Name   string   `json:"name"`
-	Image  string   `json:"image"`
-	User   string   `json:"user"`
-	CPUs   int      `json:"cpus"`
-	MemMB  int      `json:"mem_mb"`
-	DiskGB int      `json:"disk_gb"`
-	Mounts []string `json:"mounts"` // "/host:/guest"
-	Start  bool     `json:"start"`
-	// Region/identity profile (all optional).
-	TZ          string `json:"tz,omitempty"`
-	Locale      string `json:"locale,omitempty"`
-	GitEmail    string `json:"git_email,omitempty"`
-	GitName     string `json:"git_name,omitempty"`
-	SmbiosSpoof bool   `json:"smbios_spoof,omitempty"`
+	Name        string   `json:"name"`
+	Image       string   `json:"image"`
+	User        string   `json:"user"`
+	CPUs        int      `json:"cpus"`
+	MemMB       int      `json:"mem_mb"`
+	DiskGB      int      `json:"disk_gb"`
+	Mounts      []string `json:"mounts"` // "/host:/guest"
+	Start       bool     `json:"start"`
+	TZ          string   `json:"tz,omitempty"`
+	Locale      string   `json:"locale,omitempty"`
+	GitEmail    string   `json:"git_email,omitempty"`
+	GitName     string   `json:"git_name,omitempty"`
+	SmbiosSpoof bool     `json:"smbios_spoof,omitempty"`
+	NoGolden    bool     `json:"no_golden,omitempty"`
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -362,7 +359,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	base := filepath.Join(s.P.Images, fmt.Sprintf("%s-%s.qcow2", imageFileStem(req.Image), native.Arch))
 	goldenVer := 0
-	if distro, version, ok := strings.Cut(req.Image, ":"); ok {
+	if distro, version, ok := strings.Cut(req.Image, ":"); ok && !req.NoGolden {
 		if g := image.LatestGolden(s.P.Images, distro, version); g != nil {
 			base = filepath.Join(image.GoldenDir(s.P.Images), g.File)
 			goldenVer = g.Version
@@ -418,11 +415,6 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, vmInfo{Spec: spec, Running: req.Start})
 }
 
-// startVM ensures the cluster gateway and link are up before starting a
-// cluster-attached VM, prepares a snapshot restore when one is pending,
-// then starts QEMU. Starting a gateway schedules cluster link recovery
-// for its VMs. The started instance and snapshot manifest (nil for a
-// plain disk boot) are returned so callers can await the restore.
 func (s *Server) startVM(spec *vm.Spec) (*qemu.Instance, *qemu.SnapshotManifest, error) {
 	if spec.Role == "gateway" {
 		inst := s.instance(spec)
@@ -470,7 +462,6 @@ func (s *Server) deployClusterAgent(cl *cluster.Cluster) {
 }
 
 func imageFileStem(imageSpec string) string {
-	// "ubuntu:24.04" -> "ubuntu-24.04"
 	out := make([]byte, 0, len(imageSpec))
 	for _, c := range imageSpec {
 		if c == ':' {
@@ -548,8 +539,6 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"started": spec.Name})
 }
 
-// sshGuest runs a command inside the guest; used for snapshot-time 9p
-// mount management (umount before migrate, remount after restore).
 func (s *Server) sshGuest(spec *vm.Spec, remoteCmd string) error {
 	_, err := s.sshRun(spec, remoteCmd)
 	return err
@@ -656,8 +645,6 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	lock := qemu.LockVM(name)
 	lock.Lock()
 	defer lock.Unlock()
-	// Deleting while the process failed to stop leaves an orphaned qemu
-	// with no state behind; refuse instead.
 	if err := s.instance(spec).Stop(); err != nil {
 		writeErr(w, 500, fmt.Errorf("cannot stop %s safely (%v); not deleting", name, err))
 		return
@@ -692,7 +679,6 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// StopAllVMs gracefully stops every running VM (used on SIGTERM).
 func (s *Server) StopAllVMs() {
 	stopInfosParallel(s.collectInfos(), 8, func(spec *vm.Spec) {
 		lock := qemu.LockVM(spec.Name)
@@ -725,8 +711,6 @@ func stopInfosParallel(infos []vmInfo, limit int, stop func(*vm.Spec)) {
 	wg.Wait()
 }
 
-// recoverClusters restores gateways, links, port-map relays and agent
-// configs after a daemon (re)start.
 func (s *Server) recoverClusters() {
 	for _, cl := range s.Clusters.List() {
 		if _, err := s.ensureCluster(cl.ID); err != nil {
@@ -753,13 +737,11 @@ func (s *Server) recoverClusters() {
 	}
 }
 
-// Run starts the unix-socket HTTP server and blocks until shutdown.
 func Run(p *paths.Paths, srv *Server) error {
 	sock := p.DaemonSock()
-	// Single-instance guard, held for the daemon's whole lifetime: a
-	// second daemon would write stale in-memory state over clusters.json
-	// (the maps:null incident). The CLI autospawn lock (daemon.lock) is
-	// separate and only serialises spawning.
+	// Hold the run lock for the daemon lifetime: a second daemon could
+	// overwrite cluster state with stale in-memory data. The CLI autospawn
+	// lock is separate and only serialises spawning.
 	runLock, err := fsutil.TryLock(p.DaemonRunLock())
 	if err != nil {
 		holder := "unknown"

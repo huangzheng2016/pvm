@@ -1,10 +1,5 @@
-// Package assets unpacks embedded runtime assets (guest agent binaries,
-// future QEMU bundles) into ~/.pvm/runtime with SHA256 verification,
-// following the platform wails asset model: manifest-driven, zstd
-// compressed, versioned, old versions cleaned up.
-//
-// The embedded FS lives in packed_fs.go and is only compiled in with
-// `-tags embedassets`; otherwise Unpack is a no-op.
+// Package assets embeds guest binaries only in host builds; without the
+// embedassets tag, Unpack is a no-op.
 package assets
 
 import (
@@ -27,9 +22,6 @@ type manifestEntry struct {
 	Mode   int32  `json:"mode"`
 }
 
-// Unpack extracts all manifest entries into dir, verifying hashes. It is
-// safe to call on every startup: files whose hash already matches are
-// skipped. Without embedded assets (dev build) it is a no-op.
 func Unpack(dir string) error {
 	data, err := packed.ReadFile("packed/manifest.json")
 	if err != nil {

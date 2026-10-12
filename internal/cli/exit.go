@@ -18,7 +18,6 @@ import (
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
-// CmdExitAgent runs the VPS-side exit agent in the foreground.
 func CmdExitAgent(args []string) int {
 	fs := newFlagSet("exit-agent", "--token <tok> [--listen :18443] [--transport both|udp|tcp]")
 	listen := fs.String("listen", ":18443", "control plane TLS listen address")
@@ -80,7 +79,6 @@ func CmdExitAgent(args []string) int {
 	return 0
 }
 
-// CmdExit manages local exit-node entries.
 func CmdExit(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintln(os.Stderr, "usage: pvm exit <add|set|ls|rm|test> [args]")
@@ -263,7 +261,6 @@ func exitAdd(args []string) int {
 	return 0
 }
 
-// exitSet updates mutable fields of an existing entry (region profile).
 func exitSet(args []string) int {
 	fs := newFlagSet("exit set", "<name> [--tz TZ] [--locale L]")
 	tz := fs.String("tz", "", "IANA timezone of this exit's region")
@@ -402,7 +399,7 @@ func exitTest(args []string) int {
 	}
 	fmt.Printf("dialing %s (%s %s)...\n", e.Name, e.Transport, e.Endpoint)
 	if e.ServerIP == "" {
-		// Enrolled before server_ip was part of the response: learn it.
+		// Handshake verification needs ServerIP, which older saved entries may lack.
 		if err := reEnrollExit(dir, e); err != nil {
 			return fatalf("re-enroll: %v", err)
 		}
@@ -476,9 +473,6 @@ func exitTest(args []string) int {
 
 type hostIPResolver func(string) ([]net.IP, error)
 
-// reEnrollExit re-registers the entry's public key with the server (the
-// server reclaims idle peers and may hand the freed tunnel IP to another
-// peer) and persists the updated tunnel parameters.
 func reEnrollExit(dir string, e *exit.Entry) error {
 	host, err := os.Hostname()
 	if err != nil {

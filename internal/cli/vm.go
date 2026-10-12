@@ -175,6 +175,7 @@ func CmdCreate(args []string) int {
 	disk := fs.Int("disk", 0, "disk GB")
 	noStart := fs.Bool("no-start", false, "create but do not start")
 	noWait := fs.Bool("no-wait", false, "return immediately after boot instead of following provisioning")
+	bare := fs.Bool("base", false, "create from the plain base image (skip golden, no auto-bake)")
 	tz := fs.String("tz", "", "guest timezone (IANA, e.g. America/Los_Angeles; default UTC)")
 	locale := fs.String("locale", "", "guest locale (default en_US.UTF-8)")
 	gitEmail := fs.String("git-email", "", "git user.email in the guest (never copied from the host)")
@@ -201,6 +202,23 @@ func CmdCreate(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
+	imgDistro, imgVersion, _ := strings.Cut(spec, ":")
+	if !*bare && imgDistro != "" && image.LatestGolden(p.Images, imgDistro, imgVersion) == nil {
+		stem := strings.ReplaceAll(spec, ":", "-") + "-" + native.Arch + ".qcow2"
+		if _, err := os.Stat(p.Images + "/" + stem); err != nil {
+			ref, err := image.Resolve(spec)
+			if err != nil {
+				return fatalf("%v", err)
+			}
+			if _, err := image.Fetch(ref, p.Images, os.Stderr); err != nil {
+				return fatalf("fetch base image: %v", err)
+			}
+		}
+		fmt.Printf("no golden image for %s yet; baking one now (one-time)...\n", spec)
+		if rc := cmdImageBuild(p, spec, false, 4, 6144, 25); rc != 0 {
+			return fatalf("golden bake failed; retry, or use --base to create from the plain base image")
+		}
+	}
 	c, err := daemon.Ensure(p)
 	if err != nil {
 		return fatalf("%v", err)
@@ -209,6 +227,9 @@ func CmdCreate(args []string) int {
 		"name": *name, "image": spec, "user": *user,
 		"cpus": *cpus, "mem_mb": *mem, "disk_gb": *disk,
 		"mounts": []string(mounts), "start": !*noStart,
+	}
+	if *bare {
+		body["no_golden"] = true
 	}
 	if *tz != "" {
 		body["tz"] = *tz
@@ -249,8 +270,6 @@ func CmdCreate(args []string) int {
 	return 0
 }
 
-// describeImage prints the [1/5] stage line: which base/golden image
-// the VM will come from, or a fetch hint when it is missing.
 func describeImage(spec string, p *paths.Paths) {
 	kind := "base"
 	file := ""
@@ -355,8 +374,6 @@ func cmdVMSimple(args []string, action string) int {
 func CmdStart(args []string) int { return cmdVMSimple(args, "start") }
 func CmdStop(args []string) int  { return cmdVMSimple(args, "stop") }
 
-// CmdResize grows a vm's disk (grow-only): pvm resize <name> <gb>.
-// The vm must be stopped; the guest expands into the new space on boot.
 func CmdResize(args []string) int {
 	fs := newFlagSet("resize", "<name> <size-gb>")
 	if err := fs.Parse(partitionFlags(args)); err != nil {

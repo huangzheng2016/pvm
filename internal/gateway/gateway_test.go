@@ -30,7 +30,6 @@ func TestDHCPRoundTrip(t *testing.T) {
 	yip := net.ParseIP("192.168.1.10").To4()
 	gw := net.ParseIP("192.168.1.1").To4()
 	resp := buildDHCPReply(req, 2, yip, gw, net.CIDRMask(24, 32), gw, "dev1")
-	// parse our own reply back
 	if resp[0] != 2 {
 		t.Errorf("op: %d", resp[0])
 	}

@@ -18,7 +18,7 @@ import (
 func CloneSpec(src *Spec, newName, ip, mac string) *Spec {
 	dst := *src
 	dst.Name = newName
-	dst.Role = "user" // clones of user vms stay user vms
+	dst.Role = "user"
 	dst.IP = ip
 	dst.MAC = mac
 	dst.PrevTZ = ""
@@ -30,11 +30,9 @@ func CloneSpec(src *Spec, newName, ip, mac string) *Spec {
 	return &dst
 }
 
-// CloneDisk creates the destination VM directory with a full copy of the
-// source disk (no backing chain), fresh UEFI vars, and a copy of the
-// source seed (same user/mounts; cloud-init sees the same instance-id
-// and does not re-run — identity reset happens over ssh after boot).
-// The source VM must be stopped: converting a live disk is unsafe.
+// CloneDisk flattens the source disk so the clone has no backing chain.
+// The copied seed keeps its instance-id; identity reset happens over SSH
+// after boot. The source must be stopped because converting a live disk is unsafe.
 func CloneDisk(p *paths.Paths, tc *qemu.Toolchain, src, dst *Spec) error {
 	dir := filepath.Join(p.VMs, dst.Name)
 	if _, err := os.Stat(dir); err == nil {

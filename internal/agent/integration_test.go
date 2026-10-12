@@ -11,7 +11,6 @@ import (
 	"time"
 )
 
-// pipePair wires an in-memory Server and Client together.
 func pipePair(t *testing.T) (*Server, *Client) {
 	t.Helper()
 	h, g := net.Pipe()

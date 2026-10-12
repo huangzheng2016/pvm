@@ -1,4 +1,3 @@
-// Package config loads ~/.pvm/config.yaml.
 package config
 
 import (

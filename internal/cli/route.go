@@ -24,14 +24,6 @@ type routeListView struct {
 	DefaultExit string            `json:"default_exit"`
 }
 
-// CmdRoute implements:
-//
-//	pvm route ls
-//	pvm route add direct [--domain-suffix|--domain-prefix|--domain-keyword|--cidr] <value>
-//	pvm route add proxy  [--domain-suffix|...] <value> --via <exit>
-//	pvm route rm <index>
-//	pvm route <vm> --via <exit|direct>
-//	pvm route default --via <exit|direct>
 func CmdRoute(args []string) int {
 	p, err := mustPaths()
 	if err != nil {
@@ -87,7 +79,6 @@ func CmdRoute(args []string) int {
 		fmt.Printf("removed rule %s\n", args[1])
 		return 0
 	case "default":
-		// pvm route default --via <exit|direct>
 		fs := flag.NewFlagSet("route default", flag.ContinueOnError)
 		via := fs.String("via", "", "exit-node name, or direct")
 		if err := fs.Parse(args[1:]); err != nil {
@@ -104,7 +95,6 @@ func CmdRoute(args []string) int {
 		fmt.Println("config pushed; the gateway converges within a few seconds.")
 		return 0
 	default:
-		// pvm route <vm> --via <exit|direct>
 		fs := flag.NewFlagSet("route", flag.ContinueOnError)
 		via := fs.String("via", "", "exit-node name, or direct")
 		if err := fs.Parse(args[1:]); err != nil {

@@ -6,9 +6,8 @@ import (
 	"strings"
 )
 
-// Values below end up inside guest shell commands or cloud-init
-// directives, so keep the accepted shapes strict (same discipline as
-// region.go's TZ/Locale rules).
+// These values are interpolated into guest shell commands or cloud-init,
+// so reject unsafe shapes instead of escaping.
 var (
 	userRe      = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 	guestPathRe = regexp.MustCompile(`^/[a-zA-Z0-9/_.-]+$`)

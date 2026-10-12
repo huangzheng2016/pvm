@@ -13,8 +13,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// Ensure creates ~/.pvm/keys/id_ed25519{,.pub} if missing and returns the
-// authorized_keys-formatted public key.
 func Ensure(keyPath string) (pubAuthorized string, err error) {
 	if pub, err := os.ReadFile(keyPath + ".pub"); err == nil {
 		return string(pub), nil

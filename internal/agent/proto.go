@@ -22,7 +22,6 @@ import (
 )
 
 const (
-	// PortName is the virtio-serial port name the guest agent listens on.
 	PortName = "pvm.agent"
 
 	OpPing  = "ping"
@@ -84,7 +83,6 @@ func (fw *frameWriter) write(f *Frame) error {
 	return err
 }
 
-// readFrame decodes one JSON line. Returns io.EOF cleanly on close.
 func readFrame(r *bufio.Reader, f *Frame) error {
 	line, err := r.ReadBytes('\n')
 	if err != nil {

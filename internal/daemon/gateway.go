@@ -17,7 +17,6 @@ import (
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
-// gatewayAgentBinary returns the unpacked native gateway agent.
 func (s *Server) gatewayAgentBinary() (string, error) {
 	p := filepath.Join(s.P.Runtime, native.GuestBinary("gateway"))
 	if _, err := os.Stat(p); err != nil {
@@ -26,9 +25,6 @@ func (s *Server) gatewayAgentBinary() (string, error) {
 	return p, nil
 }
 
-// ensureCluster makes sure the cluster exists in the store and its
-// gateway VM exists and is running, with the agent deployed. It is safe
-// to call repeatedly.
 func (s *Server) ensureCluster(id int) (*cluster.Cluster, error) {
 	cl, err := s.Clusters.Ensure(id)
 	if err != nil {
@@ -59,10 +55,6 @@ func (s *Server) ensureCluster(id int) (*cluster.Cluster, error) {
 	return cl, nil
 }
 
-// onGatewayStarted re-establishes cluster links after a gateway (re)
-// start: gateway-side sockets for every VM, NIC hot-replace on running
-// user VMs, agent deploy, then a reachability check with one repair
-// retry for VMs whose link did not come back.
 func (s *Server) onGatewayStarted(cl *cluster.Cluster) {
 	var repaired []*vm.Spec
 	for _, vn := range cl.VMs {
@@ -167,8 +159,6 @@ func (s *Server) createGatewayVM(cl *cluster.Cluster) (*vm.Spec, error) {
 	if err != nil {
 		return nil, err
 	}
-	// The gateway is distro-agnostic inside; boot it off the newest cached
-	// ubuntu base image instead of pinning a version the user may not have.
 	base, imgSpec := "", ""
 	for _, v := range []string{"26.04", "24.04", "22.04"} {
 		cand := filepath.Join(s.P.Images, fmt.Sprintf("ubuntu-%s-%s.qcow2", v, native.Arch))
@@ -195,8 +185,6 @@ func (s *Server) createGatewayVM(cl *cluster.Cluster) (*vm.Spec, error) {
 	return spec, nil
 }
 
-// ensureLink hot-adds the cluster link (stream netdev + virtio NIC) on
-// the gateway for the given user VM. The gateway QEMU must be running.
 func (s *Server) ensureLink(cl *cluster.Cluster, vmName string) error {
 	gwSpec, err := s.getSpec(cl.Gateway)
 	if err != nil {
@@ -244,7 +232,7 @@ func (s *Server) ensureLink(cl *cluster.Cluster, vmName string) error {
 func (s *Server) removeLink(cl *cluster.Cluster, vmName string) error {
 	gwSpec, err := s.getSpec(cl.Gateway)
 	if err != nil {
-		return nil // gateway gone already
+		return nil
 	}
 	if st, err := s.instance(gwSpec).Running(); err != nil || st == nil {
 		return nil
@@ -259,8 +247,6 @@ func (s *Server) removeLink(cl *cluster.Cluster, vmName string) error {
 	return nil
 }
 
-// deployGatewayAgent waits for the gateway ssh to come up, pushes the
-// agent binary and config, and starts the service.
 func (s *Server) deployGatewayAgent(cl *cluster.Cluster) error {
 	gwSpec, err := s.getSpec(cl.Gateway)
 	if err != nil {
@@ -362,10 +348,7 @@ func gatewayInstallCmd(remote string) string {
 	return fmt.Sprintf("sudo install -m 0644 %s /etc/pvm/gateway.json.pvm-new && sudo mv -f /etc/pvm/gateway.json.pvm-new /etc/pvm/gateway.json; rc=$?; rm -f %s; exit $rc", remote, remote)
 }
 
-// pushGatewayConfigRetry pushes the gateway config, retrying while the
-// gateway's ssh is still coming up after a (re)start. Each attempt
-// re-renders from a fresh snapshot and aborts immediately if the
-// gateway qemu is dead instead of blocking for the full budget.
+// Retry while gateway SSH starts, but fail immediately when QEMU is dead.
 func (s *Server) pushGatewayConfigRetry(clusterID int) error {
 	var err error
 	gwName := ""

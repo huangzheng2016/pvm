@@ -9,9 +9,7 @@ import (
 	"time"
 )
 
-// StageEvent is one milestone in a VM's create/boot lifecycle, shown by
-// `pvm create` follow mode. Stages are kept in memory only: they exist
-// to explain what is happening *right now*, not as an audit trail.
+// Stages are in-memory progress, not an audit trail.
 type StageEvent struct {
 	Stage  string    `json:"stage"`
 	Detail string    `json:"detail,omitempty"`
@@ -44,9 +42,7 @@ func (s *Server) vmReady(vmName string) bool {
 	return false
 }
 
-// handleConsole serves GET /v1/vms/{name}/console?tail=N: the last N
-// lines of the guest serial console log plus the file size (callers
-// diff sizes to detect new output).
+// The file size lets followers detect new output across tail windows.
 func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if _, err := s.getSpec(name); err != nil {
@@ -74,8 +70,7 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"lines": lines, "size": size})
 }
 
-// tailLines reads the last n lines of path without loading the whole
-// file (console logs grow unbounded). Returns the lines and file size.
+// Console logs grow unbounded, so read only a bounded tail window.
 func tailLines(path string, n int) ([]string, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {

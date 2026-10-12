@@ -12,8 +12,7 @@ import (
 	"github.com/huangzheng2016/pvm/internal/daemon"
 )
 
-// CmdExec runs a command in the guest over the virtio-serial agent
-// channel: pvm exec <vm> <cmd...>. Works with guest networking down.
+// The virtio-serial agent channel works even when guest networking is down.
 func CmdExec(args []string) int {
 	if len(args) < 2 {
 		return fatalf("usage: pvm exec <name> <cmd...>")
@@ -76,7 +75,6 @@ func CmdExec(args []string) int {
 	return exitCode
 }
 
-// CmdAgent runs the guest agent; only meaningful inside a linux guest.
 func CmdAgent(args []string) int {
 	if runtime.GOOS != "linux" {
 		return fatalf("pvm agent runs inside a linux guest")

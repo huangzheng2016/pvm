@@ -22,7 +22,6 @@ func (a *Agent) applyNetwork(c *Config) error {
 	if err := run("ip", "link", "add", "name", a.br, "type", "bridge"); err != nil && !strings.Contains(err.Error(), "File exists") {
 		return fmt.Errorf("create bridge: %w", err)
 	}
-	// idempotent-ish: adding the same addr again errors, ignore that one
 	if out, err := exec.Command("ip", "addr", "replace", c.GwIP+"/"+maskBits(c.CIDR), "dev", a.br).CombinedOutput(); err != nil {
 		return fmt.Errorf("bridge addr: %v\n%s", err, out)
 	}

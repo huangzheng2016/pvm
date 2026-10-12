@@ -60,7 +60,6 @@ func TestResolveNAT(t *testing.T) {
 
 func TestIptablesRulesRender(t *testing.T) {
 	rules := iptablesRules([]string{"pvmexit0", "pvmexit1"}, []string{"10.99.0.0/24", "10.99.1.0/24"})
-	// 2 nat + 4 filter
 	if len(rules) != 6 {
 		t.Fatalf("got %d rules, want 6", len(rules))
 	}

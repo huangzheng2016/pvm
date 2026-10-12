@@ -91,7 +91,6 @@ func (f *fakeDNS) Start(bindIP string) error {
 	}
 }
 
-// SetRules swaps in a freshly compiled engine built from the config.
 func (f *fakeDNS) SetRules(rs []rules.Rule) error {
 	eng, err := rules.NewEngine("", rules.DefaultInternal())
 	if err != nil {
@@ -109,13 +108,10 @@ func (f *fakeDNS) SetRules(rs []rules.Rule) error {
 	return nil
 }
 
-// Rules returns the current engine (shared with the flow policy).
 func (f *fakeDNS) Rules() *rules.Engine { return f.srv.Rules() }
 
-// Pool exposes the fake-ip pool for the transparent proxy.
 func (f *fakeDNS) Pool() *gwdns.Pool { return f.pool }
 
-// DumpMappings writes the domain<->fake-ip view for `pvm dns ls`.
 func (f *fakeDNS) DumpMappings(path string) {
 	m := f.pool.Snapshot()
 	out := map[string]string{}

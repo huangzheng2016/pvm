@@ -43,7 +43,6 @@ func TestGoldenVersionIncrementAndLatest(t *testing.T) {
 	if g == nil || g.Version != 2 {
 		t.Fatalf("want v2, got %+v", g)
 	}
-	// version increment mirrors what Bake computes
 	cat, _ := loadGoldenCatalog(dir)
 	next := 1
 	if ms := cat.match("ubuntu", "24.04"); len(ms) > 0 {

@@ -57,7 +57,7 @@ func TestStuckTracker(t *testing.T) {
 	if tr.observe(100) {
 		t.Fatal("should not report stuck immediately")
 	}
-	tr.observe(200) // new output resets
+	tr.observe(200)
 	time.Sleep(60 * time.Millisecond)
 	if !tr.observe(200) {
 		t.Fatal("should report stuck after silence")
@@ -81,7 +81,6 @@ func TestSkipOverlap(t *testing.T) {
 	if len(got) != 1 || got[0] != "x" {
 		t.Errorf("skipOverlap repeat = %v, want [x]", got)
 	}
-	// No overlap at all: print everything.
 	got = skipOverlap([]string{"a"}, []string{"b", "c"})
 	if len(got) != 2 {
 		t.Errorf("skipOverlap disjoint = %v, want [b c]", got)

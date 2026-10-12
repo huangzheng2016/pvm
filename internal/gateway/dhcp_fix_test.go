@@ -32,8 +32,7 @@ func TestParseDHCPValid(t *testing.T) {
 	}
 }
 
-// A crafted hlen must not slice out of range (this used to panic and
-// kill the whole gateway agent).
+// A crafted hlen must not slice out of range or panic the gateway agent.
 func TestParseDHCPRejectsBadHlen(t *testing.T) {
 	for _, tc := range []struct {
 		name string

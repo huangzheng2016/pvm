@@ -23,7 +23,6 @@ func TestAtomicWrite(t *testing.T) {
 	if fi.Mode().Perm() != 0o600 {
 		t.Errorf("perm: %o", fi.Mode().Perm())
 	}
-	// overwrite works and leaves no temp files
 	if err := AtomicWrite(p, []byte(`{"a":2}`), 0o600); err != nil {
 		t.Fatal(err)
 	}

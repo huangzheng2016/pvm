@@ -62,14 +62,11 @@ func nftRuleset(tunNames []string, cidrs []string) string {
 	return b.String()
 }
 
-// NFTInstall creates/replaces our table. Best-effort cleanup of any
-// previous version first.
 func NFTInstall(tunNames []string, cidrs []string) error {
 	_ = NFTRemove(tunNames)
 	return runNFT(nftRuleset(tunNames, cidrs))
 }
 
-// NFTRemove deletes our table only.
 func NFTRemove(tunNames []string) error {
 	out, err := exec.Command("nft", "delete", "table", "inet", nftTableFor(tunNames)).CombinedOutput()
 	// ExitError.Stderr is only populated by Cmd.Output, never by
@@ -90,7 +87,6 @@ func runNFT(script string) error {
 	return nil
 }
 
-// ConfigureTUN assigns addr/cidr to the interface and brings it up (Linux).
 func ConfigureTUN(name, addrWithMask string) error {
 	if out, err := exec.Command("ip", "addr", "replace", addrWithMask, "dev", name).CombinedOutput(); err != nil {
 		return fmt.Errorf("ip addr replace: %v: %s", err, out)
@@ -101,7 +97,6 @@ func ConfigureTUN(name, addrWithMask string) error {
 	return nil
 }
 
-// EnableIPForward turns on IPv4 forwarding at runtime and persists it.
 func EnableIPForward() error {
 	if out, err := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").CombinedOutput(); err != nil {
 		return fmt.Errorf("sysctl ip_forward: %v: %s", err, out)

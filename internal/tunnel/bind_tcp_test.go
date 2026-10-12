@@ -10,8 +10,6 @@ import (
 	"golang.zx2c4.com/wireguard/conn"
 )
 
-// roundTrip starts a TCPBind server, dials a raw client, and checks framing
-// in both directions.
 func TestTCPBindRoundTrip(t *testing.T) {
 	bind := NewTCPBind().(*TCPBind)
 	fns, port, err := bind.Open(0)

@@ -19,9 +19,6 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-// ExitDef is everything the gateway needs to build a tunnel to one
-// exit-node (the daemon pushes these for exits referenced by rules or
-// per-VM routes).
 type ExitDef struct {
 	Server      string `json:"server"`      // control plane host:port
 	Token       string `json:"token"`       // control plane bearer token
@@ -131,13 +128,9 @@ func newExitManager() *exitManager {
 	}
 }
 
-// Sync converges tunnels and ip rules to the config. exits contains
-// only the defs that are referenced; vmExits is vmName -> exit name
-// ("direct"/"" handled by caller); vmIPs maps vmName -> cluster IP;
-// proxiedCIDRs and directCIDRs come from the routing rules. clusterCIDR
-// and defaultExit ("" = none) describe the cluster-wide fallback route:
-// with one set, every VM without an explicit exit enters the default
-// tunnel, and VMs explicitly marked direct get an override rule.
+// Sync converges tunnels and policy routing. With a cluster default exit,
+// VMs without an explicit exit use it, while explicitly direct VMs get a
+// main-table override.
 func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, vmIPs map[string]string, proxiedCIDRs, directCIDRs []string, clusterCIDR, defaultExit string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -337,8 +330,6 @@ func (m *exitManager) BypassList() []string {
 }
 
 func (m *exitManager) reconcileRulesLocked(wantVM map[string]int, wantCIDR map[string]int, wantBypass map[string]bool) {
-	// Only a successful del forgets the rule: on error the kernel may
-	// still have it, and forgetting would strand it forever.
 	for ip, idx := range m.vmRules {
 		if _, ok := wantVM[ip]; !ok {
 			if err := ipRuleCmd("del", "from", ip+"/32", "lookup", strconv.Itoa(ruleTableBase+idx)); err == nil {
@@ -617,7 +608,6 @@ func (m *exitManager) cleanupDevice(t *exitTunnel) {
 	}
 }
 
-// CloseAll tears down every tunnel (agent shutdown).
 func (m *exitManager) CloseAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()

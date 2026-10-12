@@ -13,7 +13,6 @@ import (
 	"github.com/huangzheng2016/pvm/internal/fsutil"
 )
 
-// Peer is one enrolled gateway/client.
 type Peer struct {
 	IP        string    `json:"ip"` // tunnel IP, e.g. 10.99.0.2
 	PubKey    string    `json:"pubkey"`
@@ -41,13 +40,10 @@ func subnetsFor(base int) map[string]string {
 	}
 }
 
-// SubnetFor returns the CIDR serving a transport (default base, client view).
 func SubnetFor(transport string) (string, error) {
 	return subnetOf(subnetsFor(defaultSubnetBase), transport)
 }
 
-// ServerIP returns the server's address inside a transport subnet (".1"),
-// default base (client view).
 func ServerIP(transport string) (string, error) {
 	return serverIPOf(subnetsFor(defaultSubnetBase), transport)
 }
@@ -137,7 +133,6 @@ func (s *PeerStore) Allocate(pubkey, hostname, transport string) (Peer, bool, er
 	return Peer{}, false, fmt.Errorf("tunnel IP pool exhausted for %s", transport)
 }
 
-// Get returns the peer with the given tunnel IP.
 func (s *PeerStore) Get(ip string) (Peer, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -149,7 +144,6 @@ func (s *PeerStore) Get(ip string) (Peer, bool) {
 	return Peer{}, false
 }
 
-// Remove deletes the peer with the given tunnel IP. Returns false if absent.
 func (s *PeerStore) Remove(ip string) (Peer, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -162,7 +156,6 @@ func (s *PeerStore) Remove(ip string) (Peer, bool, error) {
 	return Peer{}, false, nil
 }
 
-// List returns peers sorted by IP.
 func (s *PeerStore) List() []Peer {
 	s.mu.Lock()
 	defer s.mu.Unlock()

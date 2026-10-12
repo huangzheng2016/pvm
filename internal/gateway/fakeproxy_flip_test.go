@@ -23,9 +23,8 @@ func newFlipTestPolicy(t *testing.T) *policy.Engine {
 	return policy.New(re, pool)
 }
 
-// W2: when a policy hot-swap flips a live flow's decision (direct ->
-// proxy here), the old connection must be reset so it re-dials via the
-// new route instead of leaking on the old path.
+// A direct -> proxy policy flip must reset live flows so they reconnect
+// via the new route instead of leaking on the old path.
 func TestSetPolicyResetsFlippedConnections(t *testing.T) {
 	eng := newFlipTestPolicy(t)
 	p := newFakeProxy(eng, "10.0.2.3", nil)
@@ -51,7 +50,7 @@ func TestSetPolicyResetsFlippedConnections(t *testing.T) {
 	assertOpen(t, src2, "unaffected connection must stay open")
 }
 
-// W2: a proxied flow whose exit tunnel goes down is reset immediately
+// A proxied flow whose exit tunnel goes down is reset immediately
 // (fail-closed reconnect), not left hanging until the idle timeout.
 func TestSetExitHooksResetsDeadTunnelConnections(t *testing.T) {
 	eng := newFlipTestPolicy(t)
@@ -75,7 +74,7 @@ func TestSetExitHooksResetsDeadTunnelConnections(t *testing.T) {
 	assertOpen(t, src2, "direct flow must stay open")
 }
 
-// W2: flows whose decision did NOT change survive a policy reload with
+// Flows whose decision did NOT change survive a policy reload with
 // the same content (steady-state applies must be no-ops).
 func TestSetPolicyKeepsUnchangedConnections(t *testing.T) {
 	eng := newFlipTestPolicy(t)

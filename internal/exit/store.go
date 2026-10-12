@@ -22,7 +22,6 @@ func entryPath(dir, name string) string {
 	return filepath.Join(dir, name+".json")
 }
 
-// Entry is a locally stored exit-node enrollment (client side).
 type Entry struct {
 	Name         string `json:"name"`
 	Server       string `json:"server"` // control plane host:port
@@ -61,7 +60,6 @@ func SaveEntry(dir string, e *Entry) error {
 	return fsutil.AtomicWrite(entryPath(dir, e.Name), b, 0o600)
 }
 
-// LoadEntry reads one entry by name.
 func LoadEntry(dir, name string) (*Entry, error) {
 	if !ValidName(name) {
 		return nil, fmt.Errorf("invalid exit name %q", name)
@@ -77,7 +75,6 @@ func LoadEntry(dir, name string) (*Entry, error) {
 	return &e, nil
 }
 
-// ListEntries returns all entries sorted by name.
 func ListEntries(dir string) ([]*Entry, error) {
 	fis, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -101,7 +98,6 @@ func ListEntries(dir string) ([]*Entry, error) {
 	return out, nil
 }
 
-// RemoveEntry deletes the local entry file.
 func RemoveEntry(dir, name string) error {
 	if !ValidName(name) {
 		return fmt.Errorf("invalid exit name %q", name)

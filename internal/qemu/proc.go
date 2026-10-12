@@ -7,8 +7,7 @@ import (
 	"strings"
 )
 
-// ProcIdentity pins down a process beyond its PID so a recycled PID is
-// never signalled by mistake (same defence as the platform supervisor).
+// ProcIdentity prevents a recycled PID from being signalled by mistake.
 type ProcIdentity struct {
 	PID     int    `json:"pid"`
 	Started string `json:"started"` // ps lstart, opaque but stable per boot+pid
@@ -17,9 +16,7 @@ type ProcIdentity struct {
 
 func IdentityOf(pid int) (*ProcIdentity, error) {
 	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=,lstart=")
-	// ps renders lstart in the caller's locale (LC_TIME); a CJK date has
-	// fewer whitespace fields and breaks the field-count parse, which used
-	// to kill healthy qemus as "process not found".
+	// lstart is locale-sensitive (LC_TIME); CJK dates break the field-count parse.
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 	out, err := cmd.Output()
 	if err != nil {
@@ -39,12 +36,8 @@ func IdentityOf(pid int) (*ProcIdentity, error) {
 	return &ProcIdentity{PID: pid, Started: started, Comm: comm}, nil
 }
 
-// Alive reports whether a process matching this identity still exists.
-// Comparison is pid + exact start time + exact comm: macOS truncates
-// comm to 16 bytes so a "contains qemu" test would fail, but a recycled
-// PID can never share both start time and comm. Only a definitive
-// not-found means dead; a transient probe failure must not convince the
-// caller to kill or double-start the process, so those read as alive.
+// Only a definitive not-found means dead; probe failures read as alive so
+// callers never kill or double-start on uncertainty.
 func (id *ProcIdentity) Alive() bool {
 	cur, err := IdentityOf(id.PID)
 	if err != nil {

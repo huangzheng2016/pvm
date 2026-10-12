@@ -15,14 +15,12 @@ import (
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
-// Tunnel is a live userspace WireGuard client connection.
 type Tunnel struct {
 	Net *netstack.Net
 	Dev *device.Device
 }
 
-// DialEntry brings up a netstack WireGuard client from a stored entry —
-// no OS TUN, no root. Call Close when done.
+// DialEntry uses an in-memory netstack, so no OS TUN or root is required.
 func DialEntry(e *Entry) (*Tunnel, error) {
 	ip, err := netip.ParseAddr(e.TunnelIP)
 	if err != nil {

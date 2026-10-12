@@ -39,7 +39,6 @@ func TestUDPSessionTableCloseAll(t *testing.T) {
 	if tab.get(udpFlow{srcIP: "a"}) != nil || tab.get(udpFlow{srcIP: "b"}) != nil {
 		t.Fatal("sessions not cleared")
 	}
-	// idempotent
 	tab.closeAll()
 }
 

@@ -5,11 +5,8 @@ import (
 	"strconv"
 )
 
-// SSHPortBase is the first host loopback port used for hostfwd SSH.
 const SSHPortBase = 10022
 
-// AllocSSHPort returns the lowest port >= base that is neither assigned
-// to another VM nor already bound on the host.
 func AllocSSHPort(used map[int]bool, base int) (int, error) {
 	for p := base; p < base+2000; p++ {
 		if used[p] {

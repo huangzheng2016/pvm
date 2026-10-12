@@ -1,4 +1,3 @@
-// Package paths defines the ~/.pvm data layout.
 package paths
 
 import (
@@ -72,7 +71,6 @@ func (p *Paths) AgentSock(name string) string {
 	return filepath.Join(p.VMDir(name), "agent.sock")
 }
 
-// AgentBin returns the unpacked native guest agent binary.
 func (p *Paths) AgentBin() string {
 	return filepath.Join(p.Runtime, native.GuestBinary("agent"))
 }

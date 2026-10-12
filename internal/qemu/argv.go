@@ -13,7 +13,6 @@ type Mount struct {
 	HostPath string
 }
 
-// NetMode selects the guest network topology.
 type NetMode string
 
 const (
@@ -25,16 +24,13 @@ const (
 	NetCluster NetMode = "cluster"
 )
 
-// Network is the per-VM network configuration.
 type Network struct {
-	Mode NetMode
-	// slirp mode
+	Mode        NetMode
 	SSHHostPort int
 	PoolBase    int // gateway only: hostfwd pool start (tcp+udp)
 	PoolSize    int
-	// cluster mode
-	LinkSock string // unix socket the gateway listens on
-	MAC      string
+	LinkSock    string // unix socket the gateway listens on
+	MAC         string
 }
 
 type VMConfig struct {
@@ -66,13 +62,8 @@ type VMConfig struct {
 	// SmbiosSpoof presents common commodity hardware in DMI instead of
 	// the QEMU defaults.
 	SmbiosSpoof bool
-	// GPU attaches a virtio-gpu display device (guest gets /dev/dri);
-	// headless VMs (gateway, image bake) leave it off.
-	GPU bool
-	// Balloon attaches virtio-balloon with free-page-reporting: the guest
-	// continuously returns idle pages to the host, which is what makes
-	// ram overcommit across vms safe. User VMs default it on.
-	Balloon bool
+	GPU         bool // virtio-gpu display device
+	Balloon     bool // virtio-balloon with free-page-reporting
 }
 
 // BuildArgs constructs the full qemu argv (excluding the binary itself).

@@ -9,9 +9,6 @@ import "strings"
 // these IPs is already hijacked onto the gateway resolver, so blocking
 // 443/853 does not break legitimate name lookups — it only forces the
 // DoH/DoQ path to fail so clients fall back to plain DNS.
-//
-// Sources (2026-10): cloudflare.com/learning/dns, dns.google,
-// quad9.net, opendns.com, adguard-dns.io, cleanbrowsing.org, dns.sb.
 var wellKnownDoHResolvers = []string{
 	// Cloudflare (1.1.1.1 family, incl. malware/family variants)
 	"1.1.1.1", "1.0.0.1", "1.1.1.2", "1.0.0.2", "1.1.1.3", "1.0.0.3",

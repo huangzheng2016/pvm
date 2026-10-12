@@ -11,22 +11,18 @@ import (
 	"github.com/huangzheng2016/pvm/internal/tunnel"
 )
 
-// ProbeSpeedBytes is the default download size for transport probing.
 const ProbeSpeedBytes = 8 << 20
 
 // probeHandshakeTimeout marks a transport unusable when its handshake does
 // not complete in time (relaxed in -race test runs).
 var probeHandshakeTimeout = 10 * time.Second
 
-// SpeedSample is one ping+download round against the speed endpoint.
 type SpeedSample struct {
 	RTT  time.Duration
 	Mbps float64
 	Err  error
 }
 
-// SampleSpeed runs n ping+download rounds against the tunnel speed
-// endpoint. Individual failures are recorded per sample.
 func (t *Tunnel) SampleSpeed(ctx context.Context, serverIP netip.Addr, bytesN int64, n int) []SpeedSample {
 	if n < 1 {
 		n = 1
@@ -175,7 +171,6 @@ func ProbeAll(ctx context.Context, server, token, fingerprint string, transports
 	return out
 }
 
-// RevokeProbe removes a probe's enrolled peer on the server.
 func RevokeProbe(ctx context.Context, server, token, fingerprint string, p *TransportProbe) {
 	if p == nil || p.Resp == nil {
 		return
@@ -217,7 +212,6 @@ func ChooseTransport(probes []*TransportProbe) (*TransportProbe, error) {
 	return nil, fmt.Errorf("all transports failed: %s", strings.Join(reasons, "; "))
 }
 
-// Entry builds a storable entry from a winning probe.
 func (p *TransportProbe) Entry(name, server, token, fingerprint string) *Entry {
 	return &Entry{
 		Name:         name,

@@ -164,7 +164,6 @@ func parseDHCP(b []byte) (*dhcpRequest, error) {
 		flags: binary.BigEndian.Uint16(b[10:12]),
 	}
 	r.mac = formatMAC(b[28 : 28+int(b[2])])
-	// options
 	for i := 240; i+2 <= len(b); {
 		code, ln := b[i], int(b[i+1])
 		if code == 255 {

@@ -52,7 +52,6 @@ func (r *sshRunner) args(extra ...string) []string {
 	return append(base, extra...)
 }
 
-// runScript streams a script to `sudo bash -s` in the guest.
 func (r *sshRunner) runScript(script string, out io.Writer) error {
 	cmd := exec.Command("ssh", r.args("sudo", "bash", "-s")...)
 	cmd.Stdin = strings.NewReader(script)
@@ -67,7 +66,6 @@ func (r *sshRunner) output(args ...string) (string, error) {
 	return strings.TrimSpace(string(b)), err
 }
 
-// Bake builds a golden image from a fetched base image.
 func Bake(o *BakeOptions) (*GoldenEntry, error) {
 	if o.Out == nil {
 		o.Out = io.Discard
@@ -161,11 +159,15 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 	}
 
 	// Graceful ACPI powerdown via QMP; ssh is gone with the build user.
+	// The guest powers off quickly, but the qemu process can take minutes
+	// to exit under disk io load (discard=unmap, writeback flush): wait for
+	// the natural exit with a long ceiling and only escalate at the end.
 	fmt.Fprintf(o.Out, "shutting down build vm (QMP powerdown)...\n")
-	if err := inst.Stop(); err != nil {
-		return nil, fmt.Errorf("stop build vm: %w", err)
+	if q, err := qemu.DialQMP(inst.Cfg.QMPSock); err == nil {
+		q.Powerdown()
+		q.Close()
 	}
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(8 * time.Minute)
 	for {
 		st, err := inst.Running()
 		if err != nil {
@@ -175,9 +177,12 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 			break
 		}
 		if !time.Now().Before(deadline) {
-			return nil, fmt.Errorf("build vm did not power off")
+			if err := inst.Stop(); err != nil {
+				return nil, fmt.Errorf("stop build vm: %w", err)
+			}
+			break
 		}
-		time.Sleep(time.Second)
+		time.Sleep(2 * time.Second)
 	}
 
 	digest, err := fileSHA256(base)

@@ -8,7 +8,6 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-// nftBackend manages our dedicated nftables table (existing behavior).
 type nftBackend struct{}
 
 func (nftBackend) name() string { return NATNftables }

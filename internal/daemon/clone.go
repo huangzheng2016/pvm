@@ -152,12 +152,9 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, map[string]any{"spec": spec, "maps": added, "running": req.Start})
 }
 
-// maybeIdentityReset regenerates guest identity (hostname, machine-id,
-// ssh host keys) and rewrites netplan (the source's cloud-init pinned
-// DHCP to the source MAC, so a clone has no network until netplan is
-// fixed). The agent channel is preferred — it needs no guest network;
-// ssh is the fallback. Runs in the background; failures are logged,
-// never fatal.
+// The source's netplan pins DHCP to the source MAC, so a clone has no
+// network until it is rewritten. Prefer the network-independent agent;
+// reset failures are logged without failing the clone.
 func (s *Server) maybeIdentityReset(spec *vm.Spec) {
 	if !spec.IdentityReset {
 		return
@@ -204,7 +201,6 @@ func (s *Server) identityReset(spec *vm.Spec) error {
 		return nil
 	}
 
-	// No agent in the guest: fall back to ssh (needs working network).
 	if err := s.waitSSH(spec, 6*time.Minute); err != nil {
 		return fmt.Errorf("identity reset unreachable (agent: %v): %w", lastErr, err)
 	}
@@ -214,15 +210,10 @@ func (s *Server) identityReset(spec *vm.Spec) error {
 	return nil
 }
 
-// identityResetScript is run once inside a fresh clone. ssh restart does
-// not drop established sessions on Ubuntu, so our own connection lives.
-// The netplan rewrite matches the primary NIC by name (en*) instead of
-// the source's MAC, making future clones boot network-ready too.
-//
-// Only machine-level identifiers are reset (hostname/machine-id/ssh host
-// keys); user files are inherited verbatim — a clone is the same device
-// from the user's point of view (install Claude after cloning if both
-// machines should read as distinct devices).
+// Ubuntu's ssh restart keeps the current session alive. Netplan matches
+// the NIC by name rather than the source MAC so later clones also boot
+// with networking. Only machine-level identifiers are reset; user files
+// are inherited verbatim.
 func identityResetScript(spec *vm.Spec) string {
 	return ubuntuIdentityResetScript(spec.Name)
 }
@@ -233,9 +224,8 @@ func identityResetScript(spec *vm.Spec) string {
 const useSudo = `SUDO=''; [ "$(id -u)" -ne 0 ] && SUDO='sudo'`
 
 func ubuntuIdentityResetScript(newHostname string) string {
-	// set -e makes any failure abort non-zero so the caller retries on the
-	// next boot; the tolerated ssh restart at the end cannot mask a real
-	// failure the way '; ... || true' did.
+	// set -e makes failures abort non-zero so the caller retries on the next
+	// boot; the tolerated ssh restart cannot mask earlier failures.
 	return "set -e\n" + useSudo + "\n" + fmt.Sprintf(
 		"printf 'network:\n  version: 2\n  ethernets:\n    primary:\n      match:\n        name: en*\n      dhcp4: true\n' | $SUDO tee /etc/netplan/50-cloud-init.yaml >/dev/null\n"+
 			"$SUDO netplan apply\n"+

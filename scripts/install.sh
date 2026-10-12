@@ -55,4 +55,4 @@ case ":$PATH:" in
   *) echo "add to PATH: export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
 esac
 
-echo "next: pvm daemon status && pvm image fetch ubuntu:24.04 && pvm create --image ubuntu:24.04 --name dev1 --user dev"
+echo "next: pvm create --image ubuntu:26.04 --name dev1 --user dev  (首次会自动下载镜像并烘焙 golden，属一次性，约十几分钟)"

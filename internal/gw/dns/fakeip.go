@@ -52,8 +52,6 @@ func normDomain(d string) string {
 	return strings.TrimSuffix(d, ".")
 }
 
-// Allocate returns the fake IP for domain, reusing and refreshing an
-// existing mapping when present.
 func (p *Pool) Allocate(domain string) net.IP {
 	domain = normDomain(domain)
 	p.mu.Lock()
@@ -99,7 +97,6 @@ func (p *Pool) evictLocked() uint32 {
 	return ip
 }
 
-// Lookup resolves a fake IP back to its domain.
 func (p *Pool) Lookup(ip net.IP) (string, bool) {
 	v := binary.BigEndian.Uint32(ip.To4())
 	p.mu.Lock()
@@ -108,7 +105,6 @@ func (p *Pool) Lookup(ip net.IP) (string, bool) {
 	return d, ok
 }
 
-// Contains reports whether ip belongs to the pool's CIDR.
 func (p *Pool) Contains(ip net.IP) bool {
 	v := binary.BigEndian.Uint32(ip.To4())
 	return v > p.base && v < p.base+p.count-1
@@ -120,8 +116,6 @@ func (p *Pool) Len() int {
 	return len(p.dToI)
 }
 
-// Snapshot returns a copy of all domain -> fake-ip mappings (for status
-// dumps like `pvm dns ls`).
 func (p *Pool) Snapshot() map[string]string {
 	p.mu.Lock()
 	defer p.mu.Unlock()

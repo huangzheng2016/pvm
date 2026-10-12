@@ -1,7 +1,3 @@
-// Package exit implements the pvm exit-node: the VPS-side agent
-// (control plane + WireGuard data plane + NAT) and the client side
-// (enroll with TOFU certificate pinning, local entry store, and the
-// netstack test harness).
 package exit
 
 import (
@@ -22,8 +18,6 @@ import (
 	"time"
 )
 
-// EnsureCert loads or creates the persisted self-signed server certificate.
-// Returns the TLS certificate and its sha256 fingerprint (hex).
 func EnsureCert(dir string) (tls.Certificate, string, error) {
 	certPath := filepath.Join(dir, "server-cert.pem")
 	keyPath := filepath.Join(dir, "server-key.pem")
@@ -86,7 +80,6 @@ func fingerprintDER(der []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// Fingerprint computes the sha256 hex fingerprint of a raw peer certificate.
 func Fingerprint(rawCert []byte) (string, error) {
 	if _, err := x509.ParseCertificate(rawCert); err != nil {
 		return "", fmt.Errorf("parse peer certificate: %w", err)

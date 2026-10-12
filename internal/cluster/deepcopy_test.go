@@ -21,7 +21,6 @@ func TestGetReturnsDeepCopy(t *testing.T) {
 	if got == nil {
 		t.Fatal("Get returned nil")
 	}
-	// Mutating the returned cluster must not touch store state.
 	got.VMs["hacked"] = &VMNet{Name: "hacked"}
 	got.Maps = append(got.Maps, &PortMap{VM: "hacked"})
 	got.VMExits["hacked"] = "us"

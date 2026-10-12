@@ -1,6 +1,3 @@
-// Package cluster manages cluster state: subnet allocation, per-VM
-// IP/MAC assignment, gateway port pools and port maps. State persists
-// to ~/.pvm/clusters/clusters.json (atomic writes).
 package cluster
 
 import (
@@ -101,7 +98,6 @@ func (s *Store) save() error {
 	return fsutil.AtomicWrite(s.path, data, 0o600)
 }
 
-// Ensure returns the cluster, creating it (with subnet) if missing.
 func (s *Store) Ensure(id int) (*Cluster, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -209,9 +205,8 @@ func (s *Store) LinkSock(id int, vmName string) string {
 	return filepath.Join(s.LinksDir(id), vmName+".sock")
 }
 
-// AddVM assigns the lowest free IP (from .10) and a derived MAC. The OUI
-// is Dell's (10:65:30) instead of QEMU's (52:54:00): a guest reading its
-// own NIC address must not see a hypervisor vendor tell.
+// Dell's OUI hides QEMU's hypervisor vendor tell from guests reading
+// their own NIC address.
 func (s *Store) AddVM(id int, name string) (*VMNet, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -267,8 +262,6 @@ func (s *Store) RemoveVM(id int, name string) error {
 	return s.save()
 }
 
-// AddMap allocates a pool port and records the map. Requested host port
-// 0 means auto-assign from 127.0.0.1-bindable ports outside the pool.
 func (s *Store) AddMap(id int, vmName, vmIP string, hostPort, guestPort int, proto string) (*PortMap, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

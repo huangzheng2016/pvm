@@ -9,7 +9,6 @@ import (
 	"github.com/huangzheng2016/pvm/internal/gw/rules"
 )
 
-// gatewayConfigFromCluster renders the /etc/pvm/gateway.json payload.
 func gatewayConfigFromCluster(s *Server, cl *cluster.Cluster) []byte {
 	type vmEntry struct {
 		Name string `json:"name"`
@@ -48,8 +47,7 @@ func gatewayConfigFromCluster(s *Server, cl *cluster.Cluster) []byte {
 	for _, m := range cl.Maps {
 		doc.Maps = append(doc.Maps, mapEntry{HostPort: m.PoolPort, VMIP: m.VMIP, GuestPort: m.GuestPort, Proto: m.Proto})
 	}
-	// only exits referenced by a rule, a per-VM route, or the cluster
-	// default route are pushed
+	// Push only referenced exits so unrelated credentials stay off the gateway.
 	want := map[string]bool{}
 	for _, exitName := range cl.VMExits {
 		if exitName != "" && exitName != "direct" {
@@ -67,7 +65,7 @@ func gatewayConfigFromCluster(s *Server, cl *cluster.Cluster) []byte {
 	for name := range want {
 		e, err := exit.LoadEntry(filepath.Join(s.P.Home, "exits"), name)
 		if err != nil {
-			continue // unregistered exit: the gateway marks flows un routable
+			continue // Unregistered exits stay absent so their flows fail closed.
 		}
 		if doc.Exits == nil {
 			doc.Exits = map[string]exitDef{}

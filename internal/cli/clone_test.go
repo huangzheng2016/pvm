@@ -26,7 +26,6 @@ func TestPlanMapsInherit(t *testing.T) {
 		{HostPort: 18090, GuestPort: 80, Proto: "tcp"},
 		{HostPort: 18091, GuestPort: 443, Proto: "tcp"},
 	}
-	// 18091 busy: second map must remap to the next free port.
 	plans, err := planMaps(maps, "inherit", busySet(map[int]bool{18091: true}), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -63,9 +62,9 @@ func TestPlanMapsInteractive(t *testing.T) {
 		{HostPort: 18092, GuestPort: 22, Proto: "tcp"},
 	}
 	answers := []func(srcMapView, int) (int, bool){
-		func(m srcMapView, _ int) (int, bool) { return m.HostPort, true }, // keep
-		func(_ srcMapView, _ int) (int, bool) { return 0, false },         // skip
-		func(_ srcMapView, _ int) (int, bool) { return 29922, true },      // custom
+		func(m srcMapView, _ int) (int, bool) { return m.HostPort, true },
+		func(_ srcMapView, _ int) (int, bool) { return 0, false },
+		func(_ srcMapView, _ int) (int, bool) { return 29922, true },
 	}
 	i := 0
 	prompt := func(m srcMapView, suggested int) (int, bool) {
@@ -90,7 +89,6 @@ func TestNextFreePort(t *testing.T) {
 	if got := nextFreePort("tcp", 18091, free); got != 18093 {
 		t.Errorf("nextFreePort(18091) = %d, want 18093", got)
 	}
-	// Everything from prefer up is busy: wrap around to low range.
 	free2 := func(_ string, p int) bool { return p == 1024 }
 	if got := nextFreePort("tcp", 65535, free2); got != 1024 {
 		t.Errorf("wrap-around nextFreePort = %d, want 1024", got)
@@ -106,32 +104,26 @@ func TestPromptMapInherit(t *testing.T) {
 	free := busySet(nil)
 	busy18090 := busySet(map[int]bool{18090: true})
 
-	// Custom port.
 	port, ok := promptMapInherit(bufio.NewReader(strings.NewReader("18095\n")), free)(m, 18091)
 	if !ok || port != 18095 {
 		t.Errorf("custom port: got (%d,%v)", port, ok)
 	}
-	// y with free original port keeps it.
 	port, ok = promptMapInherit(bufio.NewReader(strings.NewReader("y\n")), free)(m, 18091)
 	if !ok || port != 18090 {
 		t.Errorf("y free: got (%d,%v)", port, ok)
 	}
-	// y with busy original port remaps to the suggested free one.
 	port, ok = promptMapInherit(bufio.NewReader(strings.NewReader("y\n")), busy18090)(m, 18091)
 	if !ok || port != 18091 {
 		t.Errorf("y busy: got (%d,%v)", port, ok)
 	}
-	// Skip answers.
 	for _, in := range []string{"\n", "n\n", "no\n", "abc\n", "80\n"} {
 		if _, ok := promptMapInherit(bufio.NewReader(strings.NewReader(in)), free)(m, 18091); ok {
 			t.Errorf("input %q should skip", in)
 		}
 	}
-	// Custom busy port skips.
 	if _, ok := promptMapInherit(bufio.NewReader(strings.NewReader("18090\n")), busy18090)(m, 18091); ok {
 		t.Error("busy custom port should skip")
 	}
-	// EOF skips.
 	if _, ok := promptMapInherit(bufio.NewReader(strings.NewReader("")), free)(m, 18091); ok {
 		t.Error("EOF should skip")
 	}

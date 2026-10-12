@@ -1,4 +1,3 @@
-// Package image fetches and catalogs golden base images.
 package image
 
 import (
@@ -28,7 +27,6 @@ type Ref struct {
 	SumKind string // sha256 | sha512
 }
 
-// Resolve maps "ubuntu:24.04" / "debian:13" to native download URLs.
 func Resolve(spec string) (*Ref, error) {
 	distro, version, ok := strings.Cut(spec, ":")
 	if !ok {
@@ -53,9 +51,7 @@ func Resolve(spec string) (*Ref, error) {
 	return nil, fmt.Errorf("unknown distro %q (supported: ubuntu, debian)", distro)
 }
 
-// debianImagePaths returns the cloud-image directory and file name for a
-// supported release. 14 (forky) is pre-release: it only has daily builds
-// under a different directory layout and a -daily filename suffix.
+// Debian 14 pre-release uses daily paths and a -daily filename suffix.
 func debianImagePaths(v, qarch string) (dir, file string, err error) {
 	switch v {
 	case "12":
@@ -68,7 +64,6 @@ func debianImagePaths(v, qarch string) (dir, file string, err error) {
 	return "", "", fmt.Errorf("unsupported debian version %q (supported: 12, 13, 14)", v)
 }
 
-// FileName is the canonical local file name for a fetched image.
 func (r *Ref) FileName() string {
 	return fmt.Sprintf("%s-%s-%s.qcow2", r.Distro, r.Version, r.Arch)
 }
@@ -298,7 +293,6 @@ type LocalImage struct {
 	Size int64
 }
 
-// List returns fetched images in dir.
 func List(dir string) ([]LocalImage, error) {
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {

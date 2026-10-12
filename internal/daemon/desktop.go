@@ -69,11 +69,8 @@ func randHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-// handleDesktop idempotently starts a native XFCE desktop (TigerVNC +
-// noVNC) inside the VM as the login user and publishes it through a
-// cluster port map. The returned URL carries the VNC password as a noVNC
-// query parameter over loopback, so no login page and no daemon-side
-// credential proxy are needed.
+// The noVNC URL carries the VNC password over loopback, avoiding a
+// daemon-side credential proxy.
 func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	spec, err := s.getSpec(name)
@@ -117,7 +114,7 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if running && st != nil {
-		writeJSON(w, 200, desktopResponse{URL: desktopURL(st), HostPort: st.HostPort})
+		writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort})
 		return
 	}
 	// Session down or state lost: (re)create. A lost state means we cannot
@@ -132,7 +129,6 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// publish websockify through the cluster map (reuse an existing one)
 	hostPort := 0
 	for _, m := range s.Clusters.Get(spec.ClusterID).Maps {
 		if m.VM == spec.Name && m.GuestPort == desktopWebPort && m.Proto == "tcp" {
@@ -166,11 +162,9 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, fmt.Errorf("save desktop state: %v", err))
 		return
 	}
-	writeJSON(w, 200, desktopResponse{URL: desktopURL(st), HostPort: st.HostPort})
+	writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort})
 }
 
-// handleDesktopStop kills the VNC session and websockify in the guest and
-// removes the host port map.
 func (s *Server) handleDesktopStop(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	spec, err := s.getSpec(name)
@@ -196,22 +190,20 @@ func (s *Server) handleDesktopStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"stopped": name})
 }
 
-func desktopURL(st *desktopState) string {
-	return fmt.Sprintf("http://127.0.0.1:%d/vnc.html?password=%s&autoconnect=true&resize=scale", st.HostPort, st.Password)
+func desktopURL(st *desktopState, name string) string {
+	// The fragment tags the URL per VM: browsers key the cache on the full
+	// URL, and two VMs serving different noVNC versions on the same
+	// host:port would otherwise poison each other's cached assets.
+	return fmt.Sprintf("http://127.0.0.1:%d/vnc.html?password=%s&autoconnect=true&resize=scale#%s", st.HostPort, st.Password, name)
 }
 
-// desktopSessionRunning reports whether Xtigervnc for our display and a
-// websockify for our web port are both alive in the guest. The bracket
-// trick keeps pgrep from matching the very shell that runs the check.
+// The bracket trick keeps pgrep from matching the shell running the check.
 func (s *Server) desktopSessionRunning(spec *vm.Spec) bool {
 	out, err := s.sshRun(spec, fmt.Sprintf(
 		"pgrep -f '[X]tigervnc %s' >/dev/null && pgrep -f '[w]ebsockify -D' >/dev/null && echo UP", desktopVNCDisplay))
 	return err == nil && strings.Contains(out, "UP")
 }
 
-// startDesktopSession writes the xstartup and password files as the login
-// user, starts Xtigervnc on the display and websockify/noVNC on the web
-// port, then waits for vnc.html to answer.
 func (s *Server) startDesktopSession(spec *vm.Spec, st *desktopState) error {
 	xstartup := `#!/bin/sh
 unset SESSION_MANAGER
@@ -219,7 +211,7 @@ unset DBUS_SESSION_BUS_ADDRESS
 exec startxfce4
 `
 	script := fmt.Sprintf(`set -e
-mkdir -p "$HOME/.vnc"
+mkdir -p "$HOME/.vnc" "$HOME/.config"
 cat > "$HOME/.vnc/xstartup" <<'EOF'
 %sEOF
 chmod +x "$HOME/.vnc/xstartup"

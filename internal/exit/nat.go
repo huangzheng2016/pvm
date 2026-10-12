@@ -33,8 +33,6 @@ type natBackend interface {
 	cleanup(tunNames []string, cidrs []string) error
 }
 
-// resolveNAT picks the effective backend. auto probes nft → iptables →
-// userspace; an explicit choice is validated (userspace always works).
 func resolveNAT(choice string) (natBackend, error) {
 	switch choice {
 	case "", NATAuto:
@@ -61,12 +59,10 @@ func resolveNAT(choice string) (natBackend, error) {
 	return nil, fmt.Errorf("unknown --nat %q (auto|nft|iptables|userspace)", choice)
 }
 
-// netfilterTun creates a real OS TUN (shared by nft/iptables backends).
 func netfilterTun(tunName string, mtu int) (tun.Device, error) {
 	return tun.CreateTUN(tunName, mtu)
 }
 
-// ResolveNATName reports the backend a --nat choice resolves to.
 func ResolveNATName(choice string) (string, error) {
 	b, err := resolveNAT(choice)
 	if err != nil {

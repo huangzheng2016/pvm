@@ -14,7 +14,6 @@ import (
 
 const launchdLabel = "com.huangzheng2016.pvm"
 
-// ServiceInstall writes a LaunchAgent plist and bootstraps it.
 // KeepAlive is false on purpose: `pvm daemon stop` must stick.
 func ServiceInstall(p *paths.Paths) error {
 	exe, err := os.Executable()

@@ -17,7 +17,6 @@ var (
 	localeRe = regexp.MustCompile(`^[a-z]{2,3}(_[A-Z]{2})?\.UTF-8$`)
 )
 
-// ValidateTZ checks an IANA timezone name.
 func ValidateTZ(tz string) error {
 	if !tzRe.MatchString(tz) {
 		return fmt.Errorf("invalid timezone %q (expected e.g. America/Los_Angeles)", tz)
@@ -25,7 +24,6 @@ func ValidateTZ(tz string) error {
 	return nil
 }
 
-// NormalizeLocale converts en_US / en_US.utf8 to en_US.UTF-8 and validates.
 func NormalizeLocale(l string) (string, error) {
 	l = strings.TrimSpace(l)
 	if l == "" {

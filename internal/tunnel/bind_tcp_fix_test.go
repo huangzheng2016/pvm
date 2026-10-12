@@ -19,8 +19,6 @@ func openTestBind(t *testing.T) (*TCPBind, string) {
 	return b, (&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: int(port)}).String()
 }
 
-// An idle inbound connection must be torn down once the first-frame
-// deadline passes (it has not even started a WG handshake).
 func TestTCPBindFirstReadTimeout(t *testing.T) {
 	orig := tcpFirstReadTimeoutNs.Load()
 	tcpFirstReadTimeoutNs.Store(int64(150 * time.Millisecond))

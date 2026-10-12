@@ -28,14 +28,11 @@ func newPushTestServer(t *testing.T) *Server {
 	return s
 }
 
-// C1: a render must reflect the store as of the render call, not a
-// caller-held snapshot from before someone else's mutation.
 func TestRenderGatewayConfigFreshSnapshot(t *testing.T) {
 	s := newPushTestServer(t)
 	if _, err := s.Clusters.Ensure(1); err != nil {
 		t.Fatal(err)
 	}
-	// caller grabs an early copy (what the old code used to render from)
 	stale := s.Clusters.Get(1)
 
 	var first, second []byte
@@ -67,7 +64,6 @@ func TestRenderGatewayConfigFreshSnapshot(t *testing.T) {
 	_ = stale // the stale copy must never be consulted by the render path
 }
 
-// C1: concurrent renders for one cluster are serialized (no interleave).
 func TestRenderGatewayConfigSerialized(t *testing.T) {
 	s := newPushTestServer(t)
 	if _, err := s.Clusters.Ensure(1); err != nil {
@@ -103,8 +99,6 @@ func TestRenderGatewayConfigSerialized(t *testing.T) {
 	}
 }
 
-// C2: scp targets are unique per push and the install is an atomic
-// rename of a fully uploaded file.
 func TestGatewayRemoteTmpAndAtomicInstall(t *testing.T) {
 	a := gatewayRemoteTmp()
 	time.Sleep(time.Millisecond)
@@ -124,8 +118,6 @@ func TestGatewayRemoteTmpAndAtomicInstall(t *testing.T) {
 	}
 }
 
-// M4: retry aborts immediately when the gateway qemu is not running
-// instead of blocking for the whole budget.
 func TestPushRetryFailsFastWhenGatewayDown(t *testing.T) {
 	s := newPushTestServer(t)
 	cl, err := s.Clusters.Ensure(1)
@@ -149,8 +141,6 @@ func TestPushRetryFailsFastWhenGatewayDown(t *testing.T) {
 	}
 }
 
-// The rendered payload stays valid JSON across mutations (a truncated
-// or half-merged file must never be produced).
 func TestRenderGatewayConfigValidJSON(t *testing.T) {
 	s := newPushTestServer(t)
 	if _, err := s.Clusters.Ensure(1); err != nil {
@@ -175,8 +165,6 @@ func TestRenderGatewayConfigValidJSON(t *testing.T) {
 	}
 }
 
-// The cluster default route is rendered into the payload and omitted
-// once cleared.
 func TestRenderGatewayConfigDefaultExit(t *testing.T) {
 	s := newPushTestServer(t)
 	if _, err := s.Clusters.Ensure(1); err != nil {

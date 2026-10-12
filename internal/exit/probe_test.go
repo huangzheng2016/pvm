@@ -167,7 +167,6 @@ func TestProbeInProcessUserspace(t *testing.T) {
 }
 
 func TestAggregateSamples(t *testing.T) {
-	// average across successful samples
 	rtt, mbps, err := AggregateSamples([]SpeedSample{
 		{RTT: 100 * time.Millisecond, Mbps: 10},
 		{RTT: 200 * time.Millisecond, Mbps: 20},

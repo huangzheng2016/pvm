@@ -9,7 +9,6 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
-// GenerateKey returns a base64 WireGuard private key.
 func GenerateKey() (string, error) {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
@@ -20,7 +19,6 @@ func GenerateKey() (string, error) {
 	return base64.StdEncoding.EncodeToString(b[:]), nil
 }
 
-// PublicKey derives the base64 public key for a base64 private key.
 func PublicKey(privB64 string) (string, error) {
 	priv, err := base64.StdEncoding.DecodeString(privB64)
 	if err != nil || len(priv) != 32 {
@@ -33,7 +31,6 @@ func PublicKey(privB64 string) (string, error) {
 	return base64.StdEncoding.EncodeToString(pub), nil
 }
 
-// Hex encodes a base64 key as hex for IpcSet.
 func Hex(keyB64 string) (string, error) {
 	b, err := base64.StdEncoding.DecodeString(keyB64)
 	if err != nil || len(b) != 32 {

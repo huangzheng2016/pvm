@@ -26,8 +26,6 @@ var (
 	systemTZFn   = systemTZ
 )
 
-// DetectSuggestedTZ resolves the suggested IANA timezone once. Called at
-// exit-agent startup; the result is served on every enroll.
 func DetectSuggestedTZ(stateDir string) string {
 	cachePath := filepath.Join(stateDir, "tz.json")
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second) //nolint:staticcheck // bounded by httpTimeout too

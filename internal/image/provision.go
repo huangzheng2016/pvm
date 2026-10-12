@@ -5,26 +5,21 @@ import (
 	"strings"
 )
 
-// GoldenPackages are apt packages baked into every golden image.
 var GoldenPackages = []string{
 	"docker.io", "qemu-guest-agent",
 	"build-essential", "git", "curl", "jq", "python3-pip",
 	"htop", "vim", "unzip", "ca-certificates", "fonts-noto-cjk",
 }
 
-// DesktopPackages are the native XFCE + TigerVNC + noVNC stack baked into
-// golden images and launched on demand by `pvm desktop`. No display
-// manager: the VNC session is started per-user only when requested.
+// DesktopPackages omits a display manager; VNC sessions start per user on demand.
 var DesktopPackages = []string{
 	"xfwm4", "xfce4-panel", "xfdesktop4", "xfce4-session", "xfce4-settings",
 	"xfconf", "thunar", "xfce4-terminal", "dbus-x11", "xterm",
 	"tigervnc-standalone-server", "novnc", "websockify", "x11-xserver-utils",
 }
 
-// renderProvision produces the bash script executed over SSH inside the
-// build VM. The script is self-terminating: it deletes the build user at
-// the end, so nothing may ssh into the VM afterwards (poweroff is done
-// via QMP, not ssh).
+// The provision script deletes buildUser before returning, so subsequent
+// shutdown must use QMP rather than SSH.
 func renderProvision(distro, buildUser string, proxy ProxyConfig) (string, error) {
 	switch distro {
 	case "ubuntu", "debian":
@@ -57,8 +52,7 @@ fi
 		return b.String()
 	}() + `
 apt-get update
-# fail fast when the desktop stack does not exist on this distro release
-# (e.g. debian forky has no tigervnc) instead of dying after the upgrade
+# e.g. debian forky has no tigervnc: fail before the long upgrade
 apt-cache show tigervnc-standalone-server novnc websockify >/dev/null 2>&1 || { echo "desktop packages (tigervnc/novnc/websockify) unavailable on this release" >&2; exit 1; }
 apt-get -y upgrade
 # lightdm/xserver-xorg come in via Recommends (xfce4-session -> light-locker
@@ -90,6 +84,8 @@ docker builder prune -af >/dev/null 2>&1 || true
 docker image prune -f >/dev/null 2>&1 || true
 journalctl --vacuum-time=1s || true
 rm -rf /var/log/*.gz /var/log/*.[0-9] || true
+# early: hole punching keeps the host in disk io for minutes; drain before shutdown
+fstrim -av || true
 if command -v cloud-init >/dev/null; then cloud-init clean --logs --seed; fi
 rm -rf /var/lib/cloud/instances/* || true
 # per-clone uniqueness: host keys, machine-id, fstab share entry
@@ -97,7 +93,6 @@ rm -f /etc/ssh/ssh_host_*
 truncate -s 0 /etc/machine-id
 rm -f /var/lib/dbus/machine-id
 sed -i '/^pvmshare /d' /etc/fstab
-fstrim -av || true
 sync
 
 # last: drop the build user (it holds the host uid which clones reuse).

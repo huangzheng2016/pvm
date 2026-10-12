@@ -1,4 +1,3 @@
-// Package fsutil provides atomic file writes and lock files.
 package fsutil
 
 import (
@@ -8,8 +7,7 @@ import (
 	"syscall"
 )
 
-// AtomicWrite writes data to a temp file in the same directory, fsyncs,
-// then renames over path.
+// A same-directory temporary file makes the final rename atomic.
 func AtomicWrite(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
@@ -35,10 +33,8 @@ func AtomicWrite(path string, data []byte, perm os.FileMode) error {
 	return os.Rename(tmpName, path)
 }
 
-// Lock holds an exclusive flock on an open file.
 type Lock struct{ f *os.File }
 
-// TryLock acquires an exclusive non-blocking flock.
 func TryLock(path string) (*Lock, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {

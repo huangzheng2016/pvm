@@ -10,7 +10,6 @@ import (
 	"github.com/huangzheng2016/pvm/internal/daemon"
 )
 
-// consoleView mirrors the daemon's console endpoint response.
 type consoleView struct {
 	Lines []string `json:"lines"`
 	Size  int64    `json:"size"`
@@ -28,8 +27,6 @@ var cloudInitMarkers = []*regexp.Regexp{
 	regexp.MustCompile(`SSH host keys|cidata|DataSourceNoCloud`),
 }
 
-// filterConsoleLines returns the subset of lines worth showing during
-// create follow mode. When raw is true every line passes (pvm logs).
 func filterConsoleLines(lines []string, raw bool) []string {
 	if raw {
 		return lines
@@ -49,8 +46,6 @@ func filterConsoleLines(lines []string, raw bool) []string {
 
 var ansiEsc = regexp.MustCompile("\x1b\\[[0-9;]*[a-zA-Z]")
 
-// stripKernelPrefix turns "[   12.345678] cloud-init[9]: msg" into
-// "cloud-init: msg" for readable follow output; other lines pass through.
 func stripKernelPrefix(ln string) string {
 	ln = ansiEsc.ReplaceAllString(ln, "")
 	if !strings.HasPrefix(ln, "[") {
@@ -68,7 +63,6 @@ func stripKernelPrefix(ln string) string {
 	return rest
 }
 
-// stuckTracker reports when the console has been silent too long.
 type stuckTracker struct {
 	after     time.Duration
 	lastSize  int64
@@ -79,8 +73,6 @@ func newStuckTracker(after time.Duration) *stuckTracker {
 	return &stuckTracker{after: after, lastNewAt: time.Now()}
 }
 
-// observe records the latest console size and reports whether the VM
-// has produced no new output for the configured duration.
 func (t *stuckTracker) observe(size int64) bool {
 	if size != t.lastSize {
 		t.lastSize = size
@@ -90,10 +82,6 @@ func (t *stuckTracker) observe(size int64) bool {
 	return time.Since(t.lastNewAt) > t.after
 }
 
-// followProvision streams a VM's provisioning progress until ssh is
-// ready (daemon stage "ready"), the daemon reports a failure, or the
-// timeout hits. It prints interesting cloud-init lines as they appear
-// and a stuck hint when the console goes quiet.
 func followProvision(c *daemon.Client, name string, timeout time.Duration) int {
 	deadline := time.Now().Add(timeout)
 	stuck := newStuckTracker(90 * time.Second)
@@ -167,7 +155,6 @@ func lastNonEmpty(lines []string, n int) []string {
 	return out
 }
 
-// CmdLogs implements `pvm logs <name> [--follow] [--tail N]`.
 func CmdLogs(args []string) int {
 	fs := newFlagSet("logs", "<name> [--follow] [--tail 200]")
 	follow := fs.Bool("follow", false, "keep streaming new console lines")

@@ -42,7 +42,6 @@ func speedHandler() http.Handler {
 	return mux
 }
 
-// randReader streams crypto-random bytes.
 type randReader struct{}
 
 func (*randReader) Read(p []byte) (int, error) {
@@ -61,8 +60,6 @@ func serveSpeedConn(c net.Conn) {
 	speedHandler().ServeHTTP(&connResponseWriter{conn: c, header: http.Header{}}, req)
 }
 
-// connResponseWriter adapts a raw conn to http.ResponseWriter for one
-// request, buffering headers until first Write.
 type connResponseWriter struct {
 	conn        net.Conn
 	header      http.Header

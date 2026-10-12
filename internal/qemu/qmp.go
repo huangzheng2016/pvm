@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-// QMP is a minimal QEMU Machine Protocol client: enough for capability
-// negotiation, status query and graceful powerdown.
 type QMP struct {
 	conn   net.Conn
 	r      *bufio.Reader
@@ -152,31 +150,26 @@ func (q *QMP) WaitEvent(name string, d time.Duration) error {
 	}
 }
 
-// Powerdown asks the guest to shut down via ACPI.
 func (q *QMP) Powerdown() error {
 	_, err := q.Execute("system_powerdown", nil)
 	return err
 }
 
-// Stop pauses the vCPUs (migration preparation).
 func (q *QMP) Stop() error {
 	_, err := q.Execute("stop", nil)
 	return err
 }
 
-// Cont resumes paused vCPUs.
 func (q *QMP) Cont() error {
 	_, err := q.Execute("cont", nil)
 	return err
 }
 
-// Quit terminates the QEMU process.
 func (q *QMP) Quit() error {
 	_, err := q.Execute("quit", nil)
 	return err
 }
 
-// Migrate starts migrating to the given URI (e.g. "exec:cmd").
 func (q *QMP) Migrate(uri string) error {
 	_, err := q.Execute("migrate", map[string]any{"uri": uri})
 	return err
@@ -236,8 +229,6 @@ func (q *QMP) DeviceDel(id string, timeout time.Duration) error {
 	}
 }
 
-// MigrateStatus polls query-migrate: "active", "completed", "failed",
-// "cancelled", ...
 func (q *QMP) MigrateStatus() (string, error) {
 	raw, err := q.Execute("query-migrate", nil)
 	if err != nil {
@@ -252,7 +243,6 @@ func (q *QMP) MigrateStatus() (string, error) {
 	return s.Status, nil
 }
 
-// Status returns e.g. "running", "paused", "shutdown".
 func (q *QMP) Status() (string, error) {
 	raw, err := q.Execute("query-status", nil)
 	if err != nil {

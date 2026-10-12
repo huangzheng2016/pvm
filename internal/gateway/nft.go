@@ -8,18 +8,11 @@ import (
 	"strings"
 )
 
-// RenderNFT produces the complete `inet pvm` table for the config:
-// MASQUERADE out the uplink and out any exit tunnels, one DNAT per port
-// map, DNS hijack (plain DNS is forced to the gateway resolver, DoT and
-// well-known public DoH/DoQ endpoints are refused so clients fall back
-// to plain DNS), the fake-ip REDIRECT into the local transparent proxy,
-// and a default-deny forward policy for br0 -> uplink: only bypass
-// destinations (direct CIDRs and learned direct-domain IPs) and the
-// registered DHCP MAC/IP pairs of direct VMs may pass, so exit-routed
-// VMs fail closed when the tunnel is down and unregistered or spoofed
-// sources get nothing. The table is rebuilt atomically on every apply
-// so stale rules can never linger; bypassIPs carries the current
-// learned set so the rebuild preserves it.
+// RenderNFT rebuilds the table atomically so stale rules cannot linger.
+// The br0 -> uplink forward policy is default-deny: only bypass
+// destinations and registered MAC/IP pairs of direct VMs may pass, so
+// exit-routed VMs fail closed and spoofed sources cannot escape.
+// bypassIPs preserves learned direct-domain bypasses across rebuilds.
 func RenderNFT(c *Config, uplink, br string, bypassIPs []string) string {
 	var b strings.Builder
 	b.WriteString("destroy table inet pvm\n")

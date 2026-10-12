@@ -21,10 +21,8 @@ import (
 //	disk.restore.qcow2  per-restore overlay backed by disk.snap.qcow2
 //	snapshot.json       manifest
 //
-// Two platform bugs are deliberately not repeated:
-//  1. any failure after QMP stop resumes the guest with cont (defer);
-//  2. the old snap base is only replaced after the new one is fully
-//     converted (temp file + rename), never deleted beforehand.
+// Snapshot creation must resume a paused guest on failure and replace the
+// old snap base only after the new conversion completes.
 type SnapshotManifest struct {
 	Name        string    `json:"name"`
 	Arch        string    `json:"arch"`
@@ -82,10 +80,8 @@ func (m *SnapshotManifest) save(vmDir string) error {
 	return fsutil.AtomicWrite(SnapPaths(vmDir).Manifest, data, 0o600)
 }
 
-// checkMatch verifies a manifest against the VM config it would restore
-// into; a heterogeneous restore is refused outright. Migration streams
-// are only guaranteed within one qemu runtime, so the toolchain version
-// must match too.
+// checkMatch refuses a heterogeneous restore (migration streams are only
+// guaranteed within one qemu runtime).
 func (m *SnapshotManifest) checkMatch(c *VMConfig, qemuVersion string) error {
 	if m.Arch != native.Arch || m.CPUs != c.CPUs || m.MemMB != c.MemMB {
 		return fmt.Errorf("snapshot mismatch: snap %s/%dc/%dMB vs vm %s/%dc/%dMB; delete the snapshot or recreate the vm identically",
@@ -319,9 +315,6 @@ func (in *Instance) PrepareRestore(vmDir string) (*SnapshotManifest, error) {
 	return m, nil
 }
 
-// WaitRestored blocks until the incoming migration completes, resumes
-// the guest, re-attaches the 9p shares and marks the snapshot consumed
-// so the next start is a plain disk boot.
 func (in *Instance) WaitRestored(vmDir string) error {
 	deadline := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(deadline) {

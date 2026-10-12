@@ -7,8 +7,7 @@ import (
 	"strings"
 )
 
-// ProxyConfig is the proxy environment used only while baking a golden
-// image. Loopback addresses are rewritten for the build VM's slirp network.
+// Loopback proxy addresses must be rewritten for the build VM's slirp network.
 type ProxyConfig struct {
 	HTTPProxy  string
 	HTTPSProxy string
@@ -27,8 +26,6 @@ func (p ProxyConfig) normalized() ProxyConfig {
 	return p
 }
 
-// ProxyConfigFromEnv reads the host's proxy settings and rewrites only
-// loopback proxy hosts for the build VM (10.0.2.2 on QEMU slirp).
 func ProxyConfigFromEnv() ProxyConfig {
 	return ProxyConfig{
 		HTTPProxy:  rewriteProxyURL(os.Getenv("HTTP_PROXY")),

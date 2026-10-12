@@ -25,10 +25,7 @@ type mapPlan struct {
 	Note      string
 }
 
-// planMaps decides which of the source VM's port maps the clone gets.
-// mode "none" skips all, "inherit" keeps each (remapping busy ports),
-// "interactive" asks via prompt. prompt receives the map and a suggested
-// alternate port; it returns (port, true) to keep or (0, false) to skip.
+// prompt returns (0, false) to skip a map.
 func planMaps(maps []srcMapView, mode string, free func(proto string, port int) bool, prompt func(m srcMapView, suggested int) (int, bool)) ([]mapPlan, error) {
 	var out []mapPlan
 	for _, m := range maps {
@@ -93,9 +90,6 @@ func probePortFree(proto string, port int) bool {
 	return true
 }
 
-// promptMapInherit implements the interactive per-map decision:
-// y = keep (same port, or a suggested free one if busy), N = skip,
-// a number = remap to that host port.
 func promptMapInherit(r *bufio.Reader, free func(string, int) bool) func(srcMapView, int) (int, bool) {
 	return func(m srcMapView, suggested int) (int, bool) {
 		fmt.Printf("  inherit map %d:%d/%s? [y/N/<new port>] ", m.HostPort, m.GuestPort, m.Proto)

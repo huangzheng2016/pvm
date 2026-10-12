@@ -26,7 +26,6 @@ func (s *internalStub) exchange(addr string) Upstream {
 	})
 }
 
-// UpstreamFunc adapts a function to the Upstream interface (tests).
 type UpstreamFunc func(ctx context.Context, req *mdns.Msg) (*mdns.Msg, error)
 
 func (f UpstreamFunc) Exchange(ctx context.Context, req *mdns.Msg) (*mdns.Msg, error) {

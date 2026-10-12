@@ -96,7 +96,6 @@ func (s *Server) handleRouteAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, fmt.Errorf("unknown action %q", rule.Action))
 		return
 	}
-	// validate by compiling against a scratch engine
 	eng, err := rules.NewEngine("", nil)
 	if err != nil {
 		writeErr(w, 500, err)
@@ -197,7 +196,6 @@ func (s *Server) handleVMRoute(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"vm": spec.Name, "via": via, "note": note})
 }
 
-// handleDNSList returns the gateway's live fake-ip mapping table.
 func (s *Server) handleDNSList(w http.ResponseWriter, r *http.Request) {
 	cl := s.Clusters.Get(cluster.DefaultClusterID)
 	if cl == nil {

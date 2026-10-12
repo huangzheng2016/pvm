@@ -11,8 +11,7 @@ import (
 	"github.com/huangzheng2016/pvm/internal/fsutil"
 )
 
-// GoldenEntry describes one baked golden image. Golden images are
-// immutable assets: old versions are kept, never modified in place.
+// Golden images are immutable assets: old versions are never modified in place.
 type GoldenEntry struct {
 	Version      int       `json:"version"`
 	Distro       string    `json:"distro"`
@@ -75,8 +74,6 @@ func (c *goldenCatalog) match(distro, imageVersion string) []GoldenEntry {
 	return out
 }
 
-// LatestGolden returns the newest golden image whose file is still
-// present, or nil when none exists.
 func LatestGolden(imagesDir, distro, imageVersion string) *GoldenEntry {
 	cat, err := loadGoldenCatalog(imagesDir)
 	if err != nil {
@@ -91,7 +88,6 @@ func LatestGolden(imagesDir, distro, imageVersion string) *GoldenEntry {
 	return nil
 }
 
-// ListGolden returns all catalog entries, newest first.
 func ListGolden(imagesDir string) []GoldenEntry {
 	cat, err := loadGoldenCatalog(imagesDir)
 	if err != nil {

@@ -8,7 +8,6 @@ import (
 	"strings"
 )
 
-// stdinIsTTY reports whether the CLI can interactively prompt.
 func stdinIsTTY() bool {
 	fi, err := os.Stdin.Stat()
 	if err != nil {
@@ -17,8 +16,6 @@ func stdinIsTTY() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-// confirmAction asks a [y/N] question; only an explicit y/yes confirms.
-// Non-TTY input never confirms. IO is injectable for tests.
 func confirmAction(r io.Reader, w io.Writer, prompt string) bool {
 	fmt.Fprintf(w, "%s [y/N] ", prompt)
 	line, err := bufio.NewReader(r).ReadString('\n')

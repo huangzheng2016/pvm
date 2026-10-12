@@ -6,10 +6,6 @@ import (
 	"github.com/huangzheng2016/pvm/internal/gw/rules"
 )
 
-// Route-table operations: routing rules and per-VM exit policy are part
-// of cluster state, pushed to the gateway agent on every change.
-
-// AddRule appends (or replaces the same-pattern) routing rule.
 func (s *Store) AddRule(id int, r rules.Rule) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

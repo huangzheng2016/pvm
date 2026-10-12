@@ -107,13 +107,11 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	return nil
 }
 
-// Health checks the unauthenticated health endpoint.
 func (c *Client) Health(ctx context.Context) error {
 	var v map[string]any
 	return c.do(ctx, "GET", "/v1/health", nil, &v)
 }
 
-// Enroll registers our public key and returns the assigned tunnel config.
 func (c *Client) Enroll(ctx context.Context, pubkey, hostname, transport string) (*enrollResponse, error) {
 	var resp enrollResponse
 	err := c.do(ctx, "POST", "/v1/enroll", enrollRequest{PubKey: pubkey, Hostname: hostname, Transport: transport}, &resp)
@@ -123,12 +121,10 @@ func (c *Client) Enroll(ctx context.Context, pubkey, hostname, transport string)
 	return &resp, nil
 }
 
-// DeletePeer revokes the peer owning tunnelIP.
 func (c *Client) DeletePeer(ctx context.Context, tunnelIP string) error {
 	return c.do(ctx, "DELETE", "/v1/peers/"+tunnelIP, nil, nil)
 }
 
-// ListPeers returns enrolled peers (admin view).
 func (c *Client) ListPeers(ctx context.Context) ([]Peer, error) {
 	var v struct {
 		Peers []Peer `json:"peers"`

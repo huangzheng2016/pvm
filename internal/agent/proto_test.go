@@ -38,7 +38,6 @@ func TestReadFrameErrors(t *testing.T) {
 }
 
 func TestReadFrameUnterminated(t *testing.T) {
-	// a final frame without trailing newline must still decode
 	r := bufio.NewReader(strings.NewReader("{\"id\":\"a\",\"done\":true,\"exit_code\":3}"))
 	var f Frame
 	if err := readFrame(r, &f); err != nil {

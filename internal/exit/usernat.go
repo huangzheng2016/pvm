@@ -167,8 +167,6 @@ func (u *userspaceBackend) cleanup(_ []string, _ []string) error {
 	return nil
 }
 
-// handleTCP dials the original destination from the VPS and relays,
-// unless the destination is an intercepted in-stack service.
 func (u *userspaceBackend) handleTCP(req *tcp.ForwarderRequest) {
 	id := req.ID()
 	dst := net.JoinHostPort(id.LocalAddress.String(), fmt.Sprintf("%d", id.LocalPort))
@@ -200,7 +198,6 @@ func (u *userspaceBackend) handleTCP(req *tcp.ForwarderRequest) {
 	go proxyTCP(inConn, outConn)
 }
 
-// proxyTCP relays full-duplex, propagating half-closes.
 func proxyTCP(a, b net.Conn) {
 	type closeWriter interface{ CloseWrite() error }
 	done := make(chan struct{}, 2)

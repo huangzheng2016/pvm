@@ -134,7 +134,7 @@ func CmdUpgrade(args []string) int {
 	if err := fsutil.AtomicWrite(exe, data, 0o755); err != nil {
 		return fatalf("replace %s: %v", exe, err)
 	}
-	fmt.Printf("upgraded to %s; restart the daemon to use it: pvm daemon restart\n", tag)
+	fmt.Printf("upgraded to %s; restart the daemon to use it: pvm daemon restart\n  note: the restart stops running vms - start them again with `pvm start <name>`\n", tag)
 	return 0
 }
 

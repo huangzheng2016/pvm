@@ -39,8 +39,6 @@ const (
 	dcMaxPerPeer = 128
 )
 
-// DomainConnectAddr maps a client tunnel IP (10.<base>.<t>.<n>) to the
-// domain-connect address on the same NIC (.1 of its /24).
 func DomainConnectAddr(tunnelIP string) string {
 	ip := net.ParseIP(tunnelIP)
 	if ip == nil {

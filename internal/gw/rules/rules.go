@@ -65,8 +65,6 @@ func DefaultInternal() []string {
 	return []string{"pvm.internal", "internal"}
 }
 
-// NewEngine loads rules from path (missing file = empty rule set).
-// path may be "" to disable persistence.
 func NewEngine(path string, internalSuffixes []string) (*Engine, error) {
 	e := &Engine{path: path, internal: normalizeList(internalSuffixes)}
 	data, err := os.ReadFile(path)
@@ -120,7 +118,6 @@ func compile(r Rule) (entry, error) {
 	return en, nil
 }
 
-// IsInternal reports whether domain belongs to a built-in internal suffix.
 func (e *Engine) IsInternal(domain string) bool {
 	domain = normalizeDomain(domain)
 	e.mu.RLock()
@@ -133,9 +130,6 @@ func (e *Engine) IsInternal(domain string) bool {
 	return false
 }
 
-// Match evaluates domain rules first (domain may be "" to skip that
-// class), then CIDR rules against ip (may be nil). ok=false means no
-// rule matched and the caller's default applies.
 func (e *Engine) Match(domain string, ip net.IP) (Decision, bool) {
 	domain = normalizeDomain(domain)
 	e.mu.RLock()
@@ -187,8 +181,6 @@ func (e *Engine) List() []Rule {
 	return out
 }
 
-// Add appends a rule and persists. Adding a pattern identical to an
-// existing rule replaces that rule's action.
 func (e *Engine) Add(r Rule) error {
 	en, err := compile(r)
 	if err != nil {
@@ -206,8 +198,6 @@ func (e *Engine) Add(r Rule) error {
 	return e.saveLocked()
 }
 
-// Remove deletes the rule at index (as returned by List). ok=false if
-// the index is out of range.
 func (e *Engine) Remove(index int) (bool, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

@@ -17,7 +17,6 @@ import (
 	"github.com/huangzheng2016/pvm/internal/paths"
 )
 
-// Client talks to the daemon over the unix socket.
 type Client struct {
 	P    *paths.Paths
 	http *http.Client
@@ -37,7 +36,6 @@ func NewClient(p *paths.Paths) *Client {
 	}
 }
 
-// Healthy reports whether the daemon answers /v1/health quickly.
 func (c *Client) Healthy() bool {
 	req, err := http.NewRequest("GET", "http://d/v1/health", nil)
 	if err != nil {
@@ -51,9 +49,7 @@ func (c *Client) Healthy() bool {
 	return resp.StatusCode == 200
 }
 
-// Ensure returns a client to a running daemon, auto-spawning it if
-// needed. A daemon explicitly stopped via `pvm daemon stop` is not
-// auto-restarted (marker file) — the caller gets a clear hint instead.
+// The stop marker prevents an explicit daemon stop from being undone by autospawn.
 func Ensure(p *paths.Paths) (*Client, error) {
 	c := NewClient(p)
 	if c.Healthy() {
@@ -64,7 +60,6 @@ func Ensure(p *paths.Paths) (*Client, error) {
 	}
 	lock, err := fsutil.TryLock(p.DaemonLock())
 	if err != nil {
-		// Someone else is starting it; just wait.
 		if waitHealthy(c, 15*time.Second) {
 			return c, nil
 		}
@@ -79,8 +74,6 @@ func Ensure(p *paths.Paths) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Rotate an oversized log away first: a single ever-growing daemon.log
-	// buries this generation's startup errors under history.
 	if fi, err := os.Stat(p.DaemonLog()); err == nil && fi.Size() > 1<<20 {
 		os.Rename(p.DaemonLog(), p.DaemonLog()+".1")
 	}
@@ -152,8 +145,7 @@ func (c *Client) Delete(path string, out any) error {
 	return decodeResp(resp, out)
 }
 
-// PostStream posts JSON and returns the raw streaming response; the
-// caller must close the body. Used for ndjson streams like exec.
+// The caller must close the returned body.
 func (c *Client) PostStream(path string, body any) (*http.Response, error) {
 	var rdr io.Reader
 	if body != nil {

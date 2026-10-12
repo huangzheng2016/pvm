@@ -1,7 +1,3 @@
-// Package gateway implements the in-guest gateway agent: bridge manager,
-// fixed-mapping DHCP server, DNS forwarder and nftables NAT/DNAT. It is
-// config-driven: the host daemon pushes /etc/pvm/gateway.json and the
-// agent converges actual state to it.
 package gateway
 
 import (
@@ -42,9 +38,8 @@ type Config struct {
 	Maps        []MapEntry        `json:"maps"`
 	Rules       []rules.Rule      `json:"rules,omitempty"`    // routing rules (fake-ip engine)
 	VMExits     map[string]string `json:"vm_exits,omitempty"` // vm name -> exit name; ""/absent = direct
-	// DefaultExit is the cluster-wide fallback exit ("", absent = direct)
-	// used when neither a rule nor a per-VM route matches. Wired through
-	// the gateway config but not yet exposed by the daemon/CLI.
+	// DefaultExit is the cluster-wide fallback when neither a rule nor a
+	// per-VM route matches ("" or absent = direct).
 	DefaultExit string `json:"default_exit,omitempty"`
 	// Exits carries the connection defs for every exit referenced by
 	// Rules or VMExits (keyed by exit name).
@@ -92,7 +87,6 @@ func (a *Agent) loadConfig() (*Config, error) {
 	return &c, nil
 }
 
-// Run blocks, converging system state to the config every few seconds.
 func (a *Agent) Run() error {
 	var (
 		dhcpSrv *DHCPServer

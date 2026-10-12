@@ -8,7 +8,6 @@ import (
 	"github.com/huangzheng2016/pvm/internal/qemu"
 )
 
-// virtualSizeGB reports the virtual disk size in GiB (rounded up).
 func virtualSizeGB(tc *qemu.Toolchain, path string) (int, error) {
 	out, err := exec.Command(tc.Img, "info", "--output=json", path).CombinedOutput()
 	if err != nil {

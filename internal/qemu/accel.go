@@ -15,7 +15,6 @@ const (
 	AccelTCG Accel = "tcg"
 )
 
-// ParseAccel validates a user-supplied accelerator name.
 func ParseAccel(s string) (Accel, bool) {
 	switch Accel(s) {
 	case AccelHVF, AccelKVM, AccelTCG:
@@ -24,8 +23,6 @@ func ParseAccel(s string) (Accel, bool) {
 	return "", false
 }
 
-// Detect picks the best accelerator: PVM_QEMU_ACCEL env override first,
-// then hvf probe on darwin, /dev/kvm on linux, TCG fallback.
 func Detect(t *Toolchain, goos string) Accel {
 	if env := os.Getenv("PVM_QEMU_ACCEL"); env != "" {
 		if a, ok := ParseAccel(env); ok {
@@ -78,7 +75,6 @@ func probe(t *Toolchain, args ...string) bool {
 	}
 }
 
-// Args returns the accel/cpu argv fragments for this accelerator.
 func (a Accel) Args() []string {
 	if a == AccelTCG {
 		return []string{"-accel", "tcg,thread=multi", "-cpu", "max"}
@@ -86,7 +82,6 @@ func (a Accel) Args() []string {
 	return []string{"-accel", string(a), "-cpu", "host"}
 }
 
-// Fallback returns the accelerator to retry with after an early crash.
 func (a Accel) Fallback() (Accel, bool) {
 	if a != AccelTCG {
 		return AccelTCG, true
@@ -94,7 +89,6 @@ func (a Accel) Fallback() (Accel, bool) {
 	return a, false
 }
 
-// FallbackHint turns a known accel startup error into an actionable fix.
 // HV_NO_DEVICE means macOS Hypervisor.framework refuses new VMs (typically
 // after long uptime / sleep cycles) until the host reboots.
 func FallbackHint(err error) string {

@@ -5,9 +5,7 @@ import (
 	"testing"
 )
 
-// ps lstart is locale-sensitive: under zh_CN the date has fewer
-// whitespace fields, which used to make IdentityOf report a running
-// process as "process not found" and get it killed.
+// ps lstart is locale-sensitive; localized dates can have fewer whitespace fields.
 func TestIdentityOfAnyLocale(t *testing.T) {
 	cmd := exec.Command("sleep", "30")
 	if err := cmd.Start(); err != nil {

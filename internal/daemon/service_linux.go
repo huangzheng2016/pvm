@@ -12,7 +12,6 @@ import (
 	"github.com/huangzheng2016/pvm/internal/paths"
 )
 
-// ServiceInstall writes a systemd user unit and enables it.
 func ServiceInstall(p *paths.Paths) error {
 	exe, err := os.Executable()
 	if err != nil {

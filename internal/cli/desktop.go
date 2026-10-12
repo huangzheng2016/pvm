@@ -15,10 +15,6 @@ type desktopView struct {
 	HostPort int    `json:"host_port"`
 }
 
-// CmdDesktop implements `pvm desktop <vm> [--size WxH] [--open] [--stop]`:
-// start (or reuse) the VM's native XFCE desktop (TigerVNC + noVNC) and
-// print its loopback URL — the VNC password travels as a noVNC query
-// parameter, so there is no login page.
 func CmdDesktop(args []string) int {
 	if len(args) < 1 {
 		return fatalf("usage: pvm desktop <vm> [--size WxH] [--open] [--stop]")

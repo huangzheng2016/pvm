@@ -1,6 +1,3 @@
-// Package vm orchestrates VM specs: overlay disks, cloud-init seeds,
-// port allocation and on-disk metadata. Process control lives in
-// internal/qemu; this package owns what a VM *is*.
 package vm
 
 import (
@@ -33,11 +30,8 @@ type Spec struct {
 	BaseDisk string `json:"base_disk"`
 	// Golden is the golden image version the VM was cloned from
 	// (0 = plain base image). Golden clones skip first-boot apt.
-	Golden int `json:"golden,omitempty"`
-	// GPU attaches a virtio-gpu display device; user VMs default on.
-	GPU bool `json:"gpu,omitempty"`
-	// Balloon attaches virtio-balloon (free-page-reporting); user VMs
-	// default on so idle guest memory flows back to the host.
+	Golden  int  `json:"golden,omitempty"`
+	GPU     bool `json:"gpu,omitempty"`
 	Balloon bool `json:"balloon,omitempty"`
 
 	// cluster membership (user VMs)
@@ -66,7 +60,6 @@ type Spec struct {
 
 var nameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
 
-// ValidateName checks a VM name.
 func ValidateName(name string) error {
 	if !nameRe.MatchString(name) {
 		return fmt.Errorf("invalid vm name %q (letters/digits/-_, <=32, must start with a letter)", name)
@@ -82,7 +75,6 @@ func (s *Spec) SpecPath(p *paths.Paths) string {
 	return filepath.Join(s.dir(p), "vm.json")
 }
 
-// Load reads a VM spec by name.
 func Load(p *paths.Paths, name string) (*Spec, error) {
 	data, err := os.ReadFile(p.VMs + "/" + name + "/vm.json")
 	if err != nil {
@@ -95,7 +87,6 @@ func Load(p *paths.Paths, name string) (*Spec, error) {
 	return &spec, nil
 }
 
-// ListAll returns specs for every VM directory with a vm.json.
 func ListAll(p *paths.Paths) ([]*Spec, error) {
 	entries, err := os.ReadDir(p.VMs)
 	if err != nil {
@@ -122,7 +113,6 @@ func (s *Spec) Save(p *paths.Paths) error {
 	return fsutil.AtomicWrite(s.SpecPath(p), data, 0o600)
 }
 
-// QEMUConfig derives the qemu runtime config from the spec.
 func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poolBase, poolSize int) qemu.VMConfig {
 	dir := s.dir(p)
 	mounts := make([]qemu.Mount, 0, len(s.Mounts))
@@ -179,9 +169,6 @@ func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec, sshPub string) error
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	// Any failure after this point must not leave a half-created vm dir:
-	// ListAll only sees vm.json, so a stale dir would be invisible to
-	// list/rm yet block a same-name retry.
 	created := false
 	defer func() {
 		if !created {
@@ -240,7 +227,6 @@ func Delete(p *paths.Paths, name string) error {
 	return os.RemoveAll(p.VMDir(name))
 }
 
-// UsedSSHPorts returns the ports already assigned to existing VMs.
 func UsedSSHPorts(p *paths.Paths) map[int]bool {
 	used := map[int]bool{}
 	specs, err := ListAll(p)

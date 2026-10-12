@@ -1,4 +1,3 @@
-// Package tunnel wires WireGuard devices over UDP or TCP transports.
 package tunnel
 
 import (
@@ -7,7 +6,6 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-// BindFor returns the bind for a transport name ("udp" or "tcp").
 func BindFor(transport string) conn.Bind {
 	if transport == "tcp" {
 		return NewTCPBind()
@@ -15,7 +13,6 @@ func BindFor(transport string) conn.Bind {
 	return conn.NewStdNetBind()
 }
 
-// NewDevice creates a WireGuard device and brings it up.
 func NewDevice(t tun.Device, bind conn.Bind, verbose bool) (*device.Device, error) {
 	level := device.LogLevelError
 	if verbose {

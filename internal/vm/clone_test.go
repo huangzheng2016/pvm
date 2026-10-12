@@ -26,7 +26,6 @@ func TestCloneSpec(t *testing.T) {
 	if dst.PrevTZ != "" || dst.PrevLocale != "" {
 		t.Errorf("route-restore state must not be inherited: %+v", dst)
 	}
-	// Inherited fields.
 	if dst.User != "tester" || dst.CPUs != 2 || dst.MemMB != 4096 || dst.DiskGB != 20 {
 		t.Errorf("hardware/user not inherited: %+v", dst)
 	}
