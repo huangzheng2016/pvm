@@ -62,8 +62,8 @@ create options:
   --distro D --version V  same as --image D:V (conflict with --image errors)
   --name NAME   vm name (required)
   --user USER   guest login user (required for non-interactive use)
-  --cpus N      vcpus (default 2)
-  --mem MB      memory in mb (default 4096)
+  --cpus N      vcpus (default: all host cores)
+  --mem MB      memory in mb (default: host total; vms overcommit on purpose)
   --disk GB     disk size in gb (default 20)
   --mount H:G   extra host:guest mount; ~/.pvm/share is always at /share
   --tz TZ       iana timezone, e.g. America/Los_Angeles

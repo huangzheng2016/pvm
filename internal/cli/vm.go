@@ -28,6 +28,8 @@ type vmInfoView struct {
 		User    string `json:"user"`
 		SSHPort int    `json:"ssh_port"`
 		IP      string `json:"ip"`
+		CPUs    int    `json:"cpus"`
+		MemMB   int    `json:"mem_mb"`
 	} `json:"spec"`
 	Running     bool   `json:"running"`
 	PID         int    `json:"pid"`
@@ -308,7 +310,7 @@ func CmdList(args []string) int {
 		return fatalf("%v", err)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tIMAGE\tROLE\tSTATUS\tIP\tUSER\tUPTIME")
+	fmt.Fprintln(tw, "NAME\tIMAGE\tROLE\tSTATUS\tIP\tCPU\tMEM\tUSER\tUPTIME")
 	for _, in := range infos {
 		status := "stopped"
 		if in.Running {
@@ -319,8 +321,12 @@ func CmdList(args []string) int {
 			ip = "-"
 		}
 		role := in.Spec.Role
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			in.Spec.Name, in.Spec.Image, role, status, ip, in.Spec.User, in.Uptime)
+		mem := fmt.Sprintf("%dM", in.Spec.MemMB)
+		if in.Spec.MemMB >= 1024 && in.Spec.MemMB%1024 == 0 {
+			mem = fmt.Sprintf("%dG", in.Spec.MemMB/1024)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+			in.Spec.Name, in.Spec.Image, role, status, ip, in.Spec.CPUs, mem, in.Spec.User, in.Uptime)
 	}
 	tw.Flush()
 	return 0

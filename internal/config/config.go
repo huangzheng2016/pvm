@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/huangzheng2016/pvm/internal/native"
 )
 
 type Config struct {
@@ -18,7 +20,7 @@ type Defaults struct {
 }
 
 func Default() *Config {
-	return &Config{Defaults: Defaults{CPUs: 2, MemMB: 4096, DiskGB: 20}}
+	return &Config{Defaults: Defaults{CPUs: native.HostCPUs(), MemMB: native.HostMemMB(), DiskGB: 20}}
 }
 
 func Load(path string) (*Config, error) {
@@ -34,10 +36,10 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	if cfg.Defaults.CPUs <= 0 {
-		cfg.Defaults.CPUs = 2
+		cfg.Defaults.CPUs = native.HostCPUs()
 	}
 	if cfg.Defaults.MemMB <= 0 {
-		cfg.Defaults.MemMB = 4096
+		cfg.Defaults.MemMB = native.HostMemMB()
 	}
 	if cfg.Defaults.DiskGB <= 0 {
 		cfg.Defaults.DiskGB = 20
