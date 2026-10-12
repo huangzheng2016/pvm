@@ -50,7 +50,10 @@ while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 2; done
 	}() + `
 apt-get update
 apt-get -y upgrade
-apt-get -y install ` + strings.Join(GoldenPackages, " ") + ` ` + strings.Join(DesktopPackages, " ") + `
+# lightdm/xserver-xorg come in via Recommends (xfce4-session -> light-locker
+# -> lightdm -> xserver-xorg) but VMs have no GPU: lightdm fails to start a
+# local Xorg and restart-loops. The TigerVNC stack needs neither; block them.
+apt-get -y install ` + strings.Join(GoldenPackages, " ") + ` ` + strings.Join(DesktopPackages, " ") + ` lightdm- light-locker- xserver-xorg- xserver-xorg-core-
 
 systemctl enable docker
 systemctl start docker
