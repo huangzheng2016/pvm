@@ -8,9 +8,9 @@ pvm 仅支持宿主原生架构：darwin/arm64 只运行 arm64 VM，linux/amd64 
 
 ## VM 形态本身就是最优解
 
-AI-service Code 等工具的运行环境检测针对的是**容器**与云主机：`/.dockerenv`（docker 信号）与 `/sys/hypervisor/uuid`（Xen/EC2 信号）会被映射为 `deployment_environment` 并上行。pvm 的 QEMU VM 两者都没有，在用户态看来就是一台普通 Ubuntu 机器。因此：
+各类 AI 编程工具的运行环境检测针对的是**容器**与云主机：`/.dockerenv`（docker 信号）与 `/sys/hypervisor/uuid`（Xen/EC2 信号）会被映射为 `deployment_environment` 并上行。pvm 的 QEMU VM 两者都没有，在用户态看来就是一台普通 Ubuntu 机器。因此：
 
-- **ai-service 类工具跑在 VM 主用户态**，不要在 VM 内的 docker 容器里跑——容器里会出现 `/.dockerenv`。
+- **这类工具跑在 VM 主用户态**，不要在 VM 内的 docker 容器里跑——容器里会出现 `/.dockerenv`。
 - `pvm desktop` 是 VM 原生 XFCE 桌面（TigerVNC + noVNC，非容器），桌面环境与 SSH 是同一台机器、同一套文件系统与身份。
 
 ## 网络一致性
@@ -35,8 +35,8 @@ AI-service Code 等工具的运行环境检测针对的是**容器**与云主机
 
 ## 身份卫生
 
-- **git 身份**：AI-service Code 的会话上下文（gitStatus）携带 `git config user.name/user.email` 上行。pvm **绝不读取或传播宿主 `~/.gitconfig`**；需要时用 `pvm create --git-email/--git-name` 显式设置。gitStatus 的内容面不止用户名/邮箱：分支名、`git status` 文件名、近 5 条提交标题与账号邮箱同样随每次请求上行——VM 内仓库避免中文分支/提交/文件名。
-- **设备身份**：真正上行的设备指纹是 `~/.ai-service.json` 的随机 userID（deviceId）——它随每个遥测事件和每次 API 请求上行，任何遥测开关都关不掉。每台新建 VM 都有全新 deviceId。machine-id / ssh host key 不上行（读取后被客户端丢弃），golden 对它们的清洗属纵深防御。clone 是完整磁盘复制：机器码会重建，但用户文件原样继承——源机跑过 AI-service 再 clone，两台在服务端仍是同一台设备；正确姿势是先 clone 再装 AI-service，或克隆后自行删除 `~/.ai-service.json`。RAM 快照会把设备身份一起冻结——同一 VM 快照恢复后仍是"同一台设备"，这是预期行为。
+- **git 身份**：AI 编程工具的会话上下文（gitStatus）携带 `git config user.name/user.email` 上行。pvm **绝不读取或传播宿主 `~/.gitconfig`**；需要时用 `pvm create --git-email/--git-name` 显式设置。gitStatus 的内容面不止用户名/邮箱：分支名、`git status` 文件名、近 5 条提交标题与账号邮箱同样随每次请求上行——VM 内仓库避免中文分支/提交/文件名。
+- **设备身份**：真正上行的设备指纹是 AI 服务客户端本地配置文件（home 目录下的 `.json` 点文件）里的随机 userID（deviceId）——它随每个遥测事件和每次 API 请求上行，任何遥测开关都关不掉。每台新建 VM 都有全新 deviceId。machine-id / ssh host key 不上行（读取后被客户端丢弃），golden 对它们的清洗属纵深防御。clone 是完整磁盘复制：机器码会重建，但用户文件原样继承——源机登录过该服务再 clone，两台在服务端仍是同一台设备；正确姿势是先 clone 再装客户端，或克隆后自行删除该配置文件。RAM 快照会把设备身份一起冻结——同一 VM 快照恢复后仍是"同一台设备"，这是预期行为。
 - **主机名**：trusted_devices 的 display_name 会带 hostname，VM 名保持中性即可。
 - **SMBIOS**：`pvm create --smbios-spoof` 让 DMI 呈现为常见 PC 硬件（Dell Inspiron）而非 QEMU 默认值。当前证据显示该类字段不上行，默认关闭。
 - **字体取舍**：golden 预装 `fonts-noto-cjk` 是为正确渲染中文内容。它是纯本地信号、遥测不可见，但浏览器访问的网站可经字体指纹侧面探测 CJK 字体集，与"融入美国桌面用户"的画像有张力——按实际用途取舍。
