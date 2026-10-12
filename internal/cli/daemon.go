@@ -74,6 +74,9 @@ func CmdDaemon(args []string) int {
 		}
 		fmt.Printf("daemon: running\n  pid:     %v\n  version: %v\n  uptime:  %v\n  accel:   %v\n  qemu:    %v (bundled=%v)\n  vms:     %v (%v running)\n",
 			st["pid"], st["version"], st["uptime"], st["accel"], st["qemu"], st["bundled"], st["vms"], st["running"])
+		if n, _ := st["tcg_fallback"].(float64); n > 0 {
+			fmt.Printf("  warning: %v vm(s) running under tcg fallback; host accel %v is unavailable (on macOS a reboot usually restores it)\n", n, st["accel"])
+		}
 		return 0
 	case "install":
 		if err := daemon.ServiceInstall(p); err != nil {

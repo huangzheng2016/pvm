@@ -192,21 +192,25 @@ func (s *Server) jsonOK(v any) http.HandlerFunc {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	specs, _ := vm.ListAll(s.P)
-	running := 0
+	running, tcgFallback := 0, 0
 	for _, sp := range specs {
 		if st, err := s.instance(sp).Running(); err == nil && st != nil {
 			running++
+			if st.Accel != "" && st.Accel != s.Accel {
+				tcgFallback++
+			}
 		}
 	}
 	writeJSON(w, 200, map[string]any{
-		"version": buildinfo.Version,
-		"pid":     os.Getpid(),
-		"uptime":  time.Since(s.started).Round(time.Second).String(),
-		"vms":     len(specs),
-		"running": running,
-		"accel":   s.Accel,
-		"qemu":    s.TC.System,
-		"bundled": s.TC.Bundled,
+		"version":      buildinfo.Version,
+		"pid":          os.Getpid(),
+		"uptime":       time.Since(s.started).Round(time.Second).String(),
+		"vms":          len(specs),
+		"running":      running,
+		"accel":        s.Accel,
+		"tcg_fallback": tcgFallback,
+		"qemu":         s.TC.System,
+		"bundled":      s.TC.Bundled,
 	})
 }
 

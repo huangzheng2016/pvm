@@ -3,6 +3,7 @@ package qemu
 import (
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -91,4 +92,14 @@ func (a Accel) Fallback() (Accel, bool) {
 		return AccelTCG, true
 	}
 	return a, false
+}
+
+// FallbackHint turns a known accel startup error into an actionable fix.
+// HV_NO_DEVICE means macOS Hypervisor.framework refuses new VMs (typically
+// after long uptime / sleep cycles) until the host reboots.
+func FallbackHint(err error) string {
+	if err != nil && strings.Contains(err.Error(), "HV_NO_DEVICE") {
+		return " (macOS Hypervisor.framework is refusing new VMs; reboot the host to restore hardware acceleration)"
+	}
+	return ""
 }

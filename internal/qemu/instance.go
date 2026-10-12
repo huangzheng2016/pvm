@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -91,6 +93,7 @@ func (in *Instance) Start() error {
 		if !ok {
 			return err
 		}
+		log.Printf("qemu: accel %s failed, falling back to %s: %s%s", in.Cfg.Accel, fb, firstLine(err.Error()), FallbackHint(err))
 		in.Cfg.Accel = fb
 		return in.startWithAccel(fb)
 	}
@@ -224,4 +227,11 @@ func lastLines(b []byte, n int) string {
 		lines = lines[len(lines)-n:]
 	}
 	return string(bytes.Join(lines, []byte("\n")))
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }

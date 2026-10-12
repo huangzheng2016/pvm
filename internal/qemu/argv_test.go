@@ -1,6 +1,7 @@
 package qemu
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -90,6 +91,12 @@ func TestAccelArgsAndFallback(t *testing.T) {
 	}
 	if _, ok := AccelTCG.Fallback(); ok {
 		t.Error("tcg has no further fallback")
+	}
+	if h := FallbackHint(errors.New("ret = HV_NO_DEVICE (0xfae94006)")); !strings.Contains(h, "reboot the host") {
+		t.Errorf("HV_NO_DEVICE hint: %q", h)
+	}
+	if h := FallbackHint(errors.New("some other error")); h != "" {
+		t.Errorf("unrelated error must have no hint: %q", h)
 	}
 }
 
