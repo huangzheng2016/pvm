@@ -91,7 +91,7 @@ func CmdImage(args []string) int {
 		}
 		goldens := image.ListGolden(p.Images)
 		if len(imgs) == 0 && len(goldens) == 0 {
-			fmt.Println("no images; run `pvm image fetch ubuntu:24.04`")
+			fmt.Println("no images; run `pvm image fetch ubuntu:26.04`")
 			return 0
 		}
 		tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
@@ -164,8 +164,8 @@ func resolveImageSpec(image, distro, version string) (string, error) {
 }
 
 func CmdCreate(args []string) int {
-	fs := newFlagSet("create", "--image ubuntu:24.04 | --distro ubuntu --version 24.04 --name dev1 [--user U] [--cpus 2] [--mem 4096] [--disk 20] [--mount /host:/guest]... [--no-start]")
-	imageSpec := fs.String("image", "", "image spec, e.g. ubuntu:24.04 or debian:13")
+	fs := newFlagSet("create", "--image ubuntu:26.04 | --distro ubuntu --version 26.04 --name dev1 [--user U] [--cpus 2] [--mem 4096] [--disk 20] [--mount /host:/guest]... [--no-start]")
+	imageSpec := fs.String("image", "", "image spec, e.g. ubuntu:26.04 or debian:13")
 	distro := fs.String("distro", "", "distro alias for --image (e.g. debian)")
 	version := fs.String("version", "", "version alias for --image (e.g. 13)")
 	name := fs.String("name", "", "vm name")
