@@ -1,9 +1,12 @@
 package exit
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"maps"
 	"net"
 	"os"
 	"sort"
@@ -22,30 +25,58 @@ type Peer struct {
 }
 
 // PeerStore allocates tunnel IPs per transport subnet and persists to JSON.
-// Subnets derive from a base octet: udp -> 10.<base>.0.0/24,
-// tcp -> 10.<base>.1.0/24 (server holds .1). Default base 99.
+// Subnets derive from a base octet: udp -> 10.<base>.0.0/16,
+// tcp -> 10.<base+1>.0.0/16 (server holds .0.1). Default base 99.
+// The layout is persisted alongside the peers; peers recorded under a
+// different layout are dropped on load, because replaying them into the
+// wireguard device would black-hole their (now foreign) addresses.
 type PeerStore struct {
 	mu      sync.Mutex
 	path    string
-	subnets map[string]string
-	Peers   []Peer `json:"peers"`
+	Subnets map[string]string `json:"subnets"`
+	Peers   []Peer            `json:"peers"`
 }
 
 const defaultSubnetBase = 99
 
-func subnetsFor(base int) map[string]string {
-	return map[string]string{
-		"udp": fmt.Sprintf("10.%d.0.0/24", base),
-		"tcp": fmt.Sprintf("10.%d.1.0/24", base),
+func subnetsFor(base int) (map[string]string, error) {
+	if base < 1 || base > 254 {
+		return nil, fmt.Errorf("subnet base %d out of range 1..254", base)
 	}
+	subnets := map[string]string{
+		"udp": fmt.Sprintf("10.%d.0.0/16", base),
+		"tcp": fmt.Sprintf("10.%d.0.0/16", base+1),
+	}
+	var nets []*net.IPNet
+	for _, cidr := range subnets {
+		_, n, err := net.ParseCIDR(cidr)
+		if err != nil {
+			return nil, fmt.Errorf("bad subnet %q: %w", cidr, err)
+		}
+		for _, prev := range nets {
+			if prev.Contains(n.IP) || n.Contains(prev.IP) {
+				return nil, fmt.Errorf("subnets %q and %q overlap", prev.String(), cidr)
+			}
+		}
+		nets = append(nets, n)
+	}
+	return subnets, nil
 }
 
 func SubnetFor(transport string) (string, error) {
-	return subnetOf(subnetsFor(defaultSubnetBase), transport)
+	subnets, err := subnetsFor(defaultSubnetBase)
+	if err != nil {
+		return "", err
+	}
+	return subnetOf(subnets, transport)
 }
 
 func ServerIP(transport string) (string, error) {
-	return serverIPOf(subnetsFor(defaultSubnetBase), transport)
+	subnets, err := subnetsFor(defaultSubnetBase)
+	if err != nil {
+		return "", err
+	}
+	return serverIPOf(subnets, transport)
 }
 
 func subnetOf(subnets map[string]string, transport string) (string, error) {
@@ -78,7 +109,11 @@ func LoadPeerStore(path string) (*PeerStore, error) {
 }
 
 func LoadPeerStoreWithBase(path string, base int) (*PeerStore, error) {
-	s := &PeerStore{path: path, subnets: subnetsFor(base)}
+	subnets, err := subnetsFor(base)
+	if err != nil {
+		return nil, err
+	}
+	s := &PeerStore{path: path, Subnets: subnets}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -86,8 +121,17 @@ func LoadPeerStoreWithBase(path string, base int) (*PeerStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(b, s); err != nil {
+	var disk PeerStore
+	if err := json.Unmarshal(b, &disk); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	s.Peers = disk.Peers
+	if !maps.Equal(disk.Subnets, subnets) && len(s.Peers) > 0 {
+		log.Printf("peers: subnet layout changed (%v -> %v), dropping %d stale peers", disk.Subnets, subnets, len(s.Peers))
+		s.Peers = nil
+		if err := s.saveLocked(); err != nil {
+			return nil, err
+		}
 	}
 	return s, nil
 }
@@ -105,7 +149,8 @@ func (s *PeerStore) saveLocked() error {
 func (s *PeerStore) Allocate(pubkey, hostname, transport string) (Peer, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := subnetOf(s.subnets, transport); err != nil {
+	cidr, err := subnetOf(s.Subnets, transport)
+	if err != nil {
 		return Peer{}, false, err
 	}
 	for _, p := range s.Peers {
@@ -113,19 +158,23 @@ func (s *PeerStore) Allocate(pubkey, hostname, transport string) (Peer, bool, er
 			return p, false, nil
 		}
 	}
-	cidr, _ := subnetOf(s.subnets, transport)
 	_, ipnet, _ := net.ParseCIDR(cidr)
 	used := map[string]bool{}
 	for _, p := range s.Peers {
 		used[p.IP] = true
 	}
-	base := ipnet.IP.Mask(ipnet.Mask)
-	for i := 2; i < 255; i++ {
-		candidate := make(net.IP, 4)
-		copy(candidate, base)
-		candidate[3] = byte(i)
-		if !used[candidate.String()] {
-			p := Peer{IP: candidate.String(), PubKey: pubkey, Hostname: hostname, Transport: transport, CreatedAt: time.Now()}
+	network := binary.BigEndian.Uint32(ipnet.IP.Mask(ipnet.Mask).To4())
+	server := network + 1
+	bcast := network | ^binary.BigEndian.Uint32(net.IP(ipnet.Mask).To4())
+	for n := network + 1; n < bcast; n++ {
+		if n == server {
+			continue
+		}
+		var b [4]byte
+		binary.BigEndian.PutUint32(b[:], n)
+		candidate := net.IP(b[:]).String()
+		if !used[candidate] {
+			p := Peer{IP: candidate, PubKey: pubkey, Hostname: hostname, Transport: transport, CreatedAt: time.Now()}
 			s.Peers = append(s.Peers, p)
 			return p, true, s.saveLocked()
 		}

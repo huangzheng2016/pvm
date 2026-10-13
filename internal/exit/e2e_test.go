@@ -25,7 +25,7 @@ func inProcessServer(t *testing.T, transports string) (*Server, map[string]*nets
 		case "pvmexit0":
 			ip = netip.MustParseAddr("10.99.0.1")
 		case "pvmexit1":
-			ip = netip.MustParseAddr("10.99.1.1")
+			ip = netip.MustParseAddr("10.100.0.1")
 		default:
 			return nil, fmt.Errorf("unexpected tun %q", name)
 		}
@@ -143,9 +143,9 @@ func TestEndToEndInProcess(t *testing.T) {
 			serverTun := "pvmexit0"
 			serverIP := "10.99.0.1"
 			if transport == "tcp" {
-				wantSubnet = "10.99.1."
+				wantSubnet = "10.100.0."
 				serverTun = "pvmexit1"
-				serverIP = "10.99.1.1"
+				serverIP = "10.100.0.1"
 			}
 			if !strings.HasPrefix(entry.TunnelIP, wantSubnet) {
 				t.Fatalf("tunnel ip %s not in %s*", entry.TunnelIP, wantSubnet)

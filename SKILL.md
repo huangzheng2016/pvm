@@ -223,3 +223,15 @@ Notes:
 - Control plane: HTTPS + Bearer token + TOFU fingerprint pinning. Data plane: WireGuard, UDP preferred with TCP fallback.
 - Speed probes never touch third-party public servers: the exit-agent serves `/speed?bytes=N` (64MB cap) and `/ping` at `.1:18081` on each tunnel NIC, reachable only inside the tunnel.
 - exit-agent NAT backends: `nft` / `iptables` / `userspace`; userspace needs no root but does not forward ICMP ping.
+- Tunnel pools use separate `/16` networks: UDP `10.<base>.0.0/16`, TCP `10.<base+1>.0.0/16` (default base `99`). Set a different `--subnet-base` for multiple agents on one VPS or to avoid VPS-internal networks. A larger pool does not prevent address conflicts. Changing the layout drops stale registrations; expect tunnels to re-enroll.
+
+### Connect a standard WireGuard client
+
+```bash
+pvm exit client-config us --output phone.conf
+```
+
+- Use a UDP exit; the custom TCP transport is not compatible with standard WireGuard clients.
+- The command enrolls a new client key, writes a mode-`0600` config, and prints a QR code for mobile apps. Run it once per device and never share one profile across devices.
+- The output path must not already exist. The profile routes IPv4 through the VPS with persistent keepalive; it does not include pvm's fake-IP DNS or split-routing rules. IPv6 is not tunneled; disable client IPv6 if direct IPv6 egress is unacceptable.
+- Both the config and QR code contain a private key. Treat terminal scrollback and exported files as secrets.

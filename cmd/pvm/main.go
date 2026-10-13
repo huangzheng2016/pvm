@@ -33,6 +33,7 @@ network:
                 inspect: pvm route ls | pvm route rm <index>
   dns           inspect fake-ip mappings: pvm dns ls
   exit          manage exit nodes: add (--transport auto=probe&pick fastest) | set | ls | rm | test [--speed]
+                export a standard wireguard client: pvm exit client-config us [-o phone.conf]
   exit-agent    run the vps exit agent: pvm exit-agent --listen :18443 --token <tok>
 
 image:

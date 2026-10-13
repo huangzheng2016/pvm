@@ -18,7 +18,8 @@ import (
 // gateway sends a domain and port, the exit resolves and dials them from
 // the VPS (the gateway performs no DNS resolution for proxied domains at
 // all). Listeners live on each tunnel NIC's server address
-// (10.<base>.<t>.1), so only authenticated WG peers can reach them.
+// (10.<base>.0.1 / 10.<base+1>.0.1), so only authenticated WG peers can
+// reach them.
 //
 // Request:  [ver:1][cmd:1][domain_len:2 BE][domain][port:2 BE]
 // Response: [status:1][msg_len:2 BE][msg]
@@ -39,17 +40,14 @@ const (
 	dcMaxPerPeer = 128
 )
 
-func DomainConnectAddr(tunnelIP string) string {
-	ip := net.ParseIP(tunnelIP)
-	if ip == nil {
+// DomainConnectAddr joins the exit's tunnel-side server address (learned
+// from the enroll response) with the domain-connect port; "" when
+// serverIP is not a valid IP.
+func DomainConnectAddr(serverIP string) string {
+	if net.ParseIP(serverIP) == nil {
 		return ""
 	}
-	v4 := ip.To4()
-	if v4 == nil {
-		return ""
-	}
-	v4[3] = 1
-	return net.JoinHostPort(v4.String(), strconv.Itoa(DomainConnectPort))
+	return net.JoinHostPort(serverIP, strconv.Itoa(DomainConnectPort))
 }
 
 // WriteDomainConnect performs the client side of the handshake and

@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/diskfs/go-diskfs v1.9.4
 	github.com/klauspost/compress v1.20.1
+	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/miekg/dns v1.1.73
 	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
@@ -24,6 +25,8 @@ require (
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/term v0.47.0 // indirect
 	golang.org/x/time v0.7.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
+	rsc.io/qr v0.2.0 // indirect
 )

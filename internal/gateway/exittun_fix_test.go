@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -8,6 +9,8 @@ import (
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/gw/rules"
+	"github.com/huangzheng2016/pvm/internal/tunnel"
+	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
 // stubIPRule replaces the `ip rule` shell-out with a recorder.
@@ -256,5 +259,35 @@ func TestCleanupDeviceRemovesEndpointRule(t *testing.T) {
 	m.cleanupDevice(tt)
 	if !log.has("del", "to 198.51.100.7/32") {
 		t.Fatalf("endpoint rule not removed: %v", log.calls)
+	}
+}
+
+// DomainConnectAddr must use the tunnel-side server address learned at
+// enroll time; with a /16 pool it can no longer be derived from tunIP.
+func TestDomainConnectAddrUsesEnrolledServerIP(t *testing.T) {
+	td, _, err := netstack.CreateNetTUN([]netip.Addr{netip.MustParseAddr("10.100.0.7")}, nil, 1420)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev, err := tunnel.NewDevice(td, tunnel.BindFor("udp"), false)
+	if err != nil {
+		td.Close()
+		t.Fatal(err)
+	}
+	defer dev.Close()
+
+	m := newExitManager()
+	m.tuns["us"] = &exitTunnel{name: "us", dev: dev, tunIP: "10.100.0.7", serverTunIP: "10.100.0.1"}
+	addr, ok := m.DomainConnectAddr("us")
+	if !ok || addr != "10.100.0.1:18080" {
+		t.Fatalf("DomainConnectAddr = %q, %v", addr, ok)
+	}
+	// a tunnel whose enroll returned no server ip must fail closed
+	m.tuns["old"] = &exitTunnel{name: "old", dev: dev, tunIP: "10.99.0.7"}
+	if _, ok := m.DomainConnectAddr("old"); ok {
+		t.Fatal("missing serverTunIP must fail closed")
+	}
+	if _, ok := m.DomainConnectAddr("gone"); ok {
+		t.Fatal("unknown exit must fail closed")
 	}
 }

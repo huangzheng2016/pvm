@@ -91,7 +91,7 @@ func TestUserspaceNATEndToEnd(t *testing.T) {
 			entry := enrollViaTOFU(t, srv, transport)
 			serverIP := "10.99.0.1"
 			if transport == "tcp" {
-				serverIP = "10.99.1.1"
+				serverIP = "10.100.0.1"
 			}
 
 			tun, err := DialEntry(entry)

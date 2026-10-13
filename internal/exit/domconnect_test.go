@@ -9,12 +9,15 @@ import (
 )
 
 func TestDomainConnectAddr(t *testing.T) {
-	got := DomainConnectAddr("10.99.0.2")
-	if got != "10.99.0.1:18080" {
+	got := DomainConnectAddr("10.100.0.1")
+	if got != "10.100.0.1:18080" {
 		t.Fatalf("DomainConnectAddr = %q", got)
 	}
 	if DomainConnectAddr("not-an-ip") != "" {
 		t.Fatal("bad ip must yield empty addr")
+	}
+	if DomainConnectAddr("") != "" {
+		t.Fatal("empty server ip must yield empty addr")
 	}
 }
 

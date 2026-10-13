@@ -31,7 +31,7 @@ type ServerConfig struct {
 	Transports     string // both | udp | tcp
 	NAT            string // auto | nft | iptables | userspace
 	TunPrefix      string // OS TUN name prefix (default "pvmexit")
-	SubnetBase     int    // tunnel subnet octet, 10.<base>.0/1.0/24 (default 99)
+	SubnetBase     int    // tunnel subnet octet, 10.<base>.0.0/16 + 10.<base+1>.0.0/16 (default 99)
 	// DomainAllow lists CIDRs the domain-connect service may dial even
 	// though they fall inside blocked private/link-local space.
 	DomainAllow []string
@@ -250,7 +250,7 @@ func (s *Server) Start() (string, error) {
 	log.Printf("domain-connect: listening on each tunnel NIC (port %d)", DomainConnectPort)
 
 	// drop registrations whose tunnel has been silent for too long,
-	// otherwise the /24 pool slowly fills with dead peers.
+	// otherwise the /16 pool slowly fills with dead peers.
 	go s.reapIdlePeers()
 
 	mux := http.NewServeMux()
@@ -286,11 +286,11 @@ func (s *Server) Start() (string, error) {
 }
 
 func (s *Server) startTransport(name string) error {
-	subnet, err := subnetOf(s.store.subnets, name)
+	subnet, err := subnetOf(s.store.Subnets, name)
 	if err != nil {
 		return err
 	}
-	serverIP, err := serverIPOf(s.store.subnets, name)
+	serverIP, err := serverIPOf(s.store.Subnets, name)
 	if err != nil {
 		return err
 	}
@@ -510,7 +510,7 @@ const (
 
 // reapIdlePeers periodically removes registrations whose tunnel has been
 // silent for peerIdleMax (or that never handshook within that window), so
-// the /24 tunnel-IP pool cannot fill with dead peers over time.
+// the /16 tunnel-IP pool cannot fill with dead peers over time.
 func (s *Server) reapIdlePeers() {
 	tick := time.NewTicker(peerReapInterval)
 	defer tick.Stop()

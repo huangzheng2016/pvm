@@ -27,7 +27,7 @@ func CmdExitAgent(args []string) int {
 	transports := fs.String("transport", "both", "udp | tcp | both")
 	nat := fs.String("nat", "auto", "nat backend: auto | nft | iptables | userspace")
 	tunPrefix := fs.String("tun-prefix", "pvmexit", "OS TUN name prefix (change when running multiple agents)")
-	subnetBase := fs.Int("subnet-base", 99, "tunnel subnet octet: 10.<base>.0.0/24 + 10.<base>.1.0/24 (change when running multiple agents)")
+	subnetBase := fs.Int("subnet-base", 99, "tunnel pools (1-254): udp 10.<base>.0.0/16, tcp 10.<base+1>.0.0/16")
 	status := fs.Bool("status", false, "print the effective nat backend and exit")
 	udpPort := fs.Int("udp-port", 18443, "wireguard UDP port")
 	tcpPort := fs.Int("tcp-port", 18444, "wireguard TCP port")
@@ -81,7 +81,7 @@ func CmdExitAgent(args []string) int {
 
 func CmdExit(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: pvm exit <add|set|ls|rm|test> [args]")
+		fmt.Fprintln(os.Stderr, "usage: pvm exit <add|set|ls|rm|test|client-config> [args]")
 		return 2
 	}
 	switch args[0] {
@@ -95,6 +95,8 @@ func CmdExit(args []string) int {
 		return exitRm(args[1:])
 	case "test":
 		return exitTest(args[1:])
+	case "client-config":
+		return exitClientConfig(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "unknown exit subcommand %q\n", args[0])
 		return 2

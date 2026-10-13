@@ -73,6 +73,14 @@ pvm exit-agent --listen :18443 --token <token>
 
 Then register it on the host with `pvm exit add`. See [SKILL.md](SKILL.md#standard-flow-deploy-an-exit-over-ssh) for the complete SSH deployment, including a systemd unit, fingerprint verification, speed tests, and rollback.
 
+To connect a phone or laptop with a standard WireGuard client, export a separate client profile from a UDP exit:
+
+```bash
+pvm exit client-config us --output phone.conf
+```
+
+This creates a new client key, enrolls it with the exit agent, writes the config with mode `0600`, and displays a QR code for mobile apps. Run it once per device. Standard clients support UDP only and get a full-tunnel IPv4 VPN, not pvm's gateway DNS or split-routing rules. IPv6 is not tunneled.
+
 ## Documentation
 
 - [SKILL.md](SKILL.md): Complete usage manual for agents and people; `pvm skill` prints the embedded copy.

@@ -32,8 +32,8 @@ func TestPeerStoreAllocateAndPersist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p3.IP != "10.99.1.2" {
-		t.Fatalf("first tcp peer = %s, want 10.99.1.2", p3.IP)
+	if p3.IP != "10.100.0.2" {
+		t.Fatalf("first tcp peer = %s, want 10.100.0.2", p3.IP)
 	}
 	again, _, err := s.Allocate("key-a", "host-a", "udp")
 	if err != nil {
@@ -124,7 +124,7 @@ func TestServerIPPerTransport(t *testing.T) {
 		t.Fatalf("udp server ip = %q, %v", udp, err)
 	}
 	tcp, err := ServerIP("tcp")
-	if err != nil || tcp != "10.99.1.1" {
+	if err != nil || tcp != "10.100.0.1" {
 		t.Fatalf("tcp server ip = %q, %v", tcp, err)
 	}
 }

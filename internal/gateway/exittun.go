@@ -64,6 +64,10 @@ type exitTunnel struct {
 	stop   chan struct{}
 	done   chan struct{}
 	server string // data-plane endpoint host (for the anti-loop host rule)
+	// serverTunIP is the tunnel-side server address from the enroll
+	// response (domain-connect/speed target); it cannot be derived from
+	// tunIP because the tunnel subnet is a /16.
+	serverTunIP string
 }
 
 // lastHandshake reports the newest peer handshake time (unix seconds).
@@ -537,6 +541,7 @@ persistent_keepalive_interval=25
 		return err
 	}
 	t.dev, t.td, t.tunIP = dev, td, resp.TunnelIP
+	t.serverTunIP = resp.ServerIP
 	if host, _, err := net.SplitHostPort(resp.Endpoint); err == nil {
 		t.server = host
 	}
@@ -634,10 +639,10 @@ func (m *exitManager) DomainConnectAddr(name string) (string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tuns[name]
-	if !ok || t.dev == nil || t.tunIP == "" {
+	if !ok || t.dev == nil || t.serverTunIP == "" {
 		return "", false
 	}
-	addr := exit.DomainConnectAddr(t.tunIP)
+	addr := exit.DomainConnectAddr(t.serverTunIP)
 	return addr, addr != ""
 }
 
