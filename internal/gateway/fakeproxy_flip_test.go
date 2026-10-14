@@ -68,7 +68,7 @@ func TestSetExitHooksResetsDeadTunnelConnections(t *testing.T) {
 	p.track(&trackedConn{vm: "dev2", domain: "example.com", route: policy.Direct, src: src2, up: up2})
 
 	// tunnel "my-exit" is gone (markFor = -1 for every exit)
-	p.SetExitHooks(func(string) int { return -1 }, func(string) (string, bool) { return "", false })
+	p.SetExitHooks(func(string) int { return -1 }, func(string) (string, bool) { return "", false }, func(string) (string, bool) { return "", false })
 
 	assertClosed(t, src, "flow via dead tunnel must be reset")
 	assertOpen(t, src2, "direct flow must stay open")

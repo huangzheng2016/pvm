@@ -22,10 +22,17 @@ func gatewayConfigFromCluster(s *Server, cl *cluster.Cluster) []byte {
 		Proto     string `json:"proto"`
 	}
 	type exitDef struct {
-		Server      string `json:"server"`
-		Token       string `json:"token"`
-		Transport   string `json:"transport"`
-		Fingerprint string `json:"fingerprint"`
+		Provider     string `json:"provider,omitempty"`
+		Server       string `json:"server"`
+		Token        string `json:"token"`
+		Transport    string `json:"transport"`
+		Fingerprint  string `json:"fingerprint"`
+		WGPrivateKey string `json:"wg_private_key,omitempty"`
+		ServerPubKey string `json:"server_pubkey,omitempty"`
+		TunnelIP     string `json:"tunnel_ip,omitempty"`
+		MTU          int    `json:"mtu,omitempty"`
+		Endpoint     string `json:"endpoint,omitempty"`
+		DNS          string `json:"dns,omitempty"`
 	}
 	doc := struct {
 		CIDR        string             `json:"cidr"`
@@ -70,7 +77,17 @@ func gatewayConfigFromCluster(s *Server, cl *cluster.Cluster) []byte {
 		if doc.Exits == nil {
 			doc.Exits = map[string]exitDef{}
 		}
-		doc.Exits[name] = exitDef{Server: e.Server, Token: e.Token, Transport: e.Transport, Fingerprint: e.Fingerprint}
+		def := exitDef{Server: e.Server, Token: e.Token, Transport: e.Transport, Fingerprint: e.Fingerprint}
+		if e.IsWARP() {
+			def.Provider = e.Provider
+			def.WGPrivateKey = e.WGPrivateKey
+			def.ServerPubKey = e.ServerPubKey
+			def.TunnelIP = e.TunnelIP
+			def.MTU = e.MTU
+			def.Endpoint = e.Endpoint
+			def.DNS = "1.1.1.1"
+		}
+		doc.Exits[name] = def
 	}
 	data, _ := json.MarshalIndent(doc, "", "  ")
 	return data

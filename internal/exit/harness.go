@@ -50,12 +50,17 @@ func DialEntry(e *Entry) (*Tunnel, error) {
 		dev.Close()
 		return nil, err
 	}
+	endpoint, _, err := ResolveEndpoint(e.Endpoint)
+	if err != nil {
+		dev.Close()
+		return nil, err
+	}
 	conf := fmt.Sprintf(`private_key=%s
 public_key=%s
 endpoint=%s
 allowed_ip=0.0.0.0/0
 persistent_keepalive_interval=15
-`, privHex, pubHex, e.Endpoint)
+`, privHex, pubHex, endpoint)
 	if err := dev.IpcSet(conf); err != nil {
 		dev.Close()
 		return nil, fmt.Errorf("configure device: %w", err)

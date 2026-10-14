@@ -30,6 +30,7 @@
 - `internal/gateway`: guest 网关的网桥、DHCP、DNS、NAT、fake-ip 和 fail-closed kill-switch。
 - `internal/gw`: host/guest 共享的 DNS、policy 和 rules 逻辑。
 - `internal/exit`: VPS exit-agent、peer 注册、WireGuard 和 nft/iptables/userspace NAT。
+- `internal/warp`: Cloudflare WARP 设备注册、删除和出口配置转换。
 - `internal/tunnel`: UDP/TCP 两种传输的 WireGuard device 封装。
 - `internal/agent`: guest 内 exec agent 和并发会话。
 - `internal/assets`: 内嵌资产解包和 SHA256 校验；仅 `-tags embedassets` 编入。

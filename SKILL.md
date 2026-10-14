@@ -23,7 +23,7 @@ pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, l
 ## Common choices
 
 - **Images**: `ubuntu:26.04`, `ubuntu:24.04`, `debian:13`, `debian:12`
-- **Exit transport**: `udp` (default, fastest) / `tcp` (fallback for restricted networks that throttle or block UDP)
+- **Exit providers**: pvm exit-agent (`udp` default / `tcp` fallback) or Cloudflare WARP (`udp` only); see `pvm exit add-warp` below
 - **exit-agent NAT backend**: `auto` (probe) / `nft` / `iptables` / `userspace` (no root, no ICMP)
 - **Route targets**: `direct` (host egress) or an exit name such as `my-exit`
 - **create flags**: `--image`, `--distro`, `--version`, `--name`, `--user`, `--cpus`, `--mem`, `--disk`, `--mount`, `--tz`, `--locale`, `--git-email`, `--git-name`, `--smbios-spoof`, `--no-start`, `--no-wait`
@@ -68,7 +68,7 @@ pvm ssh dev1 'curl -s ipinfo.io'
 - Restore host egress: `pvm route dev1 --via direct`.
 - **Fail-closed**: when the exit tunnel is down, VMs bound to it lose all networking — this is intentional leak protection. Do not "fix" it by switching to direct; the VM recovers once the VPS service is back.
 - Switching `--via` causes a seconds-long network blip (tunnel enroll/handshake convergence); a dead tunnel rebuilds within ~60s, during which bound VMs stay offline (expected).
-- DNS for proxied domains is resolved remotely on the VPS, never locally on the gateway — not a bug. Check tunnel health with `pvm exit test my-exit` (stale peers re-enroll automatically).
+- DNS for proxied domains is resolved only through the selected exit (on the VPS or through the WARP tunnel), never through host DNS. Check tunnel health with `pvm exit test my-exit` (stale pvm peers re-enroll automatically).
 
 ### 3. Cluster-wide default route
 
@@ -124,7 +124,7 @@ pvm route rm <index>
 pvm dns ls
 ```
 
-- Domains matching no internal/direct/proxy rule get a fake-ip (198.18.x.x). **Exit-bound VMs**: domains are resolved remotely through the tunnel by the VPS. **Direct VMs**: the gateway resolves via the host uplink DNS at connect time and dials on their behalf.
+- Domains matching no internal/direct/proxy rule get a fake-ip (198.18.x.x). **Exit-bound VMs**: domains are resolved only through the selected tunnel (by the VPS exit-agent or WARP's in-tunnel resolver). **Direct VMs**: the gateway resolves via the host uplink DNS at connect time and dials on their behalf.
 - Domain rules only affect resolution that goes through the gateway DNS; apps with hardcoded DoH bypass it, and rules do not apply to them.
 - Rules take effect immediately, but established connections are not retroactively switched.
 
@@ -226,6 +226,20 @@ Notes:
 - Speed probes never touch third-party public servers: the exit-agent serves `/speed?bytes=N` (64MB cap) and `/ping` at `.1:18081` on each tunnel NIC, reachable only inside the tunnel.
 - exit-agent NAT backends: `nft` / `iptables` / `userspace`; userspace needs no root but does not forward ICMP ping.
 - Tunnel pools use separate `/16` networks: UDP `10.<base>.0.0/16`, TCP `10.<base+1>.0.0/16` (default base `99`). Set a different `--subnet-base` for multiple agents on one VPS or to avoid VPS-internal networks. A larger pool does not prevent address conflicts. Changing the layout drops stale registrations; expect tunnels to re-enroll.
+
+### Add a Cloudflare WARP exit without a VPS
+
+```bash
+pvm exit add-warp my-warp
+pvm exit test my-warp
+pvm route dev1 --via my-warp
+```
+
+- `add-warp` registers a device directly through Cloudflare's API. pvm does not install `warp-cli` or `wgcf`, does not generate a `wgcf-profile.conf`, and does not modify any VM image.
+- The private key and device token stay in `~/.pvm/exits/my-warp.json` with mode `0600`. Only the referenced exit's WireGuard data-plane parameters are pushed to the managed gateway; the Cloudflare API token is not.
+- Registration alone changes no routes. Bind a VM explicitly with `pvm route`, or use `pvm route default --via my-warp` deliberately. `pvm exit rm my-warp` removes the local entry and makes a best-effort Cloudflare device deletion.
+- WARP uses UDP WireGuard only. `pvm exit test` checks handshake, in-tunnel DNS, and observed egress IP; VPS-only `--speed` and `client-config` are not available. Fake-IP domains resolve through `1.1.1.1` inside the WARP tunnel, never through host DNS.
+- WARP egress location can vary and has no pvm VPS timezone probe. Set the intended region explicitly with `--tz` / `--locale`, or later with `pvm exit set`, before routing a VM.
 
 ### Connect a standard WireGuard client
 

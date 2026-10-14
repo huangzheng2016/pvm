@@ -32,7 +32,8 @@ network:
                 split rules: pvm route add direct|proxy|internal [--domain-suffix|--domain-prefix|--domain-keyword|--cidr] <v> [--via <exit>] [--dns <srv>]
                 inspect: pvm route ls | pvm route rm <index>
   dns           inspect fake-ip mappings: pvm dns ls
-  exit          manage exit nodes: add (--transport auto=probe&pick fastest) | set | ls | rm | test [--speed]
+  exit          manage exit nodes: add (--transport auto=probe&pick fastest) | add-warp | set | ls | rm | test [--speed]
+                add cloudflare warp: pvm exit add-warp my-warp
                 export a standard wireguard client: pvm exit client-config my-exit [-o phone.conf]
   exit-agent    run the vps exit agent: pvm exit-agent --listen :18443 --token <tok>
 
@@ -55,7 +56,8 @@ other:
 
 common choices:
   images        ubuntu:26.04 | ubuntu:24.04 | debian:13 | debian:12
-  transports    udp (default, wireguard) | tcp (wireguard over tcp)
+  transports    udp (default, wireguard) | tcp (wireguard over tcp; pvm exits only)
+  providers     pvm exit-agent | cloudflare warp (udp only)
   nat backends  auto | nft | iptables | userspace (no root, no icmp)
   route via     direct | <exit-name>  (for example: my-exit)
 

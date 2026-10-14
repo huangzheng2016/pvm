@@ -22,19 +22,30 @@ func entryPath(dir, name string) string {
 	return filepath.Join(dir, name+".json")
 }
 
+const ProviderWARP = "warp"
+
+type WARPAccount struct {
+	DeviceID string `json:"device_id"`
+	Token    string `json:"token"`
+	License  string `json:"license,omitempty"`
+	IPv6     string `json:"ipv6,omitempty"`
+}
+
 type Entry struct {
-	Name         string `json:"name"`
-	Server       string `json:"server"` // control plane host:port
-	Token        string `json:"token"`
-	Transport    string `json:"transport"` // udp | tcp
-	Fingerprint  string `json:"fingerprint"`
-	WGPrivateKey string `json:"wg_private_key"`
-	WGPublicKey  string `json:"wg_public_key"`
-	ServerPubKey string `json:"server_pubkey"`
-	TunnelIP     string `json:"tunnel_ip"`
-	ServerIP     string `json:"server_ip,omitempty"` // tunnel-side .1 (speed/ping target)
-	MTU          int    `json:"mtu"`
-	Endpoint     string `json:"endpoint"` // wireguard data-plane host:port
+	Name         string       `json:"name"`
+	Provider     string       `json:"provider,omitempty"`
+	Server       string       `json:"server"` // control plane host:port
+	Token        string       `json:"token"`
+	Transport    string       `json:"transport"` // udp | tcp
+	Fingerprint  string       `json:"fingerprint"`
+	WGPrivateKey string       `json:"wg_private_key"`
+	WGPublicKey  string       `json:"wg_public_key"`
+	ServerPubKey string       `json:"server_pubkey"`
+	TunnelIP     string       `json:"tunnel_ip"`
+	ServerIP     string       `json:"server_ip,omitempty"` // tunnel-side .1 (speed/ping target)
+	MTU          int          `json:"mtu"`
+	Endpoint     string       `json:"endpoint"` // wireguard data-plane host:port
+	WARP         *WARPAccount `json:"warp,omitempty"`
 	// Region profile: applied to VMs routed via this exit so their
 	// environment matches the exit's geography. TZ is the manual
 	// override (exit set --tz); AutoTZ is learned from the exit-agent's
@@ -44,6 +55,8 @@ type Entry struct {
 	Locale    string    `json:"locale,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
+
+func (e *Entry) IsWARP() bool { return e.Provider == ProviderWARP }
 
 // SaveEntry persists an entry (0600).
 func SaveEntry(dir string, e *Entry) error {

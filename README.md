@@ -5,8 +5,8 @@ Personal QEMU dev VMs in a single binary: create an isolated Linux development m
 ## Features
 
 - **Fast, ready-to-use VMs:** Golden images include Docker, common development tools, and a desktop. `pvm create` automatically downloads the base image and bakes a missing golden; the one-time first bake takes about ten minutes, while later VMs are usually ready in about 30 seconds.
-- **Fail-closed exit routing:** Route an entire VM through WireGuard to your VPS over UDP or TCP. `pvm exit add` probes both transports and picks the fastest. If the tunnel goes down, the VM loses networking instead of falling back to host egress.
-- **Fake-IP DNS and split routing:** Proxied domains are resolved only on the VPS, keeping them invisible to the host and local network. Internal domains use host DNS, and domain or CIDR rules take effect without a restart.
+- **Fail-closed exit routing:** Route an entire VM through WireGuard to your VPS over UDP or TCP, or to Cloudflare WARP over UDP. `pvm exit add` probes both VPS transports and picks the fastest. If the tunnel goes down, the VM loses networking instead of falling back to host egress.
+- **Fake-IP DNS and split routing:** Proxied domains are resolved only through the selected exit, keeping them invisible to the host and local network. Internal domains use host DNS, and domain or CIDR rules take effect without a restart.
 - **Native browser desktop:** `pvm desktop` serves the VM's own XFCE desktop through TigerVNC and noVNC. The browser opens directly through a loopback-only URL; it is the same machine as SSH, not a container.
 - **Host-shaped defaults:** New VMs default to all host CPU cores and half of host RAM, with a balloon driver returning idle memory to the host. Disks default to 20 GB and can be grown with `pvm resize`.
 - **Complete VM workflows:** RAM snapshots restore in seconds, clones regenerate machine identifiers, and loopback port maps, bidirectional `/share` plus custom host mounts, and virtio-serial exec cover daily development and recovery.
@@ -41,6 +41,13 @@ pvm ssh dev1 'curl -s ipinfo.io'
 pvm route dev1 --via direct
 ```
 
+Or use Cloudflare WARP without deploying a VPS or installing anything in the VM:
+
+```bash
+pvm exit add-warp my-warp
+pvm route dev1 --via my-warp
+```
+
 To route every VM without an explicit route, set the cluster default:
 
 ```bash
@@ -50,11 +57,11 @@ pvm route ls
 
 ## Architecture
 
-One `pvm` binary provides the host CLI and daemon, the guest agent, and the VPS exit agent. The daemon owns VM and cluster lifecycle; the gateway VM provides DNS, routing, and the fail-closed kill switch.
+One `pvm` binary provides the host CLI and daemon, the guest agent, and the VPS exit agent. The daemon owns VM and cluster lifecycle; the managed gateway provides DNS, routing, WireGuard devices, and the fail-closed kill switch. WARP registration and credentials are managed on the host without `warp-cli`, `wgcf`, or extra configuration files.
 
 ```text
 Control: pvm CLI -> pvm daemon -> gateway VM and dev VMs
-Data:    dev VM -> gateway VM -> WireGuard tunnel -> exit-agent on VPS -> Internet
+Data:    dev VM -> gateway VM -> WireGuard tunnel -> exit-agent on VPS or Cloudflare WARP -> Internet
 ```
 
 ## Supported images and hosts

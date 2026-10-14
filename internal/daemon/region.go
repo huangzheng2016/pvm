@@ -104,6 +104,9 @@ func (s *Server) restoreRegion(spec *vm.Spec) string {
 }
 
 func (s *Server) probeSuggestedTZ(entry *exit.Entry) string {
+	if entry.IsWARP() {
+		return ""
+	}
 	priv, err := tunnel.GenerateKey()
 	if err != nil {
 		return ""

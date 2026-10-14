@@ -19,16 +19,16 @@ import (
 // fakeProxy terminates TCP connections the nft rules REDIRECT from the
 // fake-ip range: the original destination (a fake IP) is recovered with
 // SO_ORIGINAL_DST, mapped back to its domain, routed by policy and
-// dialed out. Direct flows are resolved via the uplink resolver and
-// dialed from the gateway; proxied flows are handed to the exit's
-// domain-connect service BY DOMAIN — the gateway performs no DNS
-// resolution for them at all (the exit resolves and dials on the VPS).
+// dialed out. Direct flows use the uplink resolver. Proxied flows use
+// either the exit-agent's domain-connect service or a resolver reached
+// through the tunnel; the host resolver is never used for them.
 type fakeProxy struct {
-	policy    *gwpolicy.Engine
-	resolver  *net.Resolver
-	vmByIP    func(ip net.IP) string               // config lookup, nil-safe
-	markFor   func(exitName string) int            // SO_MARK selecting the exit's table; -1 = no tunnel
-	dcAddrFor func(exitName string) (string, bool) // in-tunnel domain-connect addr
+	policy     *gwpolicy.Engine
+	resolver   *net.Resolver
+	vmByIP     func(ip net.IP) string               // config lookup, nil-safe
+	markFor    func(exitName string) int            // SO_MARK selecting the exit's table; -1 = no tunnel
+	dcAddrFor  func(exitName string) (string, bool) // in-tunnel domain-connect addr
+	dnsAddrFor func(exitName string) (string, bool) // in-tunnel resolver for exits without domain-connect
 
 	mu     sync.Mutex
 	ln     *net.TCPListener
@@ -58,10 +58,11 @@ func newFakeProxy(policy *gwpolicy.Engine, upstream string, vmByIP func(net.IP) 
 				return d.DialContext(ctx, "udp", upstream+":53")
 			},
 		},
-		vmByIP:    vmByIP,
-		markFor:   func(string) int { return -1 },
-		dcAddrFor: func(string) (string, bool) { return "", false },
-		conns:     map[*trackedConn]struct{}{},
+		vmByIP:     vmByIP,
+		markFor:    func(string) int { return -1 },
+		dcAddrFor:  func(string) (string, bool) { return "", false },
+		dnsAddrFor: func(string) (string, bool) { return "", false },
+		conns:      map[*trackedConn]struct{}{},
 	}
 }
 
@@ -94,9 +95,9 @@ func (p *fakeProxy) curPolicy() *gwpolicy.Engine {
 // SetExitHooks installs the tunnel lookup hooks on config reload, then
 // resets proxied flows whose exit tunnel is now down: the flow is dead
 // anyway, so the VM gets an immediate RST instead of a hanging relay.
-func (p *fakeProxy) SetExitHooks(markFor func(string) int, dcAddrFor func(string) (string, bool)) {
+func (p *fakeProxy) SetExitHooks(markFor func(string) int, dcAddrFor, dnsAddrFor func(string) (string, bool)) {
 	p.mu.Lock()
-	p.markFor, p.dcAddrFor = markFor, dcAddrFor
+	p.markFor, p.dcAddrFor, p.dnsAddrFor = markFor, dcAddrFor, dnsAddrFor
 	var kill []*trackedConn
 	for tc := range p.conns {
 		if tc.route == gwpolicy.Proxy && markFor(tc.exit) < 0 {
@@ -110,10 +111,10 @@ func (p *fakeProxy) SetExitHooks(markFor func(string) int, dcAddrFor func(string
 	}
 }
 
-func (p *fakeProxy) exitHooks() (func(string) int, func(string) (string, bool)) {
+func (p *fakeProxy) exitHooks() (func(string) int, func(string) (string, bool), func(string) (string, bool)) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.markFor, p.dcAddrFor
+	return p.markFor, p.dcAddrFor, p.dnsAddrFor
 }
 
 func (p *fakeProxy) Start(port int) error {
@@ -213,33 +214,54 @@ func (p *fakeProxy) dialDirect(src *net.TCPConn, domain string, port int, vmName
 	relay(src, up)
 }
 
-// dialProxy hands the flow to the exit's domain-connect service: the
-// domain travels inside the tunnel and only the exit resolves it (on
-// the VPS). Fail-closed: if the tunnel or the service is down the flow
-// is refused, never resolved locally.
 func (p *fakeProxy) dialProxy(src *net.TCPConn, domain string, port int, exitName string, vmName string) {
-	markFor, dcAddrFor := p.exitHooks()
+	markFor, dcAddrFor, dnsAddrFor := p.exitHooks()
 	mark := markFor(exitName)
 	if mark < 0 {
 		log.Printf("fakeproxy: %s wants exit %q but tunnel is down; refusing fast", domain, exitName)
 		return
 	}
-	dcAddr, ok := dcAddrFor(exitName)
+	if dcAddr, ok := dcAddrFor(exitName); ok {
+		d := net.Dialer{Timeout: 10 * time.Second, Control: soMark(mark)}
+		up, err := d.DialContext(context.Background(), "tcp4", dcAddr)
+		if err != nil {
+			log.Printf("fakeproxy: domain-connect %s via %s (%s): %v", domain, exitName, dcAddr, err)
+			return
+		}
+		if err := exit.WriteDomainConnect(up, domain, port); err != nil {
+			log.Printf("fakeproxy: domain-egress %s:%d via %s: %v", domain, port, exitName, err)
+			up.Close()
+			return
+		}
+		p.relayProxy(src, up, domain, exitName, vmName)
+		return
+	}
+	dnsAddr, ok := dnsAddrFor(exitName)
 	if !ok {
-		log.Printf("fakeproxy: %s wants exit %q but domain-connect is unavailable; refusing fast", domain, exitName)
+		log.Printf("fakeproxy: %s wants exit %q but neither domain-connect nor tunnel DNS is available; refusing fast", domain, exitName)
+		return
+	}
+	resolver := &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+		d := net.Dialer{Timeout: 5 * time.Second, Control: soMark(mark)}
+		return d.DialContext(ctx, "udp", dnsAddr)
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	ips, err := resolver.LookupIP(ctx, "ip4", domain)
+	cancel()
+	if err != nil || len(ips) == 0 {
+		log.Printf("fakeproxy: resolve %s via %s (%s): %v", domain, exitName, dnsAddr, err)
 		return
 	}
 	d := net.Dialer{Timeout: 10 * time.Second, Control: soMark(mark)}
-	up, err := d.DialContext(context.Background(), "tcp4", dcAddr)
+	up, err := d.DialContext(context.Background(), "tcp4", net.JoinHostPort(ips[0].String(), fmt.Sprint(port)))
 	if err != nil {
-		log.Printf("fakeproxy: domain-connect %s via %s (%s): %v", domain, exitName, dcAddr, err)
+		log.Printf("fakeproxy: dial %s (%s:%d) via %s: %v", domain, ips[0], port, exitName, err)
 		return
 	}
-	if err := exit.WriteDomainConnect(up, domain, port); err != nil {
-		log.Printf("fakeproxy: domain-egress %s:%d via %s: %v", domain, port, exitName, err)
-		up.Close()
-		return
-	}
+	p.relayProxy(src, up, domain, exitName, vmName)
+}
+
+func (p *fakeProxy) relayProxy(src *net.TCPConn, up net.Conn, domain, exitName, vmName string) {
 	defer up.Close()
 	tc := &trackedConn{vm: vmName, domain: domain, route: gwpolicy.Proxy, exit: exitName, src: src, up: up}
 	p.track(tc)

@@ -166,7 +166,7 @@ func (a *Agent) Run() error {
 					}
 					pol.SetDefaultExit(c.DefaultExit)
 					fproxy.SetPolicy(pol)
-					fproxy.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr)
+					fproxy.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
 				}
 			}
 			// exit tunnels + policy routing converge on every apply

@@ -62,6 +62,9 @@ func exitClientConfigTo(args []string, stdout io.Writer) int {
 	if err != nil {
 		return fatalf("exit %q not found", name)
 	}
+	if e.IsWARP() {
+		return fatalf("client-config is available only for pvm exit-agent nodes")
+	}
 	if e.Transport != "udp" {
 		return fatalf("standard WireGuard clients require UDP; exit %q uses %s", name, e.Transport)
 	}

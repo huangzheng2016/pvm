@@ -81,12 +81,14 @@ func CmdExitAgent(args []string) int {
 
 func CmdExit(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: pvm exit <add|set|ls|rm|test|client-config> [args]")
+		fmt.Fprintln(os.Stderr, "usage: pvm exit <add|add-warp|set|ls|rm|test|client-config> [args]")
 		return 2
 	}
 	switch args[0] {
 	case "add":
 		return exitAdd(args[1:])
+	case "add-warp":
+		return exitAddWARP(args[1:])
 	case "set":
 		return exitSet(args[1:])
 	case "ls", "list":
@@ -333,7 +335,7 @@ func exitLs() int {
 		return 0
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSERVER\tTRANSPORT\tTUNNEL IP\tENDPOINT\tTZ")
+	fmt.Fprintln(tw, "NAME\tTYPE\tSERVER\tTRANSPORT\tTUNNEL IP\tENDPOINT\tTZ")
 	for _, e := range entries {
 		tz := "-"
 		if e.TZ != "" {
@@ -341,7 +343,11 @@ func exitLs() int {
 		} else if e.AutoTZ != "" {
 			tz = e.AutoTZ + "(auto)"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, e.Server, e.Transport, e.TunnelIP, e.Endpoint, tz)
+		provider := e.Provider
+		if provider == "" {
+			provider = "agent"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Name, provider, e.Server, e.Transport, e.TunnelIP, e.Endpoint, tz)
 	}
 	tw.Flush()
 	return 0
@@ -360,10 +366,16 @@ func exitRm(args []string) int {
 	if err != nil {
 		return fatalf("exit %q not found", args[0])
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := exit.NewClient(e.Server, e.Token, e.Fingerprint).DeletePeer(ctx, e.TunnelIP); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: revoke on server failed (continuing): %v\n", err)
+	if e.IsWARP() {
+		if err := deleteWARPRegistration(e); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: delete Cloudflare device failed (continuing): %v\n", err)
+		}
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := exit.NewClient(e.Server, e.Token, e.Fingerprint).DeletePeer(ctx, e.TunnelIP); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: revoke on server failed (continuing): %v\n", err)
+		}
 	}
 	if err := exit.RemoveEntry(dir, args[0]); err != nil {
 		return fatalf("%v", err)
@@ -399,9 +411,11 @@ func exitTest(args []string) int {
 	if err != nil {
 		return fatalf("exit %q not found", name)
 	}
+	if e.IsWARP() && *speed {
+		return fatalf("--speed is available only for pvm exit-agent nodes")
+	}
 	fmt.Printf("dialing %s (%s %s)...\n", e.Name, e.Transport, e.Endpoint)
-	if e.ServerIP == "" {
-		// Handshake verification needs ServerIP, which older saved entries may lack.
+	if e.ServerIP == "" && !e.IsWARP() {
 		if err := reEnrollExit(dir, e); err != nil {
 			return fatalf("re-enroll: %v", err)
 		}
@@ -413,7 +427,11 @@ func exitTest(args []string) int {
 		if err != nil {
 			return nil, err
 		}
-		if err := t.WaitHandshake(ctx, e.ServerIP); err != nil {
+		target := e.ServerIP
+		if e.IsWARP() {
+			target = "1.1.1.1"
+		}
+		if err := t.WaitHandshake(ctx, target); err != nil {
 			t.Close()
 			return nil, err
 		}
@@ -421,8 +439,9 @@ func exitTest(args []string) int {
 	}
 	t, err := dial()
 	if err != nil {
-		// The server reclaims idle peers and reassigns freed tunnel IPs,
-		// so a stored entry can go stale; re-enroll once and retry.
+		if e.IsWARP() {
+			return fatalf("handshake: %v", err)
+		}
 		fmt.Println("handshake failed; re-enrolling peer...")
 		if rerr := reEnrollExit(dir, e); rerr != nil {
 			return fatalf("handshake: %v (re-enroll: %v)", err, rerr)
@@ -455,6 +474,10 @@ func exitTest(args []string) int {
 		return fatalf("fetch exit ip: %v", err)
 	}
 	fmt.Printf("exit ip observed through tunnel: %s\n", ip)
+	if e.IsWARP() {
+		fmt.Println("Cloudflare WARP data plane: ok")
+		return 0
+	}
 
 	host, _, err := net.SplitHostPort(e.Server)
 	if err != nil {

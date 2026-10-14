@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"net"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -20,10 +19,17 @@ import (
 )
 
 type ExitDef struct {
-	Server      string `json:"server"`      // control plane host:port
-	Token       string `json:"token"`       // control plane bearer token
-	Transport   string `json:"transport"`   // udp | tcp
-	Fingerprint string `json:"fingerprint"` // pinned control-plane cert fingerprint (TOFU)
+	Provider     string `json:"provider,omitempty"`
+	Server       string `json:"server"`
+	Token        string `json:"token"`
+	Transport    string `json:"transport"`
+	Fingerprint  string `json:"fingerprint"`
+	WGPrivateKey string `json:"wg_private_key,omitempty"`
+	ServerPubKey string `json:"server_pubkey,omitempty"`
+	TunnelIP     string `json:"tunnel_ip,omitempty"`
+	MTU          int    `json:"mtu,omitempty"`
+	Endpoint     string `json:"endpoint,omitempty"`
+	DNS          string `json:"dns,omitempty"`
 }
 
 const (
@@ -435,9 +441,7 @@ func (m *exitManager) teardownLocked(t *exitTunnel) {
 	close(t.stop)
 	<-t.done
 	delete(m.tuns, t.name)
-	// permanently gone: revoke the server-side peer so the tunnel-IP
-	// pool does not fill with dead registrations.
-	if t.tunIP != "" {
+	if t.def.Provider != exit.ProviderWARP && t.tunIP != "" {
 		cl := exit.NewClient(t.def.Server, t.def.Token, t.def.Fingerprint)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := cl.DeletePeer(ctx, t.tunIP); err != nil {
@@ -447,8 +451,8 @@ func (m *exitManager) teardownLocked(t *exitTunnel) {
 	}
 }
 
-// runTunnel enrolls and maintains the tunnel until torn down,
-// re-enrolling after prolonged handshake failure.
+// runTunnel maintains the tunnel until torn down and rebuilds it after
+// prolonged handshake failure.
 func (m *exitManager) runTunnel(t *exitTunnel) {
 	defer close(t.done)
 	backoff := 2 * time.Second
@@ -472,40 +476,59 @@ func (m *exitManager) runTunnel(t *exitTunnel) {
 		}
 		backoff = 2 * time.Second
 		if down := m.watch(t); down {
-			log.Printf("exit %s: watchdog detected dead tunnel, re-enrolling", t.name)
+			log.Printf("exit %s: watchdog detected dead tunnel, rebuilding", t.name)
 		}
 		m.cleanupDevice(t)
 	}
 }
 
-// upOnce enrolls a peer and brings the device and routing up. The WG
-// private key is generated once per tunnel and reused across watchdog
-// re-enrolls, so the server keeps the same peer/IP instead of leaking
-// pool entries on every rebuild.
 func (m *exitManager) upOnce(t *exitTunnel) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if t.priv == "" {
-		priv, err := tunnel.GenerateKey()
+	type enrollment struct {
+		serverPubKey string
+		tunnelIP     string
+		serverIP     string
+		mtu          int
+		endpoint     string
+	}
+	var resp enrollment
+	if t.def.Provider == exit.ProviderWARP {
+		t.priv = t.def.WGPrivateKey
+		resp = enrollment{
+			serverPubKey: t.def.ServerPubKey,
+			tunnelIP:     t.def.TunnelIP,
+			mtu:          t.def.MTU,
+			endpoint:     t.def.Endpoint,
+		}
+	} else {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if t.priv == "" {
+			priv, err := tunnel.GenerateKey()
+			if err != nil {
+				return err
+			}
+			t.priv = priv
+		}
+		pub, err := tunnel.PublicKey(t.priv)
 		if err != nil {
 			return err
 		}
-		t.priv = priv
+		cl := exit.NewClient(t.def.Server, t.def.Token, t.def.Fingerprint)
+		r, err := cl.Enroll(ctx, pub, "pvm-gw", t.def.Transport)
+		if err != nil {
+			return fmt.Errorf("enroll: %w", err)
+		}
+		resp = enrollment{serverPubKey: r.ServerPubKey, tunnelIP: r.TunnelIP, serverIP: r.ServerIP, mtu: r.MTU, endpoint: r.Endpoint}
 	}
-	pub, err := tunnel.PublicKey(t.priv)
-	if err != nil {
-		return err
-	}
-	cl := exit.NewClient(t.def.Server, t.def.Token, t.def.Fingerprint)
-	hostname := "pvm-gw"
-	resp, err := cl.Enroll(ctx, pub, hostname, t.def.Transport)
-	if err != nil {
-		return fmt.Errorf("enroll: %w", err)
-	}
-	mtu := resp.MTU
+	mtu := resp.mtu
 	if mtu == 0 {
 		mtu = exit.MTUFor(t.def.Transport)
 	}
+	resolved, server, err := exit.ResolveEndpoint(resp.endpoint)
+	if err != nil {
+		return fmt.Errorf("resolve endpoint: %w", err)
+	}
+	resp.endpoint, t.server = resolved, server
 	ifName := tunnelIfName(t.idx)
 	td, err := tun.CreateTUN(ifName, mtu)
 	if err != nil {
@@ -521,7 +544,7 @@ func (m *exitManager) upOnce(t *exitTunnel) error {
 		dev.Close()
 		return err
 	}
-	pubHex, err := tunnel.Hex(resp.ServerPubKey)
+	pubHex, err := tunnel.Hex(resp.serverPubKey)
 	if err != nil {
 		dev.Close()
 		return err
@@ -531,20 +554,17 @@ public_key=%s
 endpoint=%s
 allowed_ip=0.0.0.0/0
 persistent_keepalive_interval=25
-`, privHex, pubHex, resp.Endpoint)
+`, privHex, pubHex, resp.endpoint)
 	if err := dev.IpcSet(conf); err != nil {
 		dev.Close()
 		return fmt.Errorf("configure device: %w", err)
 	}
-	if err := exit.ConfigureTUN(ifName, resp.TunnelIP+"/32"); err != nil {
+	if err := exit.ConfigureTUN(ifName, resp.tunnelIP+"/32"); err != nil {
 		dev.Close()
 		return err
 	}
-	t.dev, t.td, t.tunIP = dev, td, resp.TunnelIP
-	t.serverTunIP = resp.ServerIP
-	if host, _, err := net.SplitHostPort(resp.Endpoint); err == nil {
-		t.server = host
-	}
+	t.dev, t.td, t.tunIP = dev, td, resp.tunnelIP
+	t.serverTunIP = resp.serverIP
 
 	// policy routing: default via this tunnel in its own table; marked
 	// flows (fakeproxy proxy dials) select the table by fwmark.
@@ -566,7 +586,7 @@ persistent_keepalive_interval=25
 			log.Printf("exit %s: endpoint host rule: %v", t.name, err)
 		}
 	}
-	log.Printf("exit %s: tunnel up on %s (%s, tunnel ip %s, mtu %d)", t.name, ifName, t.def.Transport, resp.TunnelIP, mtu)
+	log.Printf("exit %s: tunnel up on %s (%s, tunnel ip %s, mtu %d)", t.name, ifName, t.def.Transport, resp.tunnelIP, mtu)
 	return nil
 }
 
