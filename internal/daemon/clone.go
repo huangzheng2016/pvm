@@ -100,11 +100,29 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
+	s.resetStages(spec.Name)
 	s.mu.Lock()
 	s.vms[spec.Name] = spec
 	s.mu.Unlock()
 
 	var added []*cluster.PortMap
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		for _, pm := range added {
+			s.relays.Remove(pm.Proto, pm.HostPort)
+		}
+		_ = s.instance(spec).Stop()
+		s.removeLink(cl, spec.Name)
+		s.Clusters.RemoveVM(cl.ID, spec.Name)
+		_ = vm.Delete(s.P, spec.Name)
+		s.mu.Lock()
+		delete(s.vms, spec.Name)
+		s.mu.Unlock()
+		_ = s.pushGatewayConfig(cl.ID)
+	}()
 	for _, m := range req.Maps {
 		proto := m.Proto
 		if proto == "" {
@@ -149,6 +167,7 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 		s.ensureAgentAsync(spec)
 		s.maybeIdentityReset(spec)
 	}
+	committed = true
 	writeJSON(w, 201, map[string]any{"spec": spec, "maps": added, "running": req.Start})
 }
 

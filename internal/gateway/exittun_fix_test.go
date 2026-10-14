@@ -126,7 +126,7 @@ func TestReconcileLearnedEvictsFlippedRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := eng2.Add(rules.Rule{Type: rules.DomainSuffix, Pattern: "example.com", Action: rules.Proxy, Exit: "us"}); err != nil {
+	if err := eng2.Add(rules.Rule{Type: rules.DomainSuffix, Pattern: "example.com", Action: rules.Proxy, Exit: "my-exit"}); err != nil {
 		t.Fatal(err)
 	}
 	m.ReconcileLearned(eng2)
@@ -188,10 +188,10 @@ func TestAddBypassIPRefreshesTTL(t *testing.T) {
 func TestSyncClusterDefaultExit(t *testing.T) {
 	log := stubIPRule(t)
 	m := newExitManager()
-	exits := map[string]ExitDef{"us": {Server: "127.0.0.1:1", Token: "x", Transport: "udp", Fingerprint: "00"}}
+	exits := map[string]ExitDef{"my-exit": {Server: "127.0.0.1:1", Token: "x", Transport: "udp", Fingerprint: "00"}}
 	vmIPs := map[string]string{"proxied": "192.168.1.10", "open": "192.168.1.11"}
 
-	m.Sync(exits, map[string]string{"proxied": "us"}, vmIPs, nil, nil, "192.168.1.0/24", "us")
+	m.Sync(exits, map[string]string{"proxied": "my-exit"}, vmIPs, nil, nil, "192.168.1.0/24", "my-exit")
 	for _, want := range [][]string{
 		{"add", "from 192.168.1.10/32", "pref", "101"},
 		{"add", "from 192.168.1.11/32", "lookup", "main", "pref", "102"},
@@ -204,7 +204,7 @@ func TestSyncClusterDefaultExit(t *testing.T) {
 
 	// removing the default exit tears the cluster rule and overrides down
 	log2 := stubIPRule(t)
-	m.Sync(exits, map[string]string{"proxied": "us"}, vmIPs, nil, nil, "", "")
+	m.Sync(exits, map[string]string{"proxied": "my-exit"}, vmIPs, nil, nil, "", "")
 	if !log2.has("del", "from 192.168.1.11/32") {
 		t.Fatal("direct override not removed")
 	}
@@ -277,8 +277,8 @@ func TestDomainConnectAddrUsesEnrolledServerIP(t *testing.T) {
 	defer dev.Close()
 
 	m := newExitManager()
-	m.tuns["us"] = &exitTunnel{name: "us", dev: dev, tunIP: "10.100.0.7", serverTunIP: "10.100.0.1"}
-	addr, ok := m.DomainConnectAddr("us")
+	m.tuns["my-exit"] = &exitTunnel{name: "my-exit", dev: dev, tunIP: "10.100.0.7", serverTunIP: "10.100.0.1"}
+	addr, ok := m.DomainConnectAddr("my-exit")
 	if !ok || addr != "10.100.0.1:18080" {
 		t.Fatalf("DomainConnectAddr = %q, %v", addr, ok)
 	}

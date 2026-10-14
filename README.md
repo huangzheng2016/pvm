@@ -35,8 +35,8 @@ pvm map dev1 8080:80
 Register a VPS exit and route the whole VM through it:
 
 ```bash
-pvm exit add us --server <vps>:18443 --token <token>
-pvm route dev1 --via us
+pvm exit add my-exit --server vps.example.com:18443 --token YOUR_TOKEN
+pvm route dev1 --via my-exit
 pvm ssh dev1 'curl -s ipinfo.io'
 pvm route dev1 --via direct
 ```
@@ -44,7 +44,7 @@ pvm route dev1 --via direct
 To route every VM without an explicit route, set the cluster default:
 
 ```bash
-pvm route default --via us
+pvm route default --via my-exit
 pvm route ls
 ```
 
@@ -68,7 +68,7 @@ Data:    dev VM -> gateway VM -> WireGuard tunnel -> exit-agent on VPS -> Intern
 Download the release archive for the VPS architecture and run the exit agent as a persistent service:
 
 ```bash
-pvm exit-agent --listen :18443 --token <token>
+pvm exit-agent --listen :18443 --token YOUR_TOKEN
 ```
 
 Then register it on the host with `pvm exit add`. See [SKILL.md](SKILL.md#standard-flow-deploy-an-exit-over-ssh) for the complete SSH deployment, including a systemd unit, fingerprint verification, speed tests, and rollback.
@@ -76,7 +76,7 @@ Then register it on the host with `pvm exit add`. See [SKILL.md](SKILL.md#standa
 To connect a phone or laptop with a standard WireGuard client, export a separate client profile from a UDP exit:
 
 ```bash
-pvm exit client-config us --output phone.conf
+pvm exit client-config my-exit --output phone.conf
 ```
 
 This creates a new client key, enrolls it with the exit agent, writes the config with mode `0600`, and displays a QR code for mobile apps. Run it once per device. Standard clients support UDP only and get a full-tunnel IPv4 VPN, not pvm's gateway DNS or split-routing rules. IPv6 is not tunneled.
@@ -86,7 +86,7 @@ This creates a new client key, enrolls it with the exit agent, writes the config
 - [SKILL.md](SKILL.md): Complete usage manual for agents and people; `pvm skill` prints the embedded copy.
 - [SECURITY.md](SECURITY.md): Network, device identity, and risk-control posture; `pvm security` prints the embedded copy.
 - [AGENTS.md](AGENTS.md): Repository map, build and test workflow, and development rules.
-- `pvm upgrade` upgrades the installed binary to the latest release.
+- `pvm upgrade` upgrades the installed binary, restarts a running daemon, and restores previously running user VMs. Use `--no-restart` to replace only the binary.
 
 ## Development
 

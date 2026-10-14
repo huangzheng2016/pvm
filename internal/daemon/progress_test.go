@@ -78,4 +78,8 @@ func TestStageRingAndReady(t *testing.T) {
 	if s.vmReady("other") {
 		t.Fatal("unknown vm must not be ready")
 	}
+	s.resetStages("vm1")
+	if s.vmReady("vm1") {
+		t.Fatal("resetStages must clear stale readiness")
+	}
 }

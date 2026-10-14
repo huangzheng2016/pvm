@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -42,6 +43,7 @@ type Server struct {
 	relays   *relaySet
 
 	started time.Time
+	ready   atomic.Bool
 	mu      sync.Mutex // guards vms cache
 	vms     map[string]*vm.Spec
 
@@ -160,7 +162,9 @@ func (s *Server) getSpec(name string) (*vm.Spec, error) {
 
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /v1/health", s.jsonOK(map[string]any{"ready": true}))
+	mux.HandleFunc("GET /v1/health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, 200, map[string]any{"ready": s.ready.Load()})
+	})
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/vms", s.handleList)
 	mux.HandleFunc("POST /v1/vms", s.handleCreate)
@@ -208,6 +212,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{
 		"version":      buildinfo.Version,
+		"ready":        s.ready.Load(),
 		"pid":          os.Getpid(),
 		"uptime":       time.Since(s.started).Round(time.Second).String(),
 		"vms":          len(specs),
@@ -298,6 +303,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 409, fmt.Errorf("vm %q already exists", req.Name))
 		return
 	}
+	s.resetStages(req.Name)
 	if req.CPUs == 0 {
 		req.CPUs = s.Cfg.Defaults.CPUs
 	}
@@ -406,7 +412,16 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if req.Start {
 		bootStart := time.Now()
 		if _, _, err := s.startVM(spec); err != nil {
-			writeErr(w, 500, fmt.Errorf("created but start failed: %w", err))
+			_ = s.instance(spec).Stop()
+			s.closeVMResources(spec.Name, cl)
+			s.removeLink(cl, spec.Name)
+			s.Clusters.RemoveVM(cl.ID, spec.Name)
+			_ = vm.Delete(s.P, spec.Name)
+			s.mu.Lock()
+			delete(s.vms, spec.Name)
+			s.mu.Unlock()
+			_ = s.pushGatewayConfig(cl.ID)
+			writeErr(w, 500, fmt.Errorf("start failed; create rolled back: %w", err))
 			return
 		}
 		s.stage(req.Name, "boot", fmt.Sprintf("qemu pid up (%.1fs)", time.Since(bootStart).Seconds()))
@@ -432,7 +447,7 @@ func (s *Server) startVM(spec *vm.Spec) (*qemu.Instance, *qemu.SnapshotManifest,
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := s.ensureLink(cl, spec.Name); err != nil {
+		if err := s.ensureLinkRetry(cl, spec.Name); err != nil {
 			return nil, nil, err
 		}
 		// The DHCP mapping must be in place before the guest's first
@@ -507,6 +522,7 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 	lock := qemu.LockVM(spec.Name)
 	lock.Lock()
 	defer lock.Unlock()
+	s.resetStages(spec.Name)
 	inst, man, err := s.startVM(spec)
 	if err != nil {
 		writeErr(w, 500, err)
@@ -657,7 +673,9 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if cl != nil {
 		s.removeLink(cl, name)
 		s.Clusters.RemoveVM(cl.ID, name)
-		s.pushGatewayConfig(cl.ID)
+		if err := s.pushGatewayConfig(cl.ID); err != nil {
+			log.Printf("delete %s: gateway config push failed: %v", name, err)
+		}
 	}
 	if err := vm.Delete(s.P, name); err != nil {
 		writeErr(w, 500, err)
@@ -666,6 +684,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	delete(s.vms, name)
 	s.mu.Unlock()
+	s.resetStages(name)
 	writeJSON(w, 200, map[string]any{"deleted": name})
 }
 
@@ -712,8 +731,10 @@ func stopInfosParallel(infos []vmInfo, limit int, stop func(*vm.Spec)) {
 }
 
 func (s *Server) recoverClusters() {
+	healthy := true
 	for _, cl := range s.Clusters.List() {
 		if _, err := s.ensureCluster(cl.ID); err != nil {
+			healthy = false
 			log.Printf("recover cluster %d: %v", cl.ID, err)
 			continue
 		}
@@ -735,6 +756,7 @@ func (s *Server) recoverClusters() {
 		}
 		go s.deployClusterAgent(cl)
 	}
+	s.ready.Store(healthy)
 }
 
 func Run(p *paths.Paths, srv *Server) error {

@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/buildinfo"
+	"github.com/huangzheng2016/pvm/internal/daemon"
 	"github.com/huangzheng2016/pvm/internal/fsutil"
+	"github.com/huangzheng2016/pvm/internal/paths"
 )
 
 const upgradeRepo = "huangzheng2016/pvm"
@@ -56,9 +58,10 @@ func latestReleaseTag(client *http.Client) (string, error) {
 }
 
 func CmdUpgrade(args []string) int {
-	fs := newFlagSet("upgrade", "[--check] [--to <tag>] [-y]")
+	fs := newFlagSet("upgrade", "[--check] [--to <tag>] [--no-restart] [-y]")
 	check := fs.Bool("check", false, "only report current vs latest version")
 	to := fs.String("to", "", "upgrade to a specific tag")
+	noRestart := fs.Bool("no-restart", false, "replace the binary without restarting the daemon")
 	yes := fs.Bool("y", false, "skip confirmation")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -89,6 +92,19 @@ func CmdUpgrade(args []string) int {
 	}
 	if !*yes && !confirmAction(os.Stdin, os.Stdout, fmt.Sprintf("upgrade pvm %s -> %s?", cur, tag)) {
 		return fatalf("aborted")
+	}
+
+	var running []string
+	daemonRunning := false
+	if !*noRestart {
+		var err error
+		running, daemonRunning, err = upgradeRunningVMs()
+		if err != nil {
+			return fatalf("inspect daemon before upgrade: %v", err)
+		}
+		if daemonRunning {
+			fmt.Printf("daemon will restart after the upgrade; %d running user VM(s) will be restored\n", len(running))
+		}
 	}
 
 	exe, err := os.Executable()
@@ -134,8 +150,48 @@ func CmdUpgrade(args []string) int {
 	if err := fsutil.AtomicWrite(exe, data, 0o755); err != nil {
 		return fatalf("replace %s: %v", exe, err)
 	}
-	fmt.Printf("upgraded to %s; restart the daemon to use it: pvm daemon restart\n  note: the restart stops running vms - start them again with `pvm start <name>`\n", tag)
+	if *noRestart {
+		fmt.Printf("upgraded to %s; restart the daemon to use it: pvm daemon restart\n", tag)
+		return 0
+	}
+	if !daemonRunning {
+		fmt.Printf("upgraded to %s; daemon was not running\n", tag)
+		return 0
+	}
+	fmt.Println("restarting daemon...")
+	if rc := CmdDaemon([]string{"restart"}); rc != 0 {
+		return fatalf("binary upgraded to %s but daemon restart failed; previously running VMs were not restored", tag)
+	}
+	for _, name := range running {
+		fmt.Printf("restoring %s...\n", name)
+		if rc := CmdStart([]string{name}); rc != 0 {
+			return fatalf("binary upgraded to %s but restoring %s failed", tag, name)
+		}
+	}
+	fmt.Printf("upgraded to %s; daemon restarted and running VMs restored\n", tag)
 	return 0
+}
+
+func upgradeRunningVMs() ([]string, bool, error) {
+	p, err := paths.Default()
+	if err != nil {
+		return nil, false, err
+	}
+	c := daemon.NewClient(p)
+	if !c.Healthy() {
+		return nil, false, nil
+	}
+	var infos []vmInfoView
+	if err := c.Get("/v1/vms", &infos); err != nil {
+		return nil, true, err
+	}
+	var running []string
+	for _, info := range infos {
+		if info.Running && info.Spec.Role != "gateway" {
+			running = append(running, info.Spec.Name)
+		}
+	}
+	return running, true, nil
 }
 
 func downloadFile(client *http.Client, url, dst string) error {

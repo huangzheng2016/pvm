@@ -118,7 +118,7 @@ func TestGatewayRemoteTmpAndAtomicInstall(t *testing.T) {
 	}
 }
 
-func TestPushRetryFailsFastWhenGatewayDown(t *testing.T) {
+func TestPushRetryRetriesUntilDeadline(t *testing.T) {
 	s := newPushTestServer(t)
 	cl, err := s.Clusters.Ensure(1)
 	if err != nil {
@@ -131,13 +131,18 @@ func TestPushRetryFailsFastWhenGatewayDown(t *testing.T) {
 	if err := spec.Save(s.P); err != nil {
 		t.Fatal(err)
 	}
+	oldAttempts, oldDelay := gatewayRetryAttempts, gatewayRetryDelay
+	gatewayRetryAttempts, gatewayRetryDelay = 2, 2*time.Millisecond
+	defer func() {
+		gatewayRetryAttempts, gatewayRetryDelay = oldAttempts, oldDelay
+	}()
 	start := time.Now()
 	err = s.pushGatewayConfigRetry(1)
-	if err == nil || !strings.Contains(err.Error(), "not running") {
-		t.Fatalf("must fail with gateway-not-running, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "may still be initializing") {
+		t.Fatalf("must retry until initialization completes, got %v", err)
 	}
-	if time.Since(start) > 2*time.Second {
-		t.Fatalf("must fail fast, took %v", time.Since(start))
+	if time.Since(start) < 2*time.Millisecond {
+		t.Fatalf("must retry, took %v", time.Since(start))
 	}
 }
 
@@ -170,7 +175,7 @@ func TestRenderGatewayConfigDefaultExit(t *testing.T) {
 	if _, err := s.Clusters.Ensure(1); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Clusters.SetDefaultExit(1, "us"); err != nil {
+	if err := s.Clusters.SetDefaultExit(1, "my-exit"); err != nil {
 		t.Fatal(err)
 	}
 	render := func() []byte {
@@ -187,7 +192,7 @@ func TestRenderGatewayConfigDefaultExit(t *testing.T) {
 	if err := json.Unmarshal(render(), &doc); err != nil {
 		t.Fatal(err)
 	}
-	if doc["default_exit"] != "us" {
+	if doc["default_exit"] != "my-exit" {
 		t.Fatalf("default_exit = %v", doc["default_exit"])
 	}
 	if err := s.Clusters.SetDefaultExit(1, "direct"); err != nil {

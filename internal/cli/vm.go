@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
 	"runtime"
 	"strconv"
 	"strings"
@@ -18,18 +19,20 @@ import (
 	"github.com/huangzheng2016/pvm/internal/native"
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/qemu"
+	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
 type vmInfoView struct {
 	Spec struct {
-		Name    string `json:"name"`
-		Image   string `json:"image"`
-		Role    string `json:"role"`
-		User    string `json:"user"`
-		SSHPort int    `json:"ssh_port"`
-		IP      string `json:"ip"`
-		CPUs    int    `json:"cpus"`
-		MemMB   int    `json:"mem_mb"`
+		Name          string `json:"name"`
+		Image         string `json:"image"`
+		Role          string `json:"role"`
+		User          string `json:"user"`
+		SSHPort       int    `json:"ssh_port"`
+		IP            string `json:"ip"`
+		CPUs          int    `json:"cpus"`
+		MemMB         int    `json:"mem_mb"`
+		IdentityReset bool   `json:"identity_reset,omitempty"`
 	} `json:"spec"`
 	Running     bool   `json:"running"`
 	PID         int    `json:"pid"`
@@ -194,7 +197,13 @@ func CmdCreate(args []string) int {
 		fs.Usage()
 		return 2
 	}
+	if err := vm.ValidateName(*name); err != nil {
+		return fatalf("%v", err)
+	}
 	if *user == "" {
+		if !stdinIsTTY() {
+			return fatalf("--user is required when stdin is not interactive")
+		}
 		*user = promptUsername()
 	}
 
@@ -376,8 +385,45 @@ func cmdVMSimple(args []string, action string) int {
 	return 0
 }
 
-func CmdStart(args []string) int { return cmdVMSimple(args, "start") }
-func CmdStop(args []string) int  { return cmdVMSimple(args, "stop") }
+func CmdStart(args []string) int {
+	fs := newFlagSet("start", "<name> [--no-wait]")
+	noWait := fs.Bool("no-wait", false, "return after QEMU starts instead of waiting for provisioning")
+	name := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		name, args = args[0], args[1:]
+	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if name == "" {
+		if fs.NArg() != 1 {
+			fs.Usage()
+			return 2
+		}
+		name = fs.Arg(0)
+	} else if fs.NArg() != 0 {
+		fs.Usage()
+		return 2
+	}
+	p, err := mustPaths()
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	c, err := daemon.Ensure(p)
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	if err := c.Post(fmt.Sprintf("/v1/vms/%s/start", name), nil, nil); err != nil {
+		return fatalf("%v", err)
+	}
+	fmt.Printf("start %s\n", name)
+	if *noWait {
+		return 0
+	}
+	return followProvision(c, name, 15*time.Minute)
+}
+
+func CmdStop(args []string) int { return cmdVMSimple(args, "stop") }
 
 func CmdResize(args []string) int {
 	fs := newFlagSet("resize", "<name> <size-gb>")
@@ -473,6 +519,9 @@ func CmdSSH(args []string) int {
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "LogLevel=ERROR",
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=10",
+		"-o", "ConnectionAttempts=1",
 	}
 	target := ""
 	if info.Spec.Role == "gateway" {
@@ -482,12 +531,12 @@ func CmdSSH(args []string) int {
 		// user VMs live behind the cluster gateway. -J would spawn the
 		// hop ssh WITHOUT our flags (default known_hosts, no key), so
 		// build the ProxyCommand by hand.
-		proxy := fmt.Sprintf("ssh -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -W %%h:%%p -p %d %s@127.0.0.1",
+		proxy := fmt.Sprintf("ssh -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -W %%h:%%p -p %d %s@127.0.0.1",
 			p.SSHKey(), info.GatewaySSH, info.GatewayUser)
 		sshArgs = append(sshArgs, "-o", "ProxyCommand="+proxy)
 		target = fmt.Sprintf("%s@%s", info.Spec.User, info.Spec.IP)
 	}
-	if len(args) == 1 {
+	if len(args) == 1 || (len(args) > 1 && stdinIsTTY() && interactiveShell(args[1])) {
 		sshArgs = append(sshArgs, "-tt")
 	}
 	sshArgs = append(sshArgs, target)
@@ -522,6 +571,14 @@ func CmdSSH(args []string) int {
 		return fatalf("ssh: %v", err)
 	}
 	return 0
+}
+
+func interactiveShell(command string) bool {
+	switch path.Base(command) {
+	case "bash", "sh", "dash", "zsh", "fish", "ksh":
+		return true
+	}
+	return false
 }
 
 func isSSHConnFailure(err error, stderr string) bool {

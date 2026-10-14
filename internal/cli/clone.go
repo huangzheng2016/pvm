@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/huangzheng2016/pvm/internal/daemon"
 )
@@ -125,10 +126,11 @@ func promptMapInherit(r *bufio.Reader, free func(string, int) bool) func(srcMapV
 }
 
 func CmdClone(args []string) int {
-	fs := newFlagSet("clone", "<src> <new> [--inherit-ports|--no-inherit-ports] [--no-start]")
+	fs := newFlagSet("clone", "<src> <new> [--inherit-ports|--no-inherit-ports] [--no-start] [--no-wait]")
 	inherit := fs.Bool("inherit-ports", false, "inherit all port maps (busy ports auto-remapped)")
 	noInherit := fs.Bool("no-inherit-ports", false, "do not inherit any port maps (default when non-interactive)")
 	noStart := fs.Bool("no-start", false, "clone but do not start")
+	noWait := fs.Bool("no-wait", false, "return after the clone starts instead of following provisioning")
 	if err := fs.Parse(partitionFlags(args)); err != nil {
 		return 2
 	}
@@ -202,6 +204,9 @@ func CmdClone(args []string) int {
 	}
 	if out.Running {
 		fmt.Println("starting; guest identity (hostname/machine-id/ssh keys) is regenerated on first boot")
+		if !*noWait {
+			return followProvision(c, newName, 15*time.Minute)
+		}
 	}
 	return 0
 }

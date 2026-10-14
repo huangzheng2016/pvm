@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -29,5 +30,16 @@ func TestConfirmAction(t *testing.T) {
 		if !strings.Contains(w.String(), "delete?") {
 			t.Errorf("prompt not written: %q", w.String())
 		}
+	}
+}
+
+func TestIsTTYRejectsDevNull(t *testing.T) {
+	f, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if isTTY(f) {
+		t.Fatal("/dev/null must not be treated as a terminal")
 	}
 }

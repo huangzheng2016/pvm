@@ -14,9 +14,9 @@ usage: pvm <command> [args]
 
 vm:
   create        create (and start) a vm
-  clone         clone a stopped vm: pvm clone dev1 dev2 [--inherit-ports] [--no-start]
+  clone         clone a stopped vm: pvm clone dev1 dev2 [--inherit-ports] [--no-start] [--no-wait]
   list          list vms
-  start|stop    start/stop a vm
+  start|stop    start/stop a vm (start waits for provisioning; --no-wait returns early)
   rm            stop and delete a vm (asks for confirmation; -y|--force to skip)
   resize        grow a stopped vm's disk (grow-only): pvm resize dev1 40
   ssh           ssh into a vm: pvm ssh dev1 [cmd...]
@@ -28,12 +28,12 @@ vm:
 
 network:
   map           map ports: pvm map dev1 8080:80 [--udp] | ls | rm <port> [--udp]
-  route         vm default route: pvm route dev1 --via us|direct
+  route         vm default route: pvm route dev1 --via my-exit|direct
                 split rules: pvm route add direct|proxy|internal [--domain-suffix|--domain-prefix|--domain-keyword|--cidr] <v> [--via <exit>] [--dns <srv>]
                 inspect: pvm route ls | pvm route rm <index>
   dns           inspect fake-ip mappings: pvm dns ls
   exit          manage exit nodes: add (--transport auto=probe&pick fastest) | set | ls | rm | test [--speed]
-                export a standard wireguard client: pvm exit client-config us [-o phone.conf]
+                export a standard wireguard client: pvm exit client-config my-exit [-o phone.conf]
   exit-agent    run the vps exit agent: pvm exit-agent --listen :18443 --token <tok>
 
 image:
@@ -51,13 +51,13 @@ other:
   version       print version
   skill         print the embedded pvm skill doc (install into agent skills)
   security      print the embedded security/risk-control guide
-  upgrade       self-upgrade to the latest release: pvm upgrade [--check] [--to <tag>] [-y]
+  upgrade       self-upgrade and restart the daemon: pvm upgrade [--check] [--to <tag>] [--no-restart] [-y]
 
 common choices:
   images        ubuntu:26.04 | ubuntu:24.04 | debian:13 | debian:12
   transports    udp (default, wireguard) | tcp (wireguard over tcp)
   nat backends  auto | nft | iptables | userspace (no root, no icmp)
-  route via     direct | <exit-name>  (this host: us, us-tcp)
+  route via     direct | <exit-name>  (for example: my-exit)
 
 create options:
   --image IMG   ubuntu:26.04 | ubuntu:24.04 | debian:13 | debian:12
@@ -78,12 +78,24 @@ create options:
 
 examples:
   pvm create --image ubuntu:24.04 --name dev1 --user dev
-  pvm route dev1 --via us
+  pvm route dev1 --via my-exit
   pvm ssh dev1 'curl -s ipinfo.io'
   pvm desktop dev1
   pvm map dev1 8080:80
   pvm snapshot create dev1 && pvm start dev1
 `
+
+func helpRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "--help" || arg == "-h" {
+			return true
+		}
+	}
+	return false
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -91,6 +103,10 @@ func main() {
 		os.Exit(2)
 	}
 	args := os.Args[2:]
+	if os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h" || helpRequested(args) {
+		fmt.Printf(usage, buildinfo.Version)
+		return
+	}
 	switch os.Args[1] {
 	case "upgrade", "version", "--version", "-v", "skill", "security", "exit-agent", "agent", "gateway", "__snapshot-pipe-out", "__snapshot-pipe-in":
 	default:

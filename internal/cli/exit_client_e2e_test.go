@@ -57,7 +57,7 @@ func TestExportedConfigWireGuardDataPlane(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("PVM_HOME", home)
 	if err := exit.SaveEntry(filepath.Join(home, "exits"), &exit.Entry{
-		Name:        "us",
+		Name:        "my-exit",
 		Server:      srv.ControlAddr(),
 		Token:       "test-token",
 		Transport:   "udp",
@@ -66,7 +66,7 @@ func TestExportedConfigWireGuardDataPlane(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := filepath.Join(t.TempDir(), "standard.conf")
-	if code := exitClientConfigTo([]string{"us", "-o", output}, &bytes.Buffer{}); code != 0 {
+	if code := exitClientConfigTo([]string{"my-exit", "-o", output}, &bytes.Buffer{}); code != 0 {
 		t.Fatalf("client-config exit code = %d", code)
 	}
 	if wgQuick, err := exec.LookPath("wg-quick"); err == nil {

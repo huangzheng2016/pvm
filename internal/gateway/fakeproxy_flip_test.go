@@ -43,7 +43,7 @@ func TestSetPolicyResetsFlippedConnections(t *testing.T) {
 	p.track(tc2)
 
 	// dev1's route flips to proxy
-	eng.SetVMExit("dev1", "us")
+	eng.SetVMExit("dev1", "my-exit")
 	p.SetPolicy(eng)
 
 	assertClosed(t, src, "flipped connection must be reset")
@@ -59,7 +59,7 @@ func TestSetExitHooksResetsDeadTunnelConnections(t *testing.T) {
 	src, up := net.Pipe()
 	defer src.Close()
 	defer up.Close()
-	p.track(&trackedConn{vm: "dev1", domain: "example.com", route: policy.Proxy, exit: "us", src: src, up: up})
+	p.track(&trackedConn{vm: "dev1", domain: "example.com", route: policy.Proxy, exit: "my-exit", src: src, up: up})
 
 	// direct flows never reference tunnels and must survive
 	src2, up2 := net.Pipe()
@@ -67,7 +67,7 @@ func TestSetExitHooksResetsDeadTunnelConnections(t *testing.T) {
 	defer up2.Close()
 	p.track(&trackedConn{vm: "dev2", domain: "example.com", route: policy.Direct, src: src2, up: up2})
 
-	// tunnel "us" is gone (markFor = -1 for every exit)
+	// tunnel "my-exit" is gone (markFor = -1 for every exit)
 	p.SetExitHooks(func(string) int { return -1 }, func(string) (string, bool) { return "", false })
 
 	assertClosed(t, src, "flow via dead tunnel must be reset")
@@ -78,13 +78,13 @@ func TestSetExitHooksResetsDeadTunnelConnections(t *testing.T) {
 // the same content (steady-state applies must be no-ops).
 func TestSetPolicyKeepsUnchangedConnections(t *testing.T) {
 	eng := newFlipTestPolicy(t)
-	eng.SetVMExit("dev1", "us")
+	eng.SetVMExit("dev1", "my-exit")
 	p := newFakeProxy(eng, "10.0.2.3", nil)
 
 	src, up := net.Pipe()
 	defer src.Close()
 	defer up.Close()
-	p.track(&trackedConn{vm: "dev1", domain: "example.com", route: policy.Proxy, exit: "us", src: src, up: up})
+	p.track(&trackedConn{vm: "dev1", domain: "example.com", route: policy.Proxy, exit: "my-exit", src: src, up: up})
 
 	p.SetPolicy(eng) // same policy content
 	assertOpen(t, src, "unchanged flow must survive reload")

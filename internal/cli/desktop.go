@@ -16,9 +16,28 @@ type desktopView struct {
 }
 
 func CmdDesktop(args []string) int {
-	if len(args) < 1 {
-		return fatalf("usage: pvm desktop <vm> [--size WxH] [--open] [--stop]")
+	fs := newFlagSet("desktop", "<vm> [--size WxH] [--open] [--stop]")
+	size := fs.String("size", "1920x1080", "desktop resolution")
+	openBrowser := fs.Bool("open", false, "open the desktop URL in a browser")
+	stop := fs.Bool("stop", false, "stop the desktop session")
+	name := ""
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		name, args = args[0], args[1:]
 	}
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if name == "" {
+		if fs.NArg() != 1 {
+			fs.Usage()
+			return 2
+		}
+		name = fs.Arg(0)
+	} else if fs.NArg() != 0 {
+		fs.Usage()
+		return 2
+	}
+
 	p, err := mustPaths()
 	if err != nil {
 		return fatalf("%v", err)
@@ -27,26 +46,22 @@ func CmdDesktop(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	if hasFlag(args[1:], "--stop") {
+	if *stop {
 		var v map[string]any
-		if err := c.Delete("/v1/vms/"+args[0]+"/desktop", &v); err != nil {
+		if err := c.Delete("/v1/vms/"+name+"/desktop", &v); err != nil {
 			return fatalf("%v", err)
 		}
-		fmt.Printf("desktop stopped: %s\n", args[0])
+		fmt.Printf("desktop stopped: %s\n", name)
 		return 0
 	}
 	q := url.Values{}
-	for _, a := range args[1:] {
-		if strings.HasPrefix(a, "--size=") {
-			q.Set("size", strings.TrimPrefix(a, "--size="))
-		}
-	}
+	q.Set("size", *size)
 	var v desktopView
-	if err := c.Post("/v1/vms/"+args[0]+"/desktop?"+q.Encode(), nil, &v); err != nil {
+	if err := c.Post("/v1/vms/"+name+"/desktop?"+q.Encode(), nil, &v); err != nil {
 		return fatalf("%v", err)
 	}
 	fmt.Printf("desktop ready: %s\n", v.URL)
-	if hasFlag(args[1:], "--open") {
+	if *openBrowser {
 		if runtime.GOOS == "darwin" {
 			exec.Command("open", v.URL).Start()
 		} else {

@@ -17,6 +17,8 @@ import (
 	"github.com/huangzheng2016/pvm/internal/paths"
 )
 
+const ensureHealthyTimeout = 60 * time.Second
+
 type Client struct {
 	P    *paths.Paths
 	http *http.Client
@@ -49,26 +51,43 @@ func (c *Client) Healthy() bool {
 	return resp.StatusCode == 200
 }
 
+func (c *Client) Ready() bool {
+	var status struct {
+		Ready bool `json:"ready"`
+	}
+	if err := c.Get("/v1/health", &status); err != nil {
+		return false
+	}
+	return status.Ready
+}
+
+func ensureReady(c *Client) error {
+	if waitReady(c, ensureHealthyTimeout) {
+		return nil
+	}
+	return fmt.Errorf("daemon is running but not ready; see %s", c.P.DaemonLog())
+}
+
 // The stop marker prevents an explicit daemon stop from being undone by autospawn.
 func Ensure(p *paths.Paths) (*Client, error) {
 	c := NewClient(p)
 	if c.Healthy() {
-		return c, nil
+		return c, ensureReady(c)
 	}
 	if _, err := os.Stat(p.DaemonStopMark()); err == nil {
 		return nil, fmt.Errorf("daemon is stopped; run `pvm daemon start`")
 	}
 	lock, err := fsutil.TryLock(p.DaemonLock())
 	if err != nil {
-		if waitHealthy(c, 15*time.Second) {
-			return c, nil
+		if waitHealthy(c, ensureHealthyTimeout) {
+			return c, ensureReady(c)
 		}
 		return nil, fmt.Errorf("daemon not reachable and start in progress elsewhere")
 	}
 	defer lock.Unlock()
 
 	if c.Healthy() { // double-check after acquiring the lock
-		return c, nil
+		return c, ensureReady(c)
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -89,10 +108,21 @@ func Ensure(p *paths.Paths) (*Client, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("spawn daemon: %w", err)
 	}
-	if !waitHealthy(c, 15*time.Second) {
+	if !waitHealthy(c, ensureHealthyTimeout) {
 		return nil, fmt.Errorf("daemon spawned (pid %d) but did not become healthy; see %s", cmd.Process.Pid, p.DaemonLog())
 	}
-	return c, nil
+	return c, ensureReady(c)
+}
+
+func waitReady(c *Client, d time.Duration) bool {
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		if c.Ready() {
+			return true
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return false
 }
 
 func waitHealthy(c *Client, d time.Duration) bool {

@@ -84,6 +84,10 @@ func TestRenderProvision(t *testing.T) {
 		"novnc websockify",
 		"cloud-init clean",
 		"fonts-noto-cjk",
+		"ibus-libpinyin",
+		"/etc/environment.d/ibus.conf",
+		"/etc/skel/.config/autostart/ibus.desktop",
+		"/etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-screensaver.xml",
 		"rm -f /etc/ssh/ssh_host_*",
 		"truncate -s 0 /etc/machine-id",
 		"sed -i '/^pvmshare /d' /etc/fstab",
@@ -192,5 +196,67 @@ func TestFetchSkipsAlreadyCompletePart(t *testing.T) {
 	}
 	if gets != 0 {
 		t.Fatalf("complete part was downloaded again (%d GETs)", gets)
+	}
+}
+
+func TestFetchRedownloadsCorruptCompletePart(t *testing.T) {
+	good := []byte("known-good-image")
+	gets := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "HEAD" {
+			w.Header().Set("Content-Length", strconv.Itoa(len(good)))
+			return
+		}
+		gets++
+		_, _ = w.Write(good)
+	}))
+	defer srv.Close()
+	sum := sha256.Sum256(good)
+	sums := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(hex.EncodeToString(sum[:]) + " ubuntu-24.04-arm64.qcow2\n"))
+	}))
+	defer sums.Close()
+	dir := t.TempDir()
+	part := filepath.Join(dir, "ubuntu-24.04-arm64.qcow2.part")
+	if err := os.WriteFile(part, []byte("corrupted-image!"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref := &Ref{Distro: "ubuntu", Version: "24.04", Arch: "arm64", URL: srv.URL, SumsURL: sums.URL, SumFile: "ubuntu-24.04-arm64.qcow2", SumKind: "sha256"}
+	if _, err := Fetch(ref, dir, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dir, "ubuntu-24.04-arm64.qcow2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(good) {
+		t.Fatalf("final image = %q, want %q", got, good)
+	}
+	if gets != 1 {
+		t.Fatalf("download count = %d, want 1", gets)
+	}
+}
+
+func TestFetchKeepsCachedImageWhenChecksumServiceFails(t *testing.T) {
+	cached := []byte("cached-image")
+	dir := t.TempDir()
+	final := filepath.Join(dir, "ubuntu-24.04-arm64.qcow2")
+	if err := os.WriteFile(final, cached, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sums := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "temporary failure", http.StatusInternalServerError)
+	}))
+	defer sums.Close()
+	ref := &Ref{Distro: "ubuntu", Version: "24.04", Arch: "arm64", URL: "http://unused.invalid", SumsURL: sums.URL, SumFile: "ubuntu-24.04-arm64.qcow2", SumKind: "sha256"}
+	if _, err := Fetch(ref, dir, io.Discard); err == nil {
+		t.Fatal("expected checksum service error")
+	}
+	got, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(cached) {
+		t.Fatalf("cached image changed to %q", got)
 	}
 }

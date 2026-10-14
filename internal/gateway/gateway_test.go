@@ -117,7 +117,7 @@ func TestRenderNFTBypassBeforeDrop(t *testing.T) {
 	cfg := &Config{
 		CIDR: "192.168.1.0/24", GwIP: "192.168.1.1",
 		VMs:     []VMEntry{{Name: "dev1", MAC: "52:54:00:00:00:10", IP: "192.168.1.10"}},
-		VMExits: map[string]string{"dev1": "us"},
+		VMExits: map[string]string{"dev1": "my-exit"},
 	}
 	out := RenderNFT(cfg, "enp0s1", "br0", []string{"10.0.0.0/8", "104.20.23.154/32"})
 	for _, want := range []string{
@@ -159,7 +159,7 @@ func TestRenderNFTDirectVMRegisteredPair(t *testing.T) {
 			{Name: "dev1", MAC: "52:54:00:00:00:10", IP: "192.168.1.10"},
 			{Name: "dev2", MAC: "52:54:00:00:00:11", IP: "192.168.1.11"},
 		},
-		VMExits: map[string]string{"dev2": "us"},
+		VMExits: map[string]string{"dev2": "my-exit"},
 	}
 	out := RenderNFT(cfg, "enp0s1", "br0", nil)
 	if !strings.Contains(out, `iifname "br0" ether saddr 52:54:00:00:00:10 ip saddr 192.168.1.10 oifname "enp0s1" accept`) {

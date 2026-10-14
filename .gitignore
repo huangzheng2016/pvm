@@ -1,5 +1,4 @@
 .bin/
-pvm
 /pvm
 internal/assets/packed/*.zst
 internal/assets/packed/gateway-*

@@ -23,6 +23,17 @@ func (s *Store) AddRule(id int, r rules.Rule) (int, error) {
 	return len(c.Rules) - 1, s.save()
 }
 
+func (s *Store) SetRules(id int, rs []rules.Rule) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.data.Clusters[id]
+	if c == nil {
+		return fmt.Errorf("cluster %d does not exist", id)
+	}
+	c.Rules = append([]rules.Rule(nil), rs...)
+	return s.save()
+}
+
 // RemoveRule drops the rule at index, reporting whether it existed.
 func (s *Store) RemoveRule(id, index int) error {
 	s.mu.Lock()

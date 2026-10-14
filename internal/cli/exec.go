@@ -10,6 +10,7 @@ import (
 
 	"github.com/huangzheng2016/pvm/internal/agent"
 	"github.com/huangzheng2016/pvm/internal/daemon"
+	"golang.org/x/term"
 )
 
 // The virtio-serial agent channel works even when guest networking is down.
@@ -87,6 +88,5 @@ func CmdAgent(args []string) int {
 }
 
 func isTTY(f *os.File) bool {
-	fi, err := f.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	return f != nil && term.IsTerminal(int(f.Fd()))
 }

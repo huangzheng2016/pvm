@@ -9,11 +9,7 @@ import (
 )
 
 func stdinIsTTY() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return isTTY(os.Stdin)
 }
 
 func confirmAction(r io.Reader, w io.Writer, prompt string) bool {

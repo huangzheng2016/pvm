@@ -33,6 +33,12 @@ func (s *Server) stages(vmName string) []StageEvent {
 	return append([]StageEvent(nil), s.prog[vmName]...)
 }
 
+func (s *Server) resetStages(vmName string) {
+	s.progMu.Lock()
+	delete(s.prog, vmName)
+	s.progMu.Unlock()
+}
+
 func (s *Server) vmReady(vmName string) bool {
 	for _, ev := range s.stages(vmName) {
 		if ev.Stage == "ready" {

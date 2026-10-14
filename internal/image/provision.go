@@ -15,7 +15,7 @@ var GoldenPackages = []string{
 var DesktopPackages = []string{
 	"xfwm4", "xfce4-panel", "xfdesktop4", "xfce4-session", "xfce4-settings",
 	"xfconf", "thunar", "xfce4-terminal", "dbus-x11", "xterm",
-	"tigervnc-standalone-server", "novnc", "websockify", "x11-xserver-utils",
+	"tigervnc-standalone-server", "novnc", "websockify", "x11-xserver-utils", "ibus-libpinyin",
 }
 
 // The provision script deletes buildUser before returning, so subsequent
@@ -59,6 +59,31 @@ apt-get -y upgrade
 # -> lightdm -> xserver-xorg) but VMs have no GPU: lightdm fails to start a
 # local Xorg and restart-loops. The TigerVNC stack needs neither; block them.
 apt-get -y install ` + strings.Join(GoldenPackages, " ") + ` ` + strings.Join(DesktopPackages, " ") + ` lightdm- light-locker- xserver-xorg- xserver-xorg-core-
+
+cat > /etc/environment.d/ibus.conf <<'EOF'
+GTK_IM_MODULE=ibus
+QT_IM_MODULE=ibus
+XMODIFIERS=@im=ibus
+EOF
+
+mkdir -p /etc/skel/.config/autostart
+cat > /etc/skel/.config/autostart/ibus.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=IBus
+Exec=ibus-daemon -drx
+X-GNOME-Autostart-enabled=true
+EOF
+
+mkdir -p /etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml
+cat > /etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-screensaver.xml <<'EOF'
+<?xml version="1.1" encoding="UTF-8"?>
+<channel name="xfce4-screensaver" version="1.0">
+  <property name="general" type="empty">
+    <property name="enabled" type="bool" value="false"/>
+  </property>
+</channel>
+EOF
 
 systemctl enable docker
 systemctl start docker

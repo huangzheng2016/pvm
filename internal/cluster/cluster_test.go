@@ -86,3 +86,27 @@ func TestMapPool(t *testing.T) {
 		t.Errorf("proto: %s", m4.Proto)
 	}
 }
+
+func TestSetMapsRestoresExactState(t *testing.T) {
+	s, _ := LoadStore(t.TempDir())
+	s.Ensure(1)
+	s.AddVM(1, "dev1")
+	if _, err := s.AddMap(1, "dev1", "100.99.1.10", 8080, 80, "tcp"); err != nil {
+		t.Fatal(err)
+	}
+	before := s.Get(1).Maps
+	if _, err := s.RemoveMap(1, 8080, "tcp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetMaps(1, before); err != nil {
+		t.Fatal(err)
+	}
+	got := s.Get(1).Maps
+	if len(got) != 1 || got[0].HostPort != 8080 || got[0].PoolPort != before[0].PoolPort || got[0].GuestPort != 80 {
+		t.Fatalf("restored maps = %+v, want %+v", got, before)
+	}
+	got[0].HostPort = 9999
+	if s.Get(1).Maps[0].HostPort != 8080 {
+		t.Fatal("SetMaps did not deep-copy restored maps")
+	}
+}

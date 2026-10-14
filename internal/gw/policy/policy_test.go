@@ -24,11 +24,11 @@ func newTestEngine(t *testing.T) (*Engine, *rules.Engine, *dns.Pool) {
 func TestRuleProxyBeatsVMDefault(t *testing.T) {
 	e, eng, _ := newTestEngine(t)
 	e.SetVMExit("dev1", "jp")
-	if err := eng.Add(rules.Rule{Type: rules.DomainSuffix, Pattern: "example.com", Action: rules.Proxy, Exit: "us"}); err != nil {
+	if err := eng.Add(rules.Rule{Type: rules.DomainSuffix, Pattern: "example.com", Action: rules.Proxy, Exit: "my-exit"}); err != nil {
 		t.Fatal(err)
 	}
 	d := e.DecideFlow("a.example.com", nil, "dev1")
-	if d.Route != Proxy || d.Exit != "us" {
+	if d.Route != Proxy || d.Exit != "my-exit" {
 		t.Fatalf("rule exit must win: %+v", d)
 	}
 }
@@ -73,9 +73,9 @@ func TestVMDefaultExit(t *testing.T) {
 
 func TestClusterDefaultExit(t *testing.T) {
 	e, _, _ := newTestEngine(t)
-	e.SetDefaultExit("us")
+	e.SetDefaultExit("my-exit")
 	e.SetVMExit("dev1", "jp")
-	if d := e.DecideFlow("x.example.com", nil, "dev2"); d.Exit != "us" {
+	if d := e.DecideFlow("x.example.com", nil, "dev2"); d.Exit != "my-exit" {
 		t.Fatalf("cluster default not applied: %+v", d)
 	}
 	if d := e.DecideFlow("x.example.com", nil, "dev1"); d.Exit != "jp" {
@@ -118,14 +118,14 @@ func TestFakeIPReverseResolution(t *testing.T) {
 
 func TestFakeIPRuleMatchByDomain(t *testing.T) {
 	e, eng, pool := newTestEngine(t)
-	if err := eng.Add(rules.Rule{Type: rules.DomainSuffix, Pattern: "anthropic.com", Action: rules.Proxy, Exit: "us"}); err != nil {
+	if err := eng.Add(rules.Rule{Type: rules.DomainSuffix, Pattern: "anthropic.com", Action: rules.Proxy, Exit: "my-exit"}); err != nil {
 		t.Fatal(err)
 	}
 	e.SetVMExit("dev1", "jp")
 	fake := pool.Allocate("api.anthropic.com")
 
-	// recovered domain feeds back into rules: us, not the vm default jp
-	if d := e.DecideFlow("", fake, "dev1"); d.Exit != "us" {
+	// recovered domain feeds back into rules: the rule exit, not the vm default jp
+	if d := e.DecideFlow("", fake, "dev1"); d.Exit != "my-exit" {
 		t.Fatalf("recovered domain should match rule exit: %+v", d)
 	}
 }

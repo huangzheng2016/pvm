@@ -17,7 +17,7 @@ pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, l
 - Run `pvm daemon status` first to confirm the daemon is healthy; `pvm list` shows existing VMs.
   - If the status shows `warning: N vm(s) running under tcg fallback`, the host's hardware accelerator is unavailable (on macOS this means Hypervisor.framework is wedged after long uptime — reboot the Mac to restore full speed). VMs work meanwhile, just slowly.
 - On first use, `pvm image list` to confirm a base image is present; if missing, `pvm image fetch <distro:version>` (fetch is checksum-cached; `--force` re-downloads). create fails with a clear hint when the base image is absent.
-- Registered exits on this machine: `us` (WireGuard over UDP) and `us-tcp` (WireGuard over TCP) — see `pvm exit ls`. Do not re-add exits with the same names.
+- Example exits: `my-exit` (WireGuard over UDP) and `my-exit-tcp` (WireGuard over TCP). Run `pvm exit ls` to see the names configured on the current host and do not re-add an existing name.
 - The `pvm-exit-agent.service` on the VPS must stay running. Never stop it unless you are deliberately testing the kill-switch or upgrading.
 
 ## Common choices
@@ -25,7 +25,7 @@ pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, l
 - **Images**: `ubuntu:26.04`, `ubuntu:24.04`, `debian:13`, `debian:12`
 - **Exit transport**: `udp` (default, fastest) / `tcp` (fallback for restricted networks that throttle or block UDP)
 - **exit-agent NAT backend**: `auto` (probe) / `nft` / `iptables` / `userspace` (no root, no ICMP)
-- **Route targets**: `direct` (host egress) or an exit name (this machine: `us`, `us-tcp`)
+- **Route targets**: `direct` (host egress) or an exit name such as `my-exit`
 - **create flags**: `--image`, `--distro`, `--version`, `--name`, `--user`, `--cpus`, `--mem`, `--disk`, `--mount`, `--tz`, `--locale`, `--git-email`, `--git-name`, `--smbios-spoof`, `--no-start`, `--no-wait`
 
 ### Directory mounts (--mount and /share)
@@ -48,10 +48,10 @@ pvm list
 pvm ssh dev1 'whoami && ls /share'
 ```
 
-- Always pass `--user` explicitly. Without it create prompts interactively; **in a non-interactive shell, stdin EOF silently falls back to the default user `pvm`** (no error, likely not what you want).
+- Always pass `--user` explicitly. Interactive create prompts when it is omitted; non-interactive create rejects a missing `--user` instead of silently choosing one.
 - create follows progress by default (image, disk, boot, cloud-init stages); `--no-wait` returns immediately.
 - Golden images come with Docker, common dev tools, and a native XFCE desktop (TigerVNC + noVNC) preinstalled. User VMs get a virtio-gpu display device by default (`/dev/dri` in the guest); gateway and build VMs stay headless.
-- SSH uses a pvm-dedicated keypair, no password. `pvm ssh dev1 bash` opens an interactive shell; `pvm ssh dev1 '<cmd>'` runs one command. When SSH is unreachable the virtio-serial agent channel takes over automatically (or use `pvm exec dev1 <cmd...>` explicitly — it needs no network).
+- SSH uses a pvm-dedicated keypair, no password. `pvm ssh dev1` opens an interactive shell (a shell command such as `bash` also gets a TTY when run from a terminal); `pvm ssh dev1 '<cmd>'` runs one command. When SSH is unreachable the virtio-serial agent channel takes over automatically (or use `pvm exec dev1 <cmd...>` explicitly — it needs no network).
 - create/start pushes the VM's IP/MAC mapping to the gateway DHCP **synchronously** before booting (new VMs are reachable immediately); if the gateway is unreachable, start fails instead of booting a network-less VM.
 - Cluster addressing: VMs live in `100.99.<cluster>.0/24` (CGNAT space), the gateway is `100.99.<cluster>.1`.
 
@@ -59,8 +59,8 @@ pvm ssh dev1 'whoami && ls /share'
 
 ```bash
 pvm exit ls
-pvm route dev1 --via us          # UDP preferred
-pvm route dev1 --via us-tcp      # TCP fallback
+pvm route dev1 --via my-exit     # UDP preferred
+pvm route dev1 --via my-exit-tcp # TCP fallback
 pvm ssh dev1 'curl -s ipinfo.io'
 ```
 
@@ -68,13 +68,13 @@ pvm ssh dev1 'curl -s ipinfo.io'
 - Restore host egress: `pvm route dev1 --via direct`.
 - **Fail-closed**: when the exit tunnel is down, VMs bound to it lose all networking — this is intentional leak protection. Do not "fix" it by switching to direct; the VM recovers once the VPS service is back.
 - Switching `--via` causes a seconds-long network blip (tunnel enroll/handshake convergence); a dead tunnel rebuilds within ~60s, during which bound VMs stay offline (expected).
-- DNS for proxied domains is resolved remotely on the VPS, never locally on the gateway — not a bug. Check tunnel health with `pvm exit test us` (stale peers re-enroll automatically).
+- DNS for proxied domains is resolved remotely on the VPS, never locally on the gateway — not a bug. Check tunnel health with `pvm exit test my-exit` (stale peers re-enroll automatically).
 
 ### 3. Cluster-wide default route
 
 ```bash
-pvm route default --via us-tcp   # every VM without an explicit route uses this exit
-pvm route default --via direct   # back to host egress for unmatched VMs
+pvm route default --via my-exit-tcp # every VM without an explicit route uses this exit
+pvm route default --via direct      # back to host egress for unmatched VMs
 pvm route ls                     # shows rules, per-VM routes, and the cluster default
 ```
 
@@ -92,7 +92,8 @@ pvm desktop dev1 --stop
 
 - Requires a VM built from a **golden image** (XFCE + TigerVNC + noVNC preinstalled). Base images lack the desktop packages and `pvm desktop` says so (a 503 means the VM is still booting — retry shortly).
 - This is the VM's own desktop (not a container): the filesystem, users, and processes are the same machine you see over SSH, including the `/share` mount.
-- The session persists inside the VM (closing the browser changes nothing); timezone/locale follow the VM's region profile. The VNC password rides in the noVNC URL over loopback only. `--open` opens the system browser, `--size 2560x1440` changes resolution.
+- The desktop is passwordless and XFCE screen locking is disabled. The session persists inside the VM (closing the browser changes nothing); timezone/locale follow the VM's region profile. The VNC password rides in the noVNC URL over loopback only. `--open` opens the system browser, `--size 2560x1440` changes resolution.
+- Clipboard is enabled by default in noVNC. Open the Clipboard panel on the left and grant clipboard read/write permission in Chrome when prompted; loopback URLs are considered secure contexts. Golden images include a small CJK font set and an IBus pinyin input method, with `ibus-daemon` started in each desktop session. This only adds Chinese display and input support; the default locale remains `en_US.UTF-8`.
 
 ### 5. Port maps
 
@@ -116,7 +117,7 @@ pvm route add internal --domain-suffix corp.internal --dns 10.0.0.53
 pvm route add direct --domain-suffix example.com
 pvm route add direct --cidr 10.0.0.0/8
 # proxy rules: force a domain/CIDR through a specific exit
-pvm route add proxy --domain-suffix example.com --via us
+pvm route add proxy --domain-suffix example.com --via my-exit
 # match types: --domain-suffix / --domain-prefix / --domain-keyword / --cidr
 pvm route ls
 pvm route rm <index>
@@ -133,10 +134,11 @@ pvm dns ls
 pvm stop dev1
 pvm start dev1
 pvm rm dev1 -y                  # or --force
-pvm clone dev1 dev2             # source VM must be stopped; --no-start clones without booting
+pvm clone dev1 dev2             # source VM must be stopped; --no-start clones without booting; --no-wait returns after boot
 ```
 
 - `pvm rm` double-checks: interactively type y to confirm; **non-interactive/scripts must pass `-y` (or `--force`)** or the command refuses.
+- `pvm start` and starting clones wait for guest provisioning before returning; pass `--no-wait` when you only want to boot QEMU and will poll readiness yourself.
 - clone inherits mounts, CPU/memory, user, timezone, SMBIOS, and the GPU device; exit routes are not inherited; port maps are not inherited by default but can be interactively carried over with new ports (`--inherit-ports` / `--no-inherit-ports`).
 - On first boot a clone regenerates its hostname, machine-id, and SSH host keys so the two VMs do not share an identity.
 - Note: the clone reset does not touch AI-client device IDs (the random userID in the client's local config dotfile) — cloning a VM that already ran the client leaves both machines looking like one device server-side. For a fresh device identity, create a new VM (or clone first, then install the client).
@@ -153,7 +155,7 @@ pvm daemon stop && pvm daemon start
 ```
 
 - Snapshots suit machines left unused for days, or a checkpoint before risky operations.
-- Restarting the daemon stops user VMs (the gateway recovers automatically); start them again with `pvm start <name>`.
+- Restarting the daemon stops user VMs (the gateway recovers automatically); start them again with `pvm start <name>`. `pvm upgrade` does this restart and restores previously running user VMs automatically; use `--no-restart` only when you want to handle that lifecycle yourself.
 - If the gateway pvm-gw1 spins at high CPU with SSH unreachable for a long time, recover with `pvm stop pvm-gw1 && pvm start pvm-gw1`. Never delete pvm-gw1 (the daemon recreates it, but cluster networking is down and custom state is lost in the meantime).
 - The daemon holds a single-instance lock; on `another pvm daemon is already running`, find the existing daemon instead of spawning a second one.
 - A boot watchdog restarts a VM only after two consecutive checks show full CPU with zero console progress; slow TCG boots are left alone.
@@ -218,7 +220,7 @@ pvm exit test <name> --speed --samples 5
 
 Notes:
 - Roll back a failed deploy: `ssh $VPS 'mv /usr/local/bin/pvm.prev /usr/local/bin/pvm && systemctl restart pvm-exit-agent'`.
-- The production us/us-tcp exits are already running — do not redeploy same-named exits; upgrading the binary uses the same flow (unit and token/fingerprint unchanged).
+- Existing production exits are already running — do not redeploy a name that is already registered; upgrading the binary uses the same flow (unit and token/fingerprint unchanged).
 - Both amd64 and arm64 binaries come from GitHub Releases — no local build needed; verify with the release's `SHA256SUMS` (`sha256sum -c`) when required.
 - Control plane: HTTPS + Bearer token + TOFU fingerprint pinning. Data plane: WireGuard, UDP preferred with TCP fallback.
 - Speed probes never touch third-party public servers: the exit-agent serves `/speed?bytes=N` (64MB cap) and `/ping` at `.1:18081` on each tunnel NIC, reachable only inside the tunnel.
@@ -228,7 +230,7 @@ Notes:
 ### Connect a standard WireGuard client
 
 ```bash
-pvm exit client-config us --output phone.conf
+pvm exit client-config my-exit --output phone.conf
 ```
 
 - Use a UDP exit; the custom TCP transport is not compatible with standard WireGuard clients.

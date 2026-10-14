@@ -196,7 +196,7 @@ func (in *Instance) Stop() error {
 		return err
 	}
 	// discard=unmap hole punching can keep a killed process in disk io for minutes.
-	if !waitDead(st.Ident, 30*time.Second) {
+	if !waitDead(st.Ident, 2*time.Minute) && st.Ident.Alive() {
 		return fmt.Errorf("process %d still alive after SIGKILL", st.PID)
 	}
 	return nil

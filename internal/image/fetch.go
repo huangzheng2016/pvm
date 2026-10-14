@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -140,6 +141,10 @@ func (s *stallReadCloser) watch() {
 // verification. Returns the final path. A verified cached file is reused
 // unless force is set.
 func Fetch(r *Ref, dir string, progress io.Writer, force ...bool) (string, error) {
+	return fetch(r, dir, progress, true, force...)
+}
+
+func fetch(r *Ref, dir string, progress io.Writer, retry bool, force ...bool) (string, error) {
 	final := filepath.Join(dir, r.FileName())
 	part := final + ".part"
 
@@ -149,8 +154,10 @@ func Fetch(r *Ref, dir string, progress io.Writer, force ...bool) (string, error
 				fmt.Fprintf(progress, "cached: %s (checksum verified)\n", final)
 			}
 			return final, nil
-		} else {
+		} else if isChecksumMismatch(err) {
 			os.Remove(final)
+		} else {
+			return "", fmt.Errorf("verify cached image %s: %w", final, err)
 		}
 	}
 
@@ -163,10 +170,13 @@ func Fetch(r *Ref, dir string, progress io.Writer, force ...bool) (string, error
 		// range request (some servers return 416 for an exact-size range).
 		if resp, err := httpClient.Head(r.URL); err == nil && resp.ContentLength == have {
 			resp.Body.Close()
-			if err := verifyChecksum(r, part); err != nil {
+			if err := verifyChecksum(r, part); err == nil {
+				return final, os.Rename(part, final)
+			} else if !isChecksumMismatch(err) {
 				return "", err
 			}
-			return final, os.Rename(part, final)
+			os.Remove(part)
+			have = 0
 		} else if resp != nil {
 			resp.Body.Close()
 		}
@@ -237,9 +247,29 @@ func Fetch(r *Ref, dir string, progress io.Writer, force ...bool) (string, error
 	}
 
 	if err := verifyChecksum(r, part); err != nil {
+		if isChecksumMismatch(err) {
+			os.Remove(part)
+			if retry {
+				return fetch(r, dir, progress, false, true)
+			}
+		}
 		return "", err
 	}
 	return final, os.Rename(part, final)
+}
+
+type checksumMismatchError struct {
+	file      string
+	got, want string
+}
+
+func (e *checksumMismatchError) Error() string {
+	return fmt.Sprintf("checksum mismatch for %s: got %s want %s", e.file, e.got, e.want)
+}
+
+func isChecksumMismatch(err error) bool {
+	var target *checksumMismatchError
+	return errors.As(err, &target)
 }
 
 func verifyChecksum(r *Ref, file string) error {
@@ -282,7 +312,7 @@ func verifyChecksum(r *Ref, file string) error {
 		return err
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != want {
-		return fmt.Errorf("checksum mismatch for %s: got %s want %s", r.SumFile, got, want)
+		return &checksumMismatchError{file: r.SumFile, got: got, want: want}
 	}
 	return nil
 }

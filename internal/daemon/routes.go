@@ -55,12 +55,15 @@ func (s *Server) handleDefaultRoute(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
+	previous := s.Clusters.Get(cluster.DefaultClusterID)
 	if err := s.Clusters.SetDefaultExit(cluster.DefaultClusterID, req.Via); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
 	if err := s.pushGatewayConfig(cluster.DefaultClusterID); err != nil {
-		writeErr(w, 500, fmt.Errorf("route stored but gateway push failed: %w", err))
+		_ = s.Clusters.SetDefaultExit(cluster.DefaultClusterID, previous.DefaultExit)
+		_ = s.pushGatewayConfig(cluster.DefaultClusterID)
+		writeErr(w, 500, fmt.Errorf("default route rolled back after gateway push failed: %w", err))
 		return
 	}
 	via := req.Via
@@ -109,13 +112,16 @@ func (s *Server) handleRouteAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
+	previous := s.Clusters.Get(cluster.DefaultClusterID)
 	idx, err := s.Clusters.AddRule(cluster.DefaultClusterID, rule)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
 	if err := s.pushGatewayConfig(cluster.DefaultClusterID); err != nil {
-		writeErr(w, 500, fmt.Errorf("rule stored but gateway push failed: %w", err))
+		_ = s.Clusters.SetRules(cluster.DefaultClusterID, previous.Rules)
+		_ = s.pushGatewayConfig(cluster.DefaultClusterID)
+		writeErr(w, 500, fmt.Errorf("rule rolled back after gateway push failed: %w", err))
 		return
 	}
 	writeJSON(w, 201, map[string]any{"index": idx, "rule": rule})
@@ -127,12 +133,15 @@ func (s *Server) handleRouteRemove(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, fmt.Errorf("bad index"))
 		return
 	}
+	previous := s.Clusters.Get(cluster.DefaultClusterID)
 	if err := s.Clusters.RemoveRule(cluster.DefaultClusterID, idx); err != nil {
 		writeErr(w, 404, err)
 		return
 	}
 	if err := s.pushGatewayConfig(cluster.DefaultClusterID); err != nil {
-		writeErr(w, 500, fmt.Errorf("rule removed but gateway push failed: %w", err))
+		_ = s.Clusters.SetRules(cluster.DefaultClusterID, previous.Rules)
+		_ = s.pushGatewayConfig(cluster.DefaultClusterID)
+		writeErr(w, 500, fmt.Errorf("rule removal rolled back after gateway push failed: %w", err))
 		return
 	}
 	writeJSON(w, 200, map[string]any{"removed": idx})
@@ -176,12 +185,18 @@ func (s *Server) handleVMRoute(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
+	previousExit := ""
+	if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
+		previousExit = cl.VMExits[spec.Name]
+	}
 	if err := s.Clusters.SetVMExit(spec.ClusterID, spec.Name, via); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
 	if err := s.pushGatewayConfig(spec.ClusterID); err != nil {
-		writeErr(w, 500, fmt.Errorf("route stored but gateway push failed: %w", err))
+		_ = s.Clusters.SetVMExit(spec.ClusterID, spec.Name, previousExit)
+		_ = s.pushGatewayConfig(spec.ClusterID)
+		writeErr(w, 500, fmt.Errorf("vm route rolled back after gateway push failed: %w", err))
 		return
 	}
 	note := ""

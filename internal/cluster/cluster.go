@@ -297,6 +297,21 @@ func (s *Store) AddMap(id int, vmName, vmIP string, hostPort, guestPort int, pro
 	return &out, s.save()
 }
 
+func (s *Store) SetMaps(id int, maps []*PortMap) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.data.Clusters[id]
+	if c == nil {
+		return fmt.Errorf("cluster %d does not exist", id)
+	}
+	c.Maps = make([]*PortMap, len(maps))
+	for i, m := range maps {
+		mm := *m
+		c.Maps[i] = &mm
+	}
+	return s.save()
+}
+
 func (s *Store) RemoveMap(id int, hostPort int, proto string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

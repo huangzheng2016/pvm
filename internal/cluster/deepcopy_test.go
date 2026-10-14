@@ -14,7 +14,7 @@ func TestGetReturnsDeepCopy(t *testing.T) {
 	if _, err := s.AddVM(1, "dev1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetVMExit(1, "dev1", "us"); err != nil {
+	if err := s.SetVMExit(1, "dev1", "my-exit"); err != nil {
 		t.Fatal(err)
 	}
 	got := s.Get(1)
@@ -23,7 +23,7 @@ func TestGetReturnsDeepCopy(t *testing.T) {
 	}
 	got.VMs["hacked"] = &VMNet{Name: "hacked"}
 	got.Maps = append(got.Maps, &PortMap{VM: "hacked"})
-	got.VMExits["hacked"] = "us"
+	got.VMExits["hacked"] = "my-exit"
 	delete(got.VMs, "dev1")
 
 	again := s.Get(1)
@@ -52,7 +52,7 @@ func TestRemoveVMClearsVMExits(t *testing.T) {
 	if _, err := s.AddVM(1, "dev1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetVMExit(1, "dev1", "us"); err != nil {
+	if err := s.SetVMExit(1, "dev1", "my-exit"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RemoveVM(1, "dev1"); err != nil {

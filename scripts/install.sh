@@ -46,6 +46,12 @@ echo "installed: $INSTALL_DIR/pvm"
 if [ "$S" = "Darwin" ] && [ "${PVM_SKIP_QEMU:-0}" != "1" ]; then
   echo "installing bundled qemu runtime (aarch64)..."
   curl -fsSL "$BASE/$TAG/pvm-qemu-runtime-aarch64.tar.gz" -o qemu.tar.gz
+  grep "  pvm-qemu-runtime-aarch64.tar.gz$" SHA256SUMS > qemu.want.sum || { echo "qemu checksum entry missing" >&2; exit 1; }
+  if command -v shasum >/dev/null 2>&1; then
+    awk '{print $1"  qemu.tar.gz"}' qemu.want.sum | shasum -a 256 -c - >/dev/null
+  else
+    awk '{print $1"  qemu.tar.gz"}' qemu.want.sum | sha256sum -c - >/dev/null
+  fi
   mkdir -p "$HOME/.pvm/runtime/qemu"
   tar -xzf qemu.tar.gz -C "$HOME/.pvm/runtime/qemu"
 fi

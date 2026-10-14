@@ -78,7 +78,10 @@ func (s *Server) handleMapAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.pushGatewayConfig(spec.ClusterID); err != nil {
-		writeErr(w, 500, fmt.Errorf("map recorded but gateway config push failed: %w", err))
+		s.relays.Remove(m.Proto, m.HostPort)
+		_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
+		_ = s.pushGatewayConfig(spec.ClusterID)
+		writeErr(w, 500, fmt.Errorf("map rolled back after gateway config push failed: %w", err))
 		return
 	}
 	writeJSON(w, 201, m)
@@ -91,17 +94,29 @@ func (s *Server) handleMapRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proto := r.PathValue("proto")
+	previous := s.Clusters.List()
+	rollback := func() {
+		for _, cl := range previous {
+			_ = s.Clusters.SetMaps(cl.ID, cl.Maps)
+			for _, m := range cl.Maps {
+				_ = s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort)
+			}
+			_ = s.pushGatewayConfig(cl.ID)
+		}
+	}
 	s.relays.Remove(proto, port)
 	removed := false
-	for _, cl := range s.Clusters.List() {
+	for _, cl := range previous {
 		ok, err := s.Clusters.RemoveMap(cl.ID, port, proto)
 		if err != nil {
+			rollback()
 			writeErr(w, 500, fmt.Errorf("map remove: %w", err))
 			return
 		}
 		removed = removed || ok
 		if err := s.pushGatewayConfig(cl.ID); err != nil {
-			writeErr(w, 500, fmt.Errorf("map removed but gateway push failed: %w", err))
+			rollback()
+			writeErr(w, 500, fmt.Errorf("map removal rolled back after gateway push failed: %w", err))
 			return
 		}
 	}

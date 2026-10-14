@@ -229,6 +229,19 @@ func (s *Server) ensureLink(cl *cluster.Cluster, vmName string) error {
 	return nil
 }
 
+func (s *Server) ensureLinkRetry(cl *cluster.Cluster, vmName string) error {
+	var lastErr error
+	for i := 0; i < gatewayRetryAttempts; i++ {
+		if err := s.ensureLink(cl, vmName); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		time.Sleep(gatewayRetryDelay)
+	}
+	return fmt.Errorf("ensure link: %w", lastErr)
+}
+
 func (s *Server) removeLink(cl *cluster.Cluster, vmName string) error {
 	gwSpec, err := s.getSpec(cl.Gateway)
 	if err != nil {
@@ -348,27 +361,22 @@ func gatewayInstallCmd(remote string) string {
 	return fmt.Sprintf("sudo install -m 0644 %s /etc/pvm/gateway.json.pvm-new && sudo mv -f /etc/pvm/gateway.json.pvm-new /etc/pvm/gateway.json; rc=$?; rm -f %s; exit $rc", remote, remote)
 }
 
-// Retry while gateway SSH starts, but fail immediately when QEMU is dead.
+var gatewayRetryAttempts = 60
+var gatewayRetryDelay = 3 * time.Second
+
+// Retry while the gateway and its control channel are starting.
 func (s *Server) pushGatewayConfigRetry(clusterID int) error {
 	var err error
-	gwName := ""
-	for i := 0; i < 60; i++ {
-		cl := s.Clusters.Get(clusterID)
-		if cl == nil {
-			return fmt.Errorf("cluster %d not found", clusterID)
-		}
-		gwName = cl.Gateway
-		gwSpec, gerr := s.getSpec(cl.Gateway)
-		if gerr != nil {
-			return gerr
-		}
-		if st, rerr := s.instance(gwSpec).Running(); rerr != nil || st == nil {
-			return fmt.Errorf("gateway %s is not running; cannot push config: %v", cl.Gateway, rerr)
-		}
+	for i := 0; i < gatewayRetryAttempts; i++ {
 		if err = s.pushGatewayConfig(clusterID); err == nil {
 			return nil
 		}
-		time.Sleep(3 * time.Second)
+		time.Sleep(gatewayRetryDelay)
+	}
+	cl := s.Clusters.Get(clusterID)
+	gwName := ""
+	if cl != nil {
+		gwName = cl.Gateway
 	}
 	return fmt.Errorf("push gateway config: %w (gateway %s may still be initializing)", err, gwName)
 }

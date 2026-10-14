@@ -7,11 +7,11 @@ import (
 
 func TestEntryNameValidation(t *testing.T) {
 	dir := t.TempDir()
-	e := &Entry{Name: "us", Server: "1.2.3.4:18443"}
+	e := &Entry{Name: "my-exit", Server: "1.2.3.4:18443"}
 	if err := SaveEntry(dir, e); err != nil {
 		t.Fatalf("save valid entry: %v", err)
 	}
-	if _, err := LoadEntry(dir, "us"); err != nil {
+	if _, err := LoadEntry(dir, "my-exit"); err != nil {
 		t.Fatalf("load valid entry: %v", err)
 	}
 
@@ -26,7 +26,7 @@ func TestEntryNameValidation(t *testing.T) {
 			t.Errorf("RemoveEntry(%q) should be rejected", bad)
 		}
 	}
-	if err := RemoveEntry(dir, "us"); err != nil {
+	if err := RemoveEntry(dir, "my-exit"); err != nil {
 		t.Fatalf("remove valid entry: %v", err)
 	}
 }

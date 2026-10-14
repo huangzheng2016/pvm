@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"encoding/json"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -38,5 +40,41 @@ func TestRelayEnsurePoolPortMismatch(t *testing.T) {
 	err := r.Ensure("tcp", 0, 30001)
 	if err == nil || !strings.Contains(err.Error(), "already relayed to pool port 30000") {
 		t.Fatalf("pool port mismatch must be an explicit error, got %v", err)
+	}
+}
+
+func TestFailedRecoveryIsNotReady(t *testing.T) {
+	s := newPushTestServer(t)
+	if _, err := s.Clusters.Ensure(1); err != nil {
+		t.Fatal(err)
+	}
+	s.ready.Store(false)
+	s.recoverClusters()
+	if s.ready.Load() {
+		t.Fatal("failed recovery must not be marked ready")
+	}
+}
+
+func TestHealthReportsRecoveryReadiness(t *testing.T) {
+	s := &Server{}
+	get := func() map[string]any {
+		req := httptest.NewRequest("GET", "/v1/health", nil)
+		rr := httptest.NewRecorder()
+		s.handler().ServeHTTP(rr, req)
+		if rr.Code != 200 {
+			t.Fatalf("health status = %d", rr.Code)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	if got := get()["ready"]; got != false {
+		t.Fatalf("initial ready = %v, want false", got)
+	}
+	s.ready.Store(true)
+	if got := get()["ready"]; got != true {
+		t.Fatalf("recovered ready = %v, want true", got)
 	}
 }

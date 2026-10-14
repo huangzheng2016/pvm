@@ -106,7 +106,7 @@ func TestExitClientConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("PVM_HOME", home)
 	if err := exit.SaveEntry(filepath.Join(home, "exits"), &exit.Entry{
-		Name:         "us",
+		Name:         "my-exit",
 		Server:       strings.TrimPrefix(ts.URL, "https://"),
 		Token:        "test-token",
 		Transport:    "udp",
@@ -117,7 +117,7 @@ func TestExitClientConfig(t *testing.T) {
 	}
 	output := filepath.Join(t.TempDir(), "phone.conf")
 	var qr bytes.Buffer
-	if code := exitClientConfigTo([]string{"us", "--output", output}, &qr); code != 0 {
+	if code := exitClientConfigTo([]string{"my-exit", "--output", output}, &qr); code != 0 {
 		t.Fatalf("client-config exit code = %d", code)
 	}
 	data, err := os.ReadFile(output)
@@ -159,11 +159,11 @@ func TestExitClientConfig(t *testing.T) {
 func TestExitClientConfigRejectsTCP(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("PVM_HOME", home)
-	if err := exit.SaveEntry(filepath.Join(home, "exits"), &exit.Entry{Name: "us-tcp", Transport: "tcp"}); err != nil {
+	if err := exit.SaveEntry(filepath.Join(home, "exits"), &exit.Entry{Name: "my-exit-tcp", Transport: "tcp"}); err != nil {
 		t.Fatal(err)
 	}
 	output := filepath.Join(t.TempDir(), "client.conf")
-	if code := exitClientConfigTo([]string{"us-tcp", "--output", output}, &bytes.Buffer{}); code == 0 {
+	if code := exitClientConfigTo([]string{"my-exit-tcp", "--output", output}, &bytes.Buffer{}); code == 0 {
 		t.Fatal("TCP exit must not generate a standard WireGuard config")
 	}
 	if _, err := os.Stat(output); !os.IsNotExist(err) {

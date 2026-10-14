@@ -24,7 +24,7 @@ func mustAdd(t *testing.T, e *Engine, r Rule) {
 
 func TestInternalSuffixAlwaysDirect(t *testing.T) {
 	e := newTestEngine(t)
-	mustAdd(t, e, Rule{Type: DomainSuffix, Pattern: "internal", Action: Proxy, Exit: "us"})
+	mustAdd(t, e, Rule{Type: DomainSuffix, Pattern: "internal", Action: Proxy, Exit: "my-exit"})
 
 	d, ok := e.Match("host.pvm.internal", nil)
 	if !ok || !d.Internal || d.Action != Direct {
@@ -36,7 +36,7 @@ func TestDomainRuleClasses(t *testing.T) {
 	e := newTestEngine(t)
 	mustAdd(t, e, Rule{Type: DomainSuffix, Pattern: "corp.example.com", Action: Direct})
 	mustAdd(t, e, Rule{Type: DomainPrefix, Pattern: "intranet.", Action: Direct})
-	mustAdd(t, e, Rule{Type: DomainKeyword, Pattern: "gitlab", Action: Proxy, Exit: "us"})
+	mustAdd(t, e, Rule{Type: DomainKeyword, Pattern: "gitlab", Action: Proxy, Exit: "my-exit"})
 
 	cases := []struct {
 		domain string
@@ -46,7 +46,7 @@ func TestDomainRuleClasses(t *testing.T) {
 		{"corp.example.com", Direct, ""},
 		{"git.corp.example.com", Direct, ""},
 		{"intranet.example.org", Direct, ""},
-		{"my-gitlab.example.org", Proxy, "us"},
+		{"my-gitlab.example.org", Proxy, "my-exit"},
 	}
 	for _, c := range cases {
 		d, ok := e.Match(c.domain, nil)
@@ -82,7 +82,7 @@ func TestCIDRRule(t *testing.T) {
 func TestFirstMatchWins(t *testing.T) {
 	e := newTestEngine(t)
 	mustAdd(t, e, Rule{Type: DomainSuffix, Pattern: "example.com", Action: Direct})
-	mustAdd(t, e, Rule{Type: DomainSuffix, Pattern: "sub.example.com", Action: Proxy, Exit: "us"})
+	mustAdd(t, e, Rule{Type: DomainSuffix, Pattern: "sub.example.com", Action: Proxy, Exit: "my-exit"})
 
 	d, _ := e.Match("sub.example.com", nil)
 	if d.Action != Direct {
@@ -111,12 +111,12 @@ func TestHotAddRemove(t *testing.T) {
 func TestReplaceSamePattern(t *testing.T) {
 	e := newTestEngine(t)
 	mustAdd(t, e, Rule{Type: DomainSuffix, Pattern: "example.com", Action: Direct})
-	mustAdd(t, e, Rule{Type: DomainSuffix, Pattern: "example.com", Action: Proxy, Exit: "us"})
+	mustAdd(t, e, Rule{Type: DomainSuffix, Pattern: "example.com", Action: Proxy, Exit: "my-exit"})
 	if got := len(e.List()); got != 1 {
 		t.Fatalf("replace should not duplicate: %d", got)
 	}
 	d, _ := e.Match("example.com", nil)
-	if d.Action != Proxy || d.Exit != "us" {
+	if d.Action != Proxy || d.Exit != "my-exit" {
 		t.Fatalf("action not replaced: %+v", d)
 	}
 }
@@ -127,7 +127,7 @@ func TestPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustAdd(t, e, Rule{Type: DomainSuffix, Pattern: "example.com", Action: Proxy, Exit: "us"})
+	mustAdd(t, e, Rule{Type: DomainSuffix, Pattern: "example.com", Action: Proxy, Exit: "my-exit"})
 	mustAdd(t, e, Rule{Type: CIDR, Pattern: "10.0.0.0/8", Action: Direct})
 
 	e2, err := NewEngine(path, DefaultInternal())
@@ -138,7 +138,7 @@ func TestPersistence(t *testing.T) {
 		t.Fatalf("rules not persisted: %d", got)
 	}
 	d, ok := e2.Match("a.example.com", nil)
-	if !ok || d.Action != Proxy || d.Exit != "us" {
+	if !ok || d.Action != Proxy || d.Exit != "my-exit" {
 		t.Fatalf("reloaded match wrong: %+v ok=%v", d, ok)
 	}
 	if _, ok := e2.Match("", net.ParseIP("10.1.1.1")); !ok {

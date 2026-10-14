@@ -116,12 +116,16 @@ func followProvision(c *daemon.Client, name string, timeout time.Duration) int {
 				if printed[key] {
 					continue
 				}
-				printed[key] = true
 				switch st.Stage {
 				case "ready":
+					if info.Spec.IdentityReset {
+						continue
+					}
+					printed[key] = true
 					fmt.Printf("[5/5] provision: ssh ready (total %.0fs)\n", time.Since(start).Seconds())
 					return 0
 				case "provision", "agent":
+					printed[key] = true
 					fmt.Printf("        .. %s %s\n", st.Stage, st.Detail)
 				}
 			}
