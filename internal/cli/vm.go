@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path"
 	"runtime"
 	"strconv"
 	"strings"
@@ -494,8 +493,21 @@ func CmdRm(args []string) int {
 }
 
 func CmdSSH(args []string) int {
+	fs := newFlagSet("ssh", "[-t|--tty] [-T|--no-tty] <name> [command...]")
+	var forceTTY, disableTTY bool
+	fs.BoolVar(&forceTTY, "t", false, "force a pseudo-terminal")
+	fs.BoolVar(&forceTTY, "tty", false, "force a pseudo-terminal")
+	fs.BoolVar(&disableTTY, "T", false, "disable pseudo-terminal allocation")
+	fs.BoolVar(&disableTTY, "no-tty", false, "disable pseudo-terminal allocation")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if forceTTY && disableTTY {
+		return fatalf("-t and -T are mutually exclusive")
+	}
+	args = fs.Args()
 	if len(args) < 1 {
-		return fatalf("usage: pvm ssh <name> [command...]")
+		return fatalf("usage: pvm ssh [-t|-T] <name> [command...]")
 	}
 	p, err := mustPaths()
 	if err != nil {
@@ -536,7 +548,7 @@ func CmdSSH(args []string) int {
 		sshArgs = append(sshArgs, "-o", "ProxyCommand="+proxy)
 		target = fmt.Sprintf("%s@%s", info.Spec.User, info.Spec.IP)
 	}
-	if len(args) == 1 || (len(args) > 1 && stdinIsTTY() && interactiveShell(args[1])) {
+	if !disableTTY && (forceTTY || sshWantsTTY(args[1:], stdinIsTTY(), isTTY(os.Stdout))) {
 		sshArgs = append(sshArgs, "-tt")
 	}
 	sshArgs = append(sshArgs, target)
@@ -573,12 +585,8 @@ func CmdSSH(args []string) int {
 	return 0
 }
 
-func interactiveShell(command string) bool {
-	switch path.Base(command) {
-	case "bash", "sh", "dash", "zsh", "fish", "ksh":
-		return true
-	}
-	return false
+func sshWantsTTY(commandArgs []string, stdinTTY, stdoutTTY bool) bool {
+	return len(commandArgs) == 0 || (stdinTTY && stdoutTTY)
 }
 
 func isSSHConnFailure(err error, stderr string) bool {

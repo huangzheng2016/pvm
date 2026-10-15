@@ -51,7 +51,7 @@ pvm ssh dev1 'whoami && ls /share'
 - Always pass `--user` explicitly. Interactive create prompts when it is omitted; non-interactive create rejects a missing `--user` instead of silently choosing one.
 - create follows progress by default (image, disk, boot, cloud-init stages); `--no-wait` returns immediately.
 - Golden images come with Docker, common dev tools, and a native XFCE desktop (TigerVNC + noVNC) preinstalled. User VMs get a virtio-gpu display device by default (`/dev/dri` in the guest); gateway and build VMs stay headless.
-- SSH uses a pvm-dedicated keypair, no password. `pvm ssh dev1` opens an interactive shell (a shell command such as `bash` also gets a TTY when run from a terminal); `pvm ssh dev1 '<cmd>'` runs one command. When SSH is unreachable the virtio-serial agent channel takes over automatically (or use `pvm exec dev1 <cmd...>` explicitly — it needs no network).
+- SSH uses a pvm-dedicated keypair, no password. `pvm ssh dev1` opens an interactive shell; when both local stdin/stdout are terminals, `pvm ssh dev1 codex` and other interactive commands also get a TTY automatically. Use `pvm ssh -t dev1 <cmd>` to force one or `-T` to disable it. `pvm ssh dev1 '<cmd>'` runs one command. When SSH is unreachable the virtio-serial agent channel takes over automatically (or use `pvm exec dev1 <cmd...>` explicitly — it needs no network).
 - create/start pushes the VM's IP/MAC mapping to the gateway DHCP **synchronously** before booting (new VMs are reachable immediately); if the gateway is unreachable, start fails instead of booting a network-less VM.
 - Cluster addressing: VMs live in `100.99.<cluster>.0/24` (CGNAT space), the gateway is `100.99.<cluster>.1`.
 

@@ -2,15 +2,17 @@ package cli
 
 import "testing"
 
-func TestInteractiveShell(t *testing.T) {
-	for _, command := range []string{"bash", "/bin/bash", "sh", "zsh", "fish"} {
-		if !interactiveShell(command) {
-			t.Errorf("%q should be recognized as an interactive shell", command)
-		}
+func TestSSHWantTTY(t *testing.T) {
+	if !sshWantsTTY(nil, false, false) {
+		t.Fatal("interactive login must allocate a TTY")
 	}
-	for _, command := range []string{"", "echo", "codex", "bash.exe"} {
-		if interactiveShell(command) {
-			t.Errorf("%q should not be recognized as an interactive shell", command)
-		}
+	if !sshWantsTTY([]string{"codex"}, true, true) {
+		t.Fatal("interactive command from a terminal must allocate a TTY")
+	}
+	if sshWantsTTY([]string{"codex"}, true, false) {
+		t.Fatal("piped stdout must not allocate a TTY")
+	}
+	if sshWantsTTY([]string{"codex"}, false, true) {
+		t.Fatal("piped stdin must not allocate a TTY")
 	}
 }

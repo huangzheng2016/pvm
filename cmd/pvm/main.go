@@ -19,7 +19,7 @@ vm:
   start|stop    start/stop a vm (start waits for provisioning; --no-wait returns early)
   rm            stop and delete a vm (asks for confirmation; -y|--force to skip)
   resize        grow a stopped vm's disk (grow-only): pvm resize dev1 40
-  ssh           ssh into a vm: pvm ssh dev1 [cmd...]
+  ssh           ssh into a vm: pvm ssh [-t|-T] dev1 [cmd...]
   snapshot      ram snapshots: create <name> | ls [name] | rm <name>
                 (create needs a running vm; rm needs the vm stopped)
   exec          run a command via the guest agent (no network needed): pvm exec dev1 cmd...
