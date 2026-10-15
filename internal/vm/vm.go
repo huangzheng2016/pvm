@@ -115,9 +115,14 @@ func (s *Spec) Save(p *paths.Paths) error {
 
 func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poolBase, poolSize int) qemu.VMConfig {
 	dir := s.dir(p)
+	mountDir := ""
+	if s.Role != "gateway" {
+		mountDir = p.MountDir(s.Name)
+	}
 	mounts := make([]qemu.Mount, 0, len(s.Mounts))
 	for _, m := range s.Mounts {
-		mounts = append(mounts, qemu.Mount{Tag: m.Tag, HostPath: m.Host})
+		slot, _ := qemu.VirtFSSlot(m.Tag)
+		mounts = append(mounts, qemu.Mount{Tag: m.Tag, HostPath: p.MountSlot(s.Name, slot)})
 	}
 	var net qemu.Network
 	hotplug := 0
@@ -145,6 +150,7 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 		Network:      net,
 		HotplugPorts: hotplug,
 		ShareDir:     p.Share,
+		MountDir:     mountDir,
 		ExtraMounts:  mounts,
 		Accel:        accel,
 		SmbiosSpoof:  s.SmbiosSpoof,

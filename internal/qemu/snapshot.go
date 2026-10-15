@@ -159,12 +159,18 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 	}()
 
 	// 9p/VirtFS blocks migration; hot-unplug the shares while the guest
-	// is still running so it can complete the PCI hot-unplug (ids as
-	// assigned by BuildArgs: fs0 = default share, then extra mounts).
-	// The guest already lazily unmounted them via ssh (daemon side).
-	for i := 0; i < 1+len(in.Cfg.ExtraMounts); i++ {
-		id := fmt.Sprintf("fs%d", i)
-		if err := q.DeviceDel(id, 15*time.Second); err != nil {
+	// is still running so it can complete the PCI hot-unplug. The guest
+	// already lazily unmounted them via ssh (daemon side).
+	slots := []int{0}
+	for _, m := range in.Cfg.ExtraMounts {
+		slot, err := VirtFSSlot(m.Tag)
+		if err != nil {
+			return err
+		}
+		slots = append(slots, slot)
+	}
+	for _, slot := range slots {
+		if err := q.DeviceDel(VirtFSID(slot), 15*time.Second); err != nil {
 			return err
 		}
 	}
@@ -372,16 +378,12 @@ func (in *Instance) reattachShares(q *QMP) error {
 	for _, m := range in.Cfg.ExtraMounts {
 		tags = append(tags, m.Tag)
 	}
-	for i, tag := range tags {
-		id := fmt.Sprintf("fs%d", i)
-		_, err := q.Execute("device_add", map[string]any{
-			"driver":    "virtio-9p-pci-non-transitional",
-			"id":        id,
-			"fsdev":     id,
-			"mount_tag": tag,
-			"bus":       fmt.Sprintf("rp%d", i),
-		})
+	for _, tag := range tags {
+		slot, err := VirtFSSlot(tag)
 		if err != nil {
+			return err
+		}
+		if err := q.DeviceAddVirtFS(slot, tag); err != nil {
 			return fmt.Errorf("reattach share %s: %w", tag, err)
 		}
 	}

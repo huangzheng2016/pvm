@@ -26,14 +26,19 @@ pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, l
 - **Exit providers**: pvm exit-agent (`udp` default / `tcp` fallback) or Cloudflare WARP (`udp` only); see `pvm exit add-warp` below
 - **exit-agent NAT backend**: `auto` (probe) / `nft` / `iptables` / `userspace` (no root, no ICMP)
 - **Route targets**: `direct` (host egress) or an exit name such as `my-exit`
-- **create flags**: `--image`, `--distro`, `--version`, `--name`, `--user`, `--cpus`, `--mem`, `--disk`, `--mount`, `--tz`, `--locale`, `--git-email`, `--git-name`, `--smbios-spoof`, `--no-start`, `--no-wait`
+- **create flags**: `--image`, `--distro`, `--version`, `--name`, `--user`, `--cpus`, `--mem`, `--disk`, `--tz`, `--locale`, `--git-email`, `--git-name`, `--smbios-spoof`, `--no-start`, `--no-wait`
 
-### Directory mounts (--mount and /share)
+### Directory mounts (pvm mount and /share)
 
-- Every VM mounts the host's `~/.pvm/share` at `/share` (9p, **bidirectional read-write**, including subdirectories). Drop files there for quick exchange — zero configuration.
-- Extra mounts: `--mount <host-path>:<vm-path>`, repeatable:
-  `pvm create --image ubuntu:24.04 --name dev1 --user dev --mount ~/work/proj:/home/dev/proj --mount ~/data:/mnt/data`
-- Mounts are virtio-9p (security_model=none + access=any, guest uid aligned with host uid). Good for source trees and documents; not for high-IOPS database directories.
+- Every VM mounts the host's `~/.pvm/share` at `/share` (9p, **bidirectional read-write**, including subdirectories). Drop files there for quick exchange - zero configuration.
+- Manage extra mounts dynamically on a running VM; no reboot or recreate is needed:
+  ```bash
+  pvm mount dev1 ~/work/proj:/home/dev/proj
+  pvm mount ls dev1
+  pvm mount rm dev1 /home/dev/proj
+  ```
+- `pvm mount` hot-plugs the 9p device, mounts it in the guest, and persists the configuration in the guest's fstab. `pvm mount rm` unmounts and detaches it without deleting host files. Add and remove require the VM to be running and SSH-ready; up to 13 extra mounts are supported. A VM started by an older pvm version needs one restart to reserve the dynamic slots.
+- Mounts are virtio-9p (security_model=none + access=any, guest uid aligned with host uid). Good for source trees and documents; not for high-IOPS database directories. Extra mounts are managed only by `pvm mount`, not at create time.
 - `--image debian:13` and `--distro debian --version 13` are equivalent; conflicting flags are rejected.
 - **`pvm image build` proxy passthrough**: golden builds honor the host's `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY` (loopback proxy addresses are rewritten to a VM-reachable one) and clean up thoroughly — no proxy config is baked into the image.
 

@@ -1,6 +1,7 @@
 package paths
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -67,6 +68,12 @@ func (p *Paths) SSHKey() string           { return filepath.Join(p.Keys, "id_ed2
 func (p *Paths) SSHPubKey() string        { return p.SSHKey() + ".pub" }
 func (p *Paths) KnownHosts() string       { return filepath.Join(p.Keys, "known_hosts") }
 func (p *Paths) VMDir(name string) string { return filepath.Join(p.VMs, name) }
+func (p *Paths) MountDir(name string) string {
+	return filepath.Join(p.VMDir(name), "mounts")
+}
+func (p *Paths) MountSlot(name string, slot int) string {
+	return filepath.Join(p.MountDir(name), fmt.Sprintf("slot%d", slot))
+}
 func (p *Paths) AgentSock(name string) string {
 	return filepath.Join(p.VMDir(name), "agent.sock")
 }

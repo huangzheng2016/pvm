@@ -15,12 +15,53 @@ func testCfg(accel Accel) *VMConfig {
 		ConsoleLog: "/d/console.log", QMPSock: "/d/qmp.sock", SerialSock: "/d/serial.sock",
 		Network:     Network{Mode: NetSlirp, SSHHostPort: 10022},
 		ShareDir:    "/share",
-		ExtraMounts: []Mount{{Tag: "pvm0", HostPath: "/host/dir"}},
+		MountDir:    "/d/mounts",
+		ExtraMounts: []Mount{{Tag: "pvm0", HostPath: "/d/mounts/slot1"}},
 		Accel:       accel,
 	}
 }
 
 func joined(args []string) string { return strings.Join(args, " ") }
+
+func TestBuildArgsDynamicMountSlots(t *testing.T) {
+	cfg := testCfg(AccelHVF)
+	cfg.ExtraMounts = []Mount{{Tag: "pvm2", HostPath: "/d/mounts/slot3"}}
+	args, err := BuildArgs(&Toolchain{FirmwareDir: "/fw"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := joined(args)
+	for _, want := range []string{
+		"pcie-root-port,id=rp13,",
+		"local,id=fs1,path=/d/mounts/slot1,security_model=none",
+		"local,id=fs13,path=/d/mounts/slot13,security_model=none",
+		"virtio-9p-pci-non-transitional,id=fs3,fsdev=fs3,mount_tag=pvm2,bus=rp3",
+	} {
+		if !strings.Contains(j, want) {
+			t.Errorf("args missing %q\nargs: %s", want, j)
+		}
+	}
+	if strings.Contains(j, "mount_tag=pvm0") || strings.Contains(j, "mount_tag=pvm1") {
+		t.Errorf("inactive slots must not have front-end devices: %s", j)
+	}
+	if got := strings.Count(j, "mount_tag="); got != 2 {
+		t.Errorf("front-end count = %d, want default share plus pvm2\nargs: %s", got, j)
+	}
+}
+
+func TestVirtFSSlot(t *testing.T) {
+	for tag, want := range map[string]int{"pvmshare": 0, "pvm0": 1, "pvm12": 13} {
+		got, err := VirtFSSlot(tag)
+		if err != nil || got != want {
+			t.Errorf("VirtFSSlot(%q) = %d, %v; want %d", tag, got, err, want)
+		}
+	}
+	for _, tag := range []string{"pvm", "pvm-1", "pvm13", "other"} {
+		if _, err := VirtFSSlot(tag); err == nil {
+			t.Errorf("VirtFSSlot(%q) must fail", tag)
+		}
+	}
+}
 
 func TestBuildArgsNativeHVF(t *testing.T) {
 	tc := &Toolchain{FirmwareDir: "/fw"}

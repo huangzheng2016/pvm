@@ -27,6 +27,7 @@ The daemon starts automatically when needed. The first `create` may download and
 
 ```bash
 pvm create --image ubuntu:26.04 --name dev1 --user dev
+pvm mount dev1 ~/work/proj:/home/dev/proj
 pvm ssh dev1
 pvm desktop dev1
 pvm map dev1 8080:80

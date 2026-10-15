@@ -4,14 +4,35 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/huangzheng2016/pvm/internal/native"
 )
+
+const MaxExtraMounts = 13
 
 type Mount struct {
 	Tag      string
 	HostPath string
 }
+
+// VirtFSSlot returns the stable PCI slot and fsdev number for a mount tag.
+func VirtFSSlot(tag string) (int, error) {
+	if tag == "pvmshare" {
+		return 0, nil
+	}
+	if !strings.HasPrefix(tag, "pvm") {
+		return 0, fmt.Errorf("invalid mount tag %q", tag)
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(tag, "pvm"))
+	if err != nil || n < 0 || n >= MaxExtraMounts {
+		return 0, fmt.Errorf("invalid mount tag %q", tag)
+	}
+	return n + 1, nil
+}
+
+func VirtFSID(slot int) string       { return fmt.Sprintf("fs%d", slot) }
+func VirtFSRootPort(slot int) string { return fmt.Sprintf("rp%d", slot) }
 
 type NetMode string
 
@@ -50,6 +71,7 @@ type VMConfig struct {
 	// Gateway VMs get one port per possible cluster VM IP octet.
 	HotplugPorts int
 	ShareDir     string // default ~/.pvm/share mounted at /share
+	MountDir     string // daemon-controlled symlinks for dynamic mount backends
 	ExtraMounts  []Mount
 	Accel        Accel
 	// Incoming, when set, appends `-incoming <value>` (RAM snapshot
@@ -146,25 +168,45 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 	}
 
 	fs := []Mount{{Tag: "pvmshare", HostPath: c.ShareDir}}
-	fs = append(fs, c.ExtraMounts...)
+	if c.MountDir != "" {
+		fs = make([]Mount, 1+MaxExtraMounts)
+		fs[0] = Mount{Tag: "pvmshare", HostPath: c.ShareDir}
+		for slot := 1; slot <= MaxExtraMounts; slot++ {
+			fs[slot].HostPath = filepath.Join(c.MountDir, fmt.Sprintf("slot%d", slot))
+		}
+	}
+	for _, m := range c.ExtraMounts {
+		if c.MountDir == "" {
+			return nil, fmt.Errorf("mount %s needs a dynamic mount directory", m.Tag)
+		}
+		slot, err := VirtFSSlot(m.Tag)
+		if err != nil || slot == 0 {
+			return nil, fmt.Errorf("invalid extra mount tag %q", m.Tag)
+		}
+		if fs[slot].Tag != "" {
+			return nil, fmt.Errorf("duplicate mount tag %q", m.Tag)
+		}
+		if m.HostPath == "" {
+			return nil, fmt.Errorf("mount %s has an empty backend path", m.Tag)
+		}
+		fs[slot] = m
+	}
 	for i, m := range fs {
-		id := fmt.Sprintf("fs%d", i)
+		id := VirtFSID(i)
+		rp := VirtFSRootPort(i)
 		// security_model=none: server does all host I/O as the qemu
 		// process user; guest-side enforcement is disabled by mounting
 		// with access=any (see cloud-init). mapped-xattr was tried and
 		// rejects even root readdir on macOS hosts.
-		// id=<fsN> lets the snapshot flow hot-unplug the device via
-		// QMP device_del (9p otherwise blocks migration). pcie.0
-		// itself does not support hotplug, so each share sits behind
-		// a pcie-root-port on its own slot (0x10+i), clear of the
-		// hotplug range (0x8-0xf) and rp-link (0x1e).
+		// Inactive slots keep only their backend and root port. The daemon
+		// retargets the backend symlink before hot-adding the front-end.
 		args = append(args,
-			"-device", fmt.Sprintf("pcie-root-port,id=rp%d,bus=pcie.0,addr=0x%x,chassis=%d", i, 0x10+i, 128+i),
+			"-device", fmt.Sprintf("pcie-root-port,id=%s,bus=pcie.0,addr=0x%x,chassis=%d", rp, 0x10+i, 128+i),
 			"-fsdev", fmt.Sprintf("local,id=%s,path=%s,security_model=none", id, m.HostPath),
 		)
-		if !c.NoVirtFSDevices {
+		if m.Tag != "" && !c.NoVirtFSDevices {
 			args = append(args,
-				"-device", fmt.Sprintf("virtio-9p-pci-non-transitional,id=%s,fsdev=%s,mount_tag=%s,bus=rp%d", id, id, m.Tag, i),
+				"-device", fmt.Sprintf("virtio-9p-pci-non-transitional,id=%s,fsdev=%s,mount_tag=%s,bus=%s", id, id, m.Tag, rp),
 			)
 		}
 	}

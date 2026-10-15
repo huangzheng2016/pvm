@@ -166,7 +166,7 @@ func resolveImageSpec(image, distro, version string) (string, error) {
 }
 
 func CmdCreate(args []string) int {
-	fs := newFlagSet("create", "--image ubuntu:26.04 | --distro ubuntu --version 26.04 --name dev1 [--user U] [--cpus 2] [--mem 4096] [--disk 20] [--mount /host:/guest]... [--no-start]")
+	fs := newFlagSet("create", "--image ubuntu:26.04 | --distro ubuntu --version 26.04 --name dev1 [--user U] [--cpus 2] [--mem 4096] [--disk 20] [--no-start]")
 	imageSpec := fs.String("image", "", "image spec, e.g. ubuntu:26.04 or debian:13")
 	distro := fs.String("distro", "", "distro alias for --image (e.g. debian)")
 	version := fs.String("version", "", "version alias for --image (e.g. 13)")
@@ -183,8 +183,6 @@ func CmdCreate(args []string) int {
 	gitEmail := fs.String("git-email", "", "git user.email in the guest (never copied from the host)")
 	gitName := fs.String("git-name", "", "git user.name in the guest")
 	smbiosSpoof := fs.Bool("smbios-spoof", false, "present commodity PC hardware in DMI instead of QEMU defaults")
-	var mounts multiFlag
-	fs.Var(&mounts, "mount", "extra /host:/guest mount (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -234,7 +232,7 @@ func CmdCreate(args []string) int {
 	body := map[string]any{
 		"name": *name, "image": spec, "user": *user,
 		"cpus": *cpus, "mem_mb": *mem, "disk_gb": *disk,
-		"mounts": []string(mounts), "start": !*noStart,
+		"start": !*noStart,
 	}
 	if *bare {
 		body["no_golden"] = true
@@ -313,14 +311,6 @@ func promptUsername() string {
 		return "pvm"
 	}
 	return line
-}
-
-type multiFlag []string
-
-func (m *multiFlag) String() string { return strings.Join(*m, ",") }
-func (m *multiFlag) Set(v string) error {
-	*m = append(*m, v)
-	return nil
 }
 
 func CmdList(args []string) int {

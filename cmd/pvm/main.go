@@ -19,6 +19,7 @@ vm:
   start|stop    start/stop a vm (start waits for provisioning; --no-wait returns early)
   rm            stop and delete a vm (asks for confirmation; -y|--force to skip)
   resize        grow a stopped vm's disk (grow-only): pvm resize dev1 40
+  mount         dynamic host mounts: pvm mount dev1 /host:/guest | ls dev1 | rm dev1 /guest
   ssh           ssh into a vm: pvm ssh [-t|-T] dev1 [cmd...]
   snapshot      ram snapshots: create <name> | ls [name] | rm <name>
                 (create needs a running vm; rm needs the vm stopped)
@@ -69,7 +70,6 @@ create options:
   --cpus N      vcpus (default: all host cores)
   --mem MB      memory in mb (default: half of host ram; idle pages return via balloon)
   --disk GB     disk size in gb (default 20)
-  --mount H:G   extra host:guest mount; ~/.pvm/share is always at /share
   --tz TZ       iana timezone, e.g. America/Los_Angeles
   --locale LOC  guest locale (default en_US.UTF-8)
   --git-email E optional neutral git identity (never inherited from host)
@@ -132,6 +132,8 @@ func main() {
 		code = cli.CmdRm(args)
 	case "resize":
 		code = cli.CmdResize(args)
+	case "mount":
+		code = cli.CmdMount(args)
 	case "clone":
 		code = cli.CmdClone(args)
 	case "ssh":

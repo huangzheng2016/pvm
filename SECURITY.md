@@ -125,12 +125,13 @@ pvm ssh dev1 'git config --global user.email; git config --global user.name'
 ### 9. Host-sensitive mounts and files
 
 ```bash
-pvm ssh dev1 'grep 9p /proc/mounts'   # expect pvmshare /share + declared --mount targets
+pvm mount ls dev1
+pvm ssh dev1 'grep 9p /proc/mounts'   # expect pvmshare /share + declared pvm mount targets
 pvm ssh dev1 'ls ~/.ssh ~/.gitconfig 2>/dev/null'
 ```
 
-- Check: 9p mounts show only `pvmshare /share` and the `--mount` targets given at create time - no mount maps host `~/.ssh`, `~/.gitconfig`, or other personal paths. The VM's own `~/.ssh` holds only VM-generated keys; `~/.gitconfig` exists only if it was set inside the VM.
-- Fix: recreate the VM without the offending `--mount`; delete any copied host files. pvm itself never propagates host `~/.ssh` or `~/.gitconfig`.
+- Check: 9p mounts show only `pvmshare /share` and the targets declared by `pvm mount` - no mount maps host `~/.ssh`, `~/.gitconfig`, or other personal paths. The VM's own `~/.ssh` holds only VM-generated keys; `~/.gitconfig` exists only if it was set inside the VM.
+- Fix: remove the offending mount with `pvm mount rm dev1 <guest-path>`; delete any copied host files. pvm itself never propagates host `~/.ssh` or `~/.gitconfig`.
 
 ### 10. MAC OUI
 

@@ -178,6 +178,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/vms/{name}/snapshot", s.handleSnapshotGet)
 	mux.HandleFunc("DELETE /v1/vms/{name}/snapshot", s.handleSnapshotDelete)
 	mux.HandleFunc("POST /v1/vms/{name}/exec", s.handleExec)
+	mux.HandleFunc("GET /v1/vms/{name}/mounts", s.handleMountList)
+	mux.HandleFunc("POST /v1/vms/{name}/mounts", s.handleMountAdd)
+	mux.HandleFunc("DELETE /v1/vms/{name}/mounts", s.handleMountRemove)
 	mux.HandleFunc("GET /v1/clusters", s.handleClusters)
 	mux.HandleFunc("GET /v1/maps", s.handleMapList)
 	mux.HandleFunc("POST /v1/maps", s.handleMapAdd)
@@ -273,20 +276,19 @@ func (s *Server) handleClusters(w http.ResponseWriter, r *http.Request) {
 }
 
 type createRequest struct {
-	Name        string   `json:"name"`
-	Image       string   `json:"image"`
-	User        string   `json:"user"`
-	CPUs        int      `json:"cpus"`
-	MemMB       int      `json:"mem_mb"`
-	DiskGB      int      `json:"disk_gb"`
-	Mounts      []string `json:"mounts"` // "/host:/guest"
-	Start       bool     `json:"start"`
-	TZ          string   `json:"tz,omitempty"`
-	Locale      string   `json:"locale,omitempty"`
-	GitEmail    string   `json:"git_email,omitempty"`
-	GitName     string   `json:"git_name,omitempty"`
-	SmbiosSpoof bool     `json:"smbios_spoof,omitempty"`
-	NoGolden    bool     `json:"no_golden,omitempty"`
+	Name        string `json:"name"`
+	Image       string `json:"image"`
+	User        string `json:"user"`
+	CPUs        int    `json:"cpus"`
+	MemMB       int    `json:"mem_mb"`
+	DiskGB      int    `json:"disk_gb"`
+	Start       bool   `json:"start"`
+	TZ          string `json:"tz,omitempty"`
+	Locale      string `json:"locale,omitempty"`
+	GitEmail    string `json:"git_email,omitempty"`
+	GitName     string `json:"git_name,omitempty"`
+	SmbiosSpoof bool   `json:"smbios_spoof,omitempty"`
+	NoGolden    bool   `json:"no_golden,omitempty"`
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -329,17 +331,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mounts, err := parseMounts(req.Mounts)
-	if err != nil {
-		writeErr(w, 400, err)
-		return
-	}
-	// Each extra mount takes a pcie-root-port at 0x10+i; rp-link lives at
-	// 0x1E, so 13 is the hard ceiling (BuildArgs).
-	if len(mounts) > 13 {
-		writeErr(w, 400, fmt.Errorf("too many mounts: %d (max 13)", len(mounts)))
-		return
-	}
+	mounts := []vm.GuestMount{}
 	if req.TZ != "" {
 		if err := vm.ValidateTZ(req.TZ); err != nil {
 			writeErr(w, 400, err)
@@ -442,6 +434,9 @@ func (s *Server) startVM(spec *vm.Spec) (*qemu.Instance, *qemu.SnapshotManifest,
 		s.watchVM(spec)
 		return inst, nil, nil
 	}
+	if err := s.prepareMountSlots(spec); err != nil {
+		return nil, nil, err
+	}
 	if spec.ClusterID > 0 {
 		cl, err := s.ensureCluster(spec.ClusterID)
 		if err != nil {
@@ -486,31 +481,6 @@ func imageFileStem(imageSpec string) string {
 		}
 	}
 	return string(out)
-}
-
-func parseMounts(in []string) ([]vm.GuestMount, error) {
-	var out []vm.GuestMount
-	for i, m := range in {
-		host, guest, ok := cut2(m, ':')
-		if !ok || host == "" || guest == "" {
-			return nil, fmt.Errorf("invalid mount %q, want /host:/guest", m)
-		}
-		fi, err := os.Stat(host)
-		if err != nil || !fi.IsDir() {
-			return nil, fmt.Errorf("mount host path %s is not a directory", host)
-		}
-		out = append(out, vm.GuestMount{Tag: fmt.Sprintf("pvm%d", i), Host: host, Guest: guest})
-	}
-	return out, nil
-}
-
-func cut2(s string, sep byte) (string, string, bool) {
-	for i := 0; i < len(s); i++ {
-		if s[i] == sep {
-			return s[:i], s[i+1:], true
-		}
-	}
-	return s, "", false
 }
 
 func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {

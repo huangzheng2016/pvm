@@ -304,3 +304,16 @@ func (q *QMP) DeviceAddNet(id, netdevID, mac, bus string) error {
 	_, err := q.Execute("device_add", args)
 	return err
 }
+
+// DeviceAddVirtFS attaches a front-end to a pre-created 9p backend.
+func (q *QMP) DeviceAddVirtFS(slot int, tag string) error {
+	id := VirtFSID(slot)
+	_, err := q.Execute("device_add", map[string]any{
+		"driver":    "virtio-9p-pci-non-transitional",
+		"id":        id,
+		"fsdev":     id,
+		"mount_tag": tag,
+		"bus":       VirtFSRootPort(slot),
+	})
+	return err
+}
