@@ -35,6 +35,13 @@ func (r *relaySet) EnsurePublic(proto string, hostPort, poolPort int) error {
 	return r.ensure(proto, hostPort, poolPort, "0.0.0.0")
 }
 
+func (r *relaySet) Binding(proto string, hostPort int) (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	bind, ok := r.bind[relayKey(proto, hostPort)]
+	return bind, ok
+}
+
 // An orphaned relay must never quietly serve a new VM's traffic.
 func (r *relaySet) ensure(proto string, hostPort, poolPort int, bind string) error {
 	r.mu.Lock()

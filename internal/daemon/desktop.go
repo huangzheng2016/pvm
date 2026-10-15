@@ -92,8 +92,8 @@ func randHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-// The noVNC URL carries the VNC password over loopback, avoiding a
-// daemon-side credential proxy.
+// The noVNC URL carries the VNC password without a daemon-side credential
+// proxy. Loopback remains the default; public binding is an explicit opt-in.
 func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	spec, err := s.getSpec(name)
@@ -141,22 +141,19 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	public := r.URL.Query().Get("public") == "1"
-	if running && st != nil && st.Public == public {
+	if running && st != nil && st.Public == public && s.desktopRelayMatches(spec, st, public) {
 		writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort, Public: st.Public})
 		return
 	}
-	if running && st != nil {
-		for _, m := range s.Clusters.Get(spec.ClusterID).Maps {
-			if m.VM == spec.Name && m.GuestPort == desktopWebPort {
-				s.relays.Remove(m.Proto, m.HostPort)
-				_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
-			}
+	for _, m := range s.Clusters.Get(spec.ClusterID).Maps {
+		if m.VM == spec.Name && m.GuestPort == desktopWebPort {
+			s.relays.Remove(m.Proto, m.HostPort)
+			_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
 		}
+	}
+	if running && st != nil {
 		st.Public = public
 	} else {
-		if running {
-			_, _ = s.sshRun(spec, fmt.Sprintf("vncserver -kill %s >/dev/null 2>&1; fuser -k %d/tcp >/dev/null 2>&1 || true", desktopVNCDisplay, desktopWebPort))
-		}
 		st = &desktopState{Password: randHex(8), Size: size, Public: public}
 		if err := s.startDesktopSession(spec, st); err != nil {
 			writeErr(w, 500, err)
@@ -202,6 +199,21 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort, Public: st.Public})
+}
+
+func (s *Server) desktopRelayMatches(spec *vm.Spec, st *desktopState, public bool) bool {
+	want := "127.0.0.1"
+	if public {
+		want = "0.0.0.0"
+	}
+	for _, m := range s.Clusters.Get(spec.ClusterID).Maps {
+		if m.VM != spec.Name || m.GuestPort != desktopWebPort || m.Proto != "tcp" || m.HostPort != st.HostPort {
+			continue
+		}
+		bind, ok := s.relays.Binding(m.Proto, m.HostPort)
+		return ok && bind == want
+	}
+	return false
 }
 
 func (s *Server) handleDesktopStop(w http.ResponseWriter, r *http.Request) {

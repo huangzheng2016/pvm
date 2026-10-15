@@ -504,8 +504,8 @@ func (s *Server) Close() {
 }
 
 const (
-	peerReapInterval = 10 * time.Minute
-	peerIdleMax      = 2 * time.Hour
+	peerReapInterval = time.Hour
+	peerIdleMax      = 24 * time.Hour
 )
 
 // reapIdlePeers periodically removes registrations whose tunnel has been

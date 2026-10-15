@@ -50,8 +50,10 @@ type TCPBind struct {
 // completes, so every idle TCP conn would otherwise cost a 64KB buffer
 // and a goroutine forever.
 const (
-	tcpMaxConns      = 1024
-	tcpMaxConnsPerIP = 16
+	tcpMaxConns        = 1024
+	tcpMaxConnsPerIP   = 16
+	tcpKeepAlivePeriod = 30 * time.Second
+	tcpWriteTimeout    = 30 * time.Second
 )
 
 // tcpFirstReadTimeout is the deadline for the first frame (a WG
@@ -206,7 +208,9 @@ func (t *TCPBind) accept(listener *net.TCPListener, closeChan chan struct{}) {
 			continue
 		}
 		backoff = 10 * time.Millisecond
-		c.SetNoDelay(true) //nolint:errcheck
+		c.SetNoDelay(true)                       //nolint:errcheck
+		c.SetKeepAlive(true)                     //nolint:errcheck
+		c.SetKeepAlivePeriod(tcpKeepAlivePeriod) //nolint:errcheck
 		endpoint := &conn.StdNetEndpoint{AddrPort: c.RemoteAddr().(*net.TCPAddr).AddrPort()}
 		entry := &tcpConn{conn: c}
 		if !t.storeConn(endpoint.DstToString(), entry) {
@@ -337,7 +341,9 @@ func (t *TCPBind) getConn(endpoint conn.Endpoint) (*tcpConn, error) {
 	rawTCP := raw.(*net.TCPConn)
 	// Nagle off: the two-write frame (header+payload) would otherwise cost one
 	// RTT per WireGuard packet.
-	rawTCP.SetNoDelay(true) //nolint:errcheck
+	rawTCP.SetNoDelay(true)                       //nolint:errcheck
+	rawTCP.SetKeepAlive(true)                     //nolint:errcheck
+	rawTCP.SetKeepAlivePeriod(tcpKeepAlivePeriod) //nolint:errcheck
 	entry := &tcpConn{conn: rawTCP}
 	if !t.storeConn(key, entry) {
 		return nil, fmt.Errorf("too many tcp connections")
@@ -395,7 +401,9 @@ func (t *TCPBind) Send(bufs [][]byte, endpoint conn.Endpoint) error {
 		var l reqLen
 		l.FromLen(len(buf))
 		msg := net.Buffers{l[:], buf}
+		entry.conn.SetWriteDeadline(time.Now().Add(tcpWriteTimeout)) //nolint:errcheck
 		n, err := msg.WriteTo(entry.conn)
+		entry.conn.SetWriteDeadline(time.Time{}) //nolint:errcheck
 		if err != nil || n != int64(4+len(buf)) {
 			t.deleteConn(endpoint.DstToString(), entry)
 			entry.conn.Close()

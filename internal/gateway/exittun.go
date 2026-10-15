@@ -1,10 +1,15 @@
 package gateway
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +17,7 @@ import (
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/exit"
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/gw/rules"
 	"github.com/huangzheng2016/pvm/internal/tunnel"
 	"golang.zx2c4.com/wireguard/device"
@@ -33,13 +39,20 @@ type ExitDef struct {
 }
 
 const (
-	rulePrefBypass  = 50 // direct CIDRs / direct-domain IPs -> main table
-	rulePrefVMExit  = 101
-	fwMarkBase      = 0x99 // exit idx i uses mark fwMarkBase+i, table 100+i
-	ruleTableBase   = 100
-	watchdogPeriod  = 20 * time.Second
-	watchdogMaxDown = 3 // consecutive failed probes before re-enroll
+	rulePrefBypass   = 50 // direct CIDRs / direct-domain IPs -> main table
+	rulePrefVMExit   = 101
+	fwMarkBase       = 0x99 // exit idx i uses mark fwMarkBase+i, table 100+i
+	ruleTableBase    = 100
+	exitPeerKeyDir   = "/etc/pvm/exit-keys"
+	exitProbeTimeout = 5 * time.Second
+	watchdogPeriod   = 10 * time.Second
+	watchdogMaxDown  = 2 // consecutive failed probes before re-enroll
 )
+
+var exitProbeDial = func(ctx context.Context, network, address string, mark int) (net.Conn, error) {
+	d := net.Dialer{Timeout: exitProbeTimeout, Control: soMark(mark)}
+	return d.DialContext(ctx, network, address)
+}
 
 // exitIndex returns the deterministic tunnel index for an exit name:
 // the position in the sorted exit-name list. The nft renderer uses the
@@ -57,6 +70,33 @@ func exitIndex(exitNames []string, name string) int {
 
 // tunnelIfName maps a tunnel index to its interface name.
 func tunnelIfName(idx int) string { return fmt.Sprintf("pvmwg%d", idx) }
+
+func loadOrCreatePeerKey(dir, name string) (string, error) {
+	if !exit.ValidName(name) {
+		return "", fmt.Errorf("invalid exit name %q", name)
+	}
+	path := filepath.Join(dir, name+".key")
+	if b, err := os.ReadFile(path); err == nil {
+		key := strings.TrimSpace(string(b))
+		if _, err := tunnel.PublicKey(key); err != nil {
+			return "", fmt.Errorf("parse saved peer key %s: %w", path, err)
+		}
+		return key, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	key, err := tunnel.GenerateKey()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := fsutil.AtomicWrite(path, []byte(key+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return key, nil
+}
 
 // exitTunnel is one live WireGuard client device to an exit-node.
 type exitTunnel struct {
@@ -153,7 +193,7 @@ func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, 
 	// tear down tunnels no longer referenced
 	for name, t := range m.tuns {
 		if _, ok := exits[name]; !ok {
-			m.teardownLocked(t)
+			m.teardownLocked(t, true)
 		}
 	}
 	// ensure tunnels
@@ -430,18 +470,32 @@ func (m *exitManager) ensureLocked(name string, def ExitDef, idx int) {
 		}
 		// def or index drifted (an exit was added/removed and re-sorted
 		// the indexes): rebuild so ifname/mark/table match the rules.
-		m.teardownLocked(t)
+		m.teardownLocked(t, !sameExitPeer(t.def, def))
 	}
 	t := &exitTunnel{name: name, def: def, idx: idx, stop: make(chan struct{}), done: make(chan struct{})}
 	m.tuns[name] = t
 	go m.runTunnel(t)
 }
 
-func (m *exitManager) teardownLocked(t *exitTunnel) {
+func sameExitPeer(a, b ExitDef) bool {
+	return a.Provider == b.Provider &&
+		a.Server == b.Server &&
+		a.Token == b.Token &&
+		a.Transport == b.Transport &&
+		a.Fingerprint == b.Fingerprint &&
+		a.WGPrivateKey == b.WGPrivateKey &&
+		a.ServerPubKey == b.ServerPubKey &&
+		a.TunnelIP == b.TunnelIP &&
+		a.MTU == b.MTU &&
+		a.Endpoint == b.Endpoint &&
+		a.DNS == b.DNS
+}
+
+func (m *exitManager) teardownLocked(t *exitTunnel, revoke bool) {
 	close(t.stop)
 	<-t.done
 	delete(m.tuns, t.name)
-	if t.def.Provider != exit.ProviderWARP && t.tunIP != "" {
+	if revoke && t.def.Provider != exit.ProviderWARP && t.tunIP != "" {
 		cl := exit.NewClient(t.def.Server, t.def.Token, t.def.Fingerprint)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := cl.DeletePeer(ctx, t.tunIP); err != nil {
@@ -503,7 +557,7 @@ func (m *exitManager) upOnce(t *exitTunnel) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		if t.priv == "" {
-			priv, err := tunnel.GenerateKey()
+			priv, err := loadOrCreatePeerKey(exitPeerKeyDir, t.name)
 			if err != nil {
 				return err
 			}
@@ -602,19 +656,52 @@ func (m *exitManager) watch(t *exitTunnel) bool {
 		}
 		hs := t.lastHandshake()
 		fresh := hs > 0 && time.Since(time.Unix(hs, 0)) < 3*time.Minute
-		if fresh {
+		probeErr := m.probe(t)
+		if fresh && probeErr == nil {
 			if fails > 0 {
-				log.Printf("exit %s: handshake recovered", t.name)
+				log.Printf("exit %s: tunnel recovered", t.name)
 			}
 			fails = 0
 			continue
 		}
 		fails++
-		log.Printf("exit %s: no recent handshake (%d/%d)", t.name, fails, watchdogMaxDown)
+		if fresh {
+			log.Printf("exit %s: data-plane probe failed (%d/%d): %v", t.name, fails, watchdogMaxDown, probeErr)
+		} else {
+			log.Printf("exit %s: no recent handshake (%d/%d)", t.name, fails, watchdogMaxDown)
+		}
 		if fails >= watchdogMaxDown {
 			return true
 		}
 	}
+}
+
+func (m *exitManager) probe(t *exitTunnel) error {
+	if t.def.Provider == exit.ProviderWARP {
+		return nil
+	}
+	if t.serverTunIP == "" {
+		return fmt.Errorf("missing server tunnel address")
+	}
+	mark := fwMarkBase + t.idx
+	addr := net.JoinHostPort(t.serverTunIP, strconv.Itoa(exit.SpeedPort))
+	conn, err := exitProbeDial(context.Background(), "tcp4", addr, mark)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(exitProbeTimeout))
+	if _, err := fmt.Fprintf(conn, "GET /ping HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", t.serverTunIP); err != nil {
+		return err
+	}
+	status, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if !strings.Contains(status, " 200") {
+		return fmt.Errorf("probe status: %s", strings.TrimSpace(status))
+	}
+	return nil
 }
 
 func (m *exitManager) cleanupDevice(t *exitTunnel) {
@@ -637,7 +724,7 @@ func (m *exitManager) CloseAll() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, t := range m.tuns {
-		m.teardownLocked(t)
+		m.teardownLocked(t, false)
 	}
 }
 

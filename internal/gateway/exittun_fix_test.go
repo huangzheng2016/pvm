@@ -238,7 +238,7 @@ func TestEnsureRebuildsOnIndexDrift(t *testing.T) {
 	if cur.idx != 0 {
 		t.Fatalf("rebuilt tunnel idx = %d, want 0", cur.idx)
 	}
-	m.teardownLocked(cur)
+	m.teardownLocked(cur, true)
 
 	// same def + same idx keeps the existing tunnel
 	done2 := make(chan struct{})

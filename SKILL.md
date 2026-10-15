@@ -67,7 +67,8 @@ pvm ssh dev1 'curl -s ipinfo.io'
 - The `ipinfo.io` IP, city, and timezone should match the VPS location; the region profile automatically switches the VM's timezone/locale to the exit region (`en_US.UTF-8`, applied over SSH — skipped if the VM's SSH is down; rerun `pvm route` to retry).
 - Restore host egress: `pvm route dev1 --via direct`.
 - **Fail-closed**: when the exit tunnel is down, VMs bound to it lose all networking — this is intentional leak protection. Do not "fix" it by switching to direct; the VM recovers once the VPS service is back.
-- Switching `--via` causes a seconds-long network blip (tunnel enroll/handshake convergence); a dead tunnel rebuilds within ~60s, during which bound VMs stay offline (expected).
+- Switching `--via` causes a seconds-long network blip (tunnel enroll/handshake convergence); the gateway probes each exit every 10s and rebuilds a dead tunnel after two failed checks (~20s), during which bound VMs stay offline (expected).
+- Gateway peer keys persist in the gateway VM, so daemon/gateway restarts re-enroll as the same peer instead of leaking stale registrations. TCP exits use keepalives and bounded writes to recover from half-open connections.
 - DNS for proxied domains is resolved only through the selected exit (on the VPS or through the WARP tunnel), never through host DNS. Check tunnel health with `pvm exit test my-exit` (stale pvm peers re-enroll automatically).
 
 ### 3. Cluster-wide default route
@@ -226,7 +227,8 @@ Notes:
 - Existing production exits are already running — do not redeploy a name that is already registered; upgrading the binary uses the same flow (unit and token/fingerprint unchanged).
 - Both amd64 and arm64 binaries come from GitHub Releases — no local build needed; verify with the release's `SHA256SUMS` (`sha256sum -c`) when required.
 - Control plane: HTTPS + Bearer token + TOFU fingerprint pinning. Data plane: WireGuard, UDP preferred with TCP fallback.
-- Speed probes never touch third-party public servers: the exit-agent serves `/speed?bytes=N` (64MB cap) and `/ping` at `.1:18081` on each tunnel NIC, reachable only inside the tunnel.
+- Speed probes never touch third-party public servers: the exit-agent serves `/speed?bytes=N` (64MB cap) and `/ping` at `.1:18081` on each tunnel NIC, reachable only inside the tunnel. The gateway uses `/ping` as its data-plane health probe.
+- Registrations idle for 24h are reaped by the exit-agent; a gateway returning after sleep re-enrolls automatically with its persisted peer key.
 - exit-agent NAT backends: `nft` / `iptables` / `userspace`; userspace needs no root but does not forward ICMP ping.
 - Tunnel pools use separate `/16` networks: UDP `10.<base>.0.0/16`, TCP `10.<base+1>.0.0/16` (default base `99`). Set a different `--subnet-base` for multiple agents on one VPS or to avoid VPS-internal networks. A larger pool does not prevent address conflicts. Changing the layout drops stale registrations; expect tunnels to re-enroll.
 
