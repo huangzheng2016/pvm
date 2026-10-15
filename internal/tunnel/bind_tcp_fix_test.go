@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,6 +107,35 @@ func TestTCPBindDialingMapCleaned(t *testing.T) {
 	b.mu.Unlock()
 	if n != 0 {
 		t.Fatalf("dialing map leaked %d entries", n)
+	}
+}
+
+func TestTCPBindServerModeDoesNotDialPeers(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	b := NewTCPBind().(*TCPBind)
+	if _, _, err := b.Open(uint16(port)); err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	ep, err := b.ParseEndpoint("127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = b.Send([][]byte{[]byte("probe")}, ep)
+	if err == nil || !strings.Contains(err.Error(), "not established") {
+		t.Fatalf("server-mode send error = %v", err)
+	}
+	b.mu.Lock()
+	n := len(b.dialing)
+	b.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("server mode created %d dial entries", n)
 	}
 }
 

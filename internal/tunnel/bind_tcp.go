@@ -39,6 +39,7 @@ type TCPBind struct {
 	dialing    map[string]*sync.Mutex
 	listener   *net.TCPListener
 	closed     bool
+	acceptOnly bool
 	fwmark     uint32
 
 	dataPool  sync.Pool
@@ -229,6 +230,7 @@ func (t *TCPBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	t.perIP = make(map[string]int)
 	t.dialing = make(map[string]*sync.Mutex)
 	t.closed = false
+	t.acceptOnly = port != 0
 
 	var err error
 	t.listener, err = net.ListenTCP("tcp", &net.TCPAddr{Port: int(port)})
@@ -305,6 +307,12 @@ func (t *TCPBind) getConn(endpoint conn.Endpoint) (*tcpConn, error) {
 	key := endpoint.DstToString()
 	if c, ok := t.loadConn(key); ok {
 		return c, nil
+	}
+	t.mu.Lock()
+	acceptOnly := t.acceptOnly
+	t.mu.Unlock()
+	if acceptOnly {
+		return nil, fmt.Errorf("tcp connection to %s is not established", key)
 	}
 
 	lock := t.dialLock(key)
