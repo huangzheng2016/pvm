@@ -19,6 +19,27 @@ const (
 	desktopVNCDisplay = ":0"
 	desktopVNCPort    = 5900 // 5900 + display number
 	desktopWebPort    = 6080 // websockify/noVNC listen port inside the guest
+
+	desktopDisableLockScript = `set -e
+mkdir -p "$HOME/.config/autostart" "$HOME/.config/xfce4/xfconf/xfce-perchannel-xml"
+cat > "$HOME/.config/autostart/xfce4-screensaver.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Screensaver
+Exec=xfce4-screensaver
+Hidden=true
+EOF
+cat > "$HOME/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-screensaver.xml" <<'EOF'
+<?xml version="1.1" encoding="UTF-8"?>
+<channel name="xfce4-screensaver" version="1.0">
+  <property name="general" type="empty">
+    <property name="enabled" type="bool" value="false"/>
+  </property>
+</channel>
+EOF
+pkill -x xfce4-screensaver >/dev/null 2>&1 || true
+pkill -x light-locker >/dev/null 2>&1 || true
+`
 )
 
 var desktopSizeRe = regexp.MustCompile(`^[1-9]\d{2,3}x[1-9]\d{2,3}$`)
@@ -30,11 +51,13 @@ type desktopState struct {
 	Password string `json:"password"`
 	HostPort int    `json:"host_port"`
 	Size     string `json:"size"`
+	Public   bool   `json:"public"`
 }
 
 type desktopResponse struct {
 	URL      string `json:"url"`
 	HostPort int    `json:"host_port"`
+	Public   bool   `json:"public"`
 }
 
 func (s *Server) desktopPath(name string) string {
@@ -112,21 +135,33 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, fmt.Errorf("desktop packages missing in %s; create the vm from a golden image built with desktop support (pvm image build)", name))
 		return
 	}
+	if out, err := s.sshRun(spec, desktopDisableLockScript); err != nil {
+		writeErr(w, 500, fmt.Errorf("disable screen lock: %v\n%s", err, out))
+		return
+	}
 
+	public := r.URL.Query().Get("public") == "1"
+	if running && st != nil && st.Public == public {
+		writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort, Public: st.Public})
+		return
+	}
 	if running && st != nil {
-		writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort})
-		return
-	}
-	// Session down or state lost: (re)create. A lost state means we cannot
-	// recover the old password, so the session is restarted fresh.
-	if running {
-		_, _ = s.sshRun(spec, fmt.Sprintf("vncserver -kill %s >/dev/null 2>&1; fuser -k %d/tcp >/dev/null 2>&1 || true", desktopVNCDisplay, desktopWebPort))
-	}
-
-	st = &desktopState{Password: randHex(8), Size: size}
-	if err := s.startDesktopSession(spec, st); err != nil {
-		writeErr(w, 500, err)
-		return
+		for _, m := range s.Clusters.Get(spec.ClusterID).Maps {
+			if m.VM == spec.Name && m.GuestPort == desktopWebPort {
+				s.relays.Remove(m.Proto, m.HostPort)
+				_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
+			}
+		}
+		st.Public = public
+	} else {
+		if running {
+			_, _ = s.sshRun(spec, fmt.Sprintf("vncserver -kill %s >/dev/null 2>&1; fuser -k %d/tcp >/dev/null 2>&1 || true", desktopVNCDisplay, desktopWebPort))
+		}
+		st = &desktopState{Password: randHex(8), Size: size, Public: public}
+		if err := s.startDesktopSession(spec, st); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
 	}
 
 	hostPort := 0
@@ -146,7 +181,11 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 409, err)
 			return
 		}
-		if err := s.relays.Ensure("tcp", m.HostPort, m.PoolPort); err != nil {
+		ensure := s.relays.Ensure
+		if public {
+			ensure = s.relays.EnsurePublic
+		}
+		if err := ensure("tcp", m.HostPort, m.PoolPort); err != nil {
 			_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, "tcp")
 			writeErr(w, 500, err)
 			return
@@ -162,7 +201,7 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, fmt.Errorf("save desktop state: %v", err))
 		return
 	}
-	writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort})
+	writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort, Public: st.Public})
 }
 
 func (s *Server) handleDesktopStop(w http.ResponseWriter, r *http.Request) {
@@ -191,10 +230,14 @@ func (s *Server) handleDesktopStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func desktopURL(st *desktopState, name string) string {
+	host := "127.0.0.1"
+	if st.Public {
+		host = "0.0.0.0"
+	}
 	// The fragment tags the URL per VM: browsers key the cache on the full
 	// URL, and two VMs serving different noVNC versions on the same
 	// host:port would otherwise poison each other's cached assets.
-	return fmt.Sprintf("http://127.0.0.1:%d/vnc.html?password=%s&autoconnect=true&resize=scale#%s", st.HostPort, st.Password, name)
+	return fmt.Sprintf("http://%s:%d/vnc.html?password=%s&autoconnect=true&resize=scale#%s", host, st.HostPort, st.Password, name)
 }
 
 // The bracket trick keeps pgrep from matching the shell running the check.

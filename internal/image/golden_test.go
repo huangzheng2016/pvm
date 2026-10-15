@@ -88,6 +88,8 @@ func TestRenderProvision(t *testing.T) {
 		"/etc/environment.d/ibus.conf",
 		"/etc/skel/.config/autostart/ibus.desktop",
 		"/etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-screensaver.xml",
+		"xfce4-screensaver-",
+		"/etc/skel/.config/autostart/xfce4-screensaver.desktop",
 		"rm -f /etc/ssh/ssh_host_*",
 		"truncate -s 0 /etc/machine-id",
 		"sed -i '/^pvmshare /d' /etc/fstab",

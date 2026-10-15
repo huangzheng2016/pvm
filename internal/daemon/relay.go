@@ -7,30 +7,45 @@ import (
 	"time"
 )
 
-// relaySet holds host-side listeners forwarding 127.0.0.1:HostPort to
+// relaySet holds host-side listeners forwarding HostPort to
 // 127.0.0.1:PoolPort (the gateway slirp hostfwd). It lets users pick any
 // host port while the gateway keeps one small pre-mapped pool.
 type relaySet struct {
 	mu   sync.Mutex
 	tcp  map[string]net.Listener
 	udp  map[string]*udpRelay
-	pool map[string]int // key -> poolPort, mismatch is an error not a silent alias
+	pool map[string]int
+	bind map[string]string
 }
 
 func newRelaySet() *relaySet {
-	return &relaySet{tcp: map[string]net.Listener{}, udp: map[string]*udpRelay{}, pool: map[string]int{}}
+	return &relaySet{tcp: map[string]net.Listener{}, udp: map[string]*udpRelay{}, pool: map[string]int{}, bind: map[string]string{}}
 }
 
 func relayKey(proto string, port int) string { return fmt.Sprintf("%s/%d", proto, port) }
 
-// An orphaned relay must never quietly serve a new VM's traffic.
 func (r *relaySet) Ensure(proto string, hostPort, poolPort int) error {
+	return r.ensure(proto, hostPort, poolPort, "127.0.0.1")
+}
+
+func (r *relaySet) EnsurePublic(proto string, hostPort, poolPort int) error {
+	if proto != "tcp" {
+		return fmt.Errorf("public relay supports only tcp")
+	}
+	return r.ensure(proto, hostPort, poolPort, "0.0.0.0")
+}
+
+// An orphaned relay must never quietly serve a new VM's traffic.
+func (r *relaySet) ensure(proto string, hostPort, poolPort int, bind string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := relayKey(proto, hostPort)
 	if pp, ok := r.pool[key]; ok {
 		if pp != poolPort {
 			return fmt.Errorf("host port %d/%s already relayed to pool port %d (want %d)", hostPort, proto, pp, poolPort)
+		}
+		if r.bind[key] != bind {
+			return fmt.Errorf("host port %d/%s is already relayed on %s", hostPort, proto, r.bind[key])
 		}
 		return nil
 	}
@@ -41,14 +56,16 @@ func (r *relaySet) Ensure(proto string, hostPort, poolPort int) error {
 		}
 		r.udp[key] = rel
 		r.pool[key] = poolPort
+		r.bind[key] = bind
 		return nil
 	}
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", hostPort))
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", bind, hostPort))
 	if err != nil {
-		return fmt.Errorf("relay listen %d: %w", hostPort, err)
+		return fmt.Errorf("relay listen %s:%d: %w", bind, hostPort, err)
 	}
 	r.tcp[key] = ln
 	r.pool[key] = poolPort
+	r.bind[key] = bind
 	go acceptTCP(ln, poolPort)
 	return nil
 }
@@ -66,6 +83,7 @@ func (r *relaySet) Remove(proto string, hostPort int) {
 		delete(r.udp, key)
 	}
 	delete(r.pool, key)
+	delete(r.bind, key)
 }
 
 func acceptTCP(ln net.Listener, poolPort int) {

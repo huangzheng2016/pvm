@@ -58,7 +58,7 @@ apt-get -y upgrade
 # lightdm/xserver-xorg come in via Recommends (xfce4-session -> light-locker
 # -> lightdm -> xserver-xorg) but VMs have no GPU: lightdm fails to start a
 # local Xorg and restart-loops. The TigerVNC stack needs neither; block them.
-apt-get -y install ` + strings.Join(GoldenPackages, " ") + ` ` + strings.Join(DesktopPackages, " ") + ` lightdm- light-locker- xserver-xorg- xserver-xorg-core-
+apt-get -y install ` + strings.Join(GoldenPackages, " ") + ` ` + strings.Join(DesktopPackages, " ") + ` lightdm- light-locker- xfce4-screensaver- xserver-xorg- xserver-xorg-core-
 
 cat > /etc/environment.d/ibus.conf <<'EOF'
 GTK_IM_MODULE=ibus
@@ -73,6 +73,14 @@ Type=Application
 Name=IBus
 Exec=ibus-daemon -drx
 X-GNOME-Autostart-enabled=true
+EOF
+
+cat > /etc/skel/.config/autostart/xfce4-screensaver.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Screensaver
+Exec=xfce4-screensaver
+Hidden=true
 EOF
 
 mkdir -p /etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml

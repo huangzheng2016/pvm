@@ -24,7 +24,7 @@ vm:
                 (create needs a running vm; rm needs the vm stopped)
   exec          run a command via the guest agent (no network needed): pvm exec dev1 cmd...
   logs          stream a vm console: pvm logs dev1 [--follow] [--tail N]
-  desktop       open the vm's native xfce desktop: pvm desktop dev1 [--open] [--stop] [--size WxH]
+  desktop       open the vm's native xfce desktop: pvm desktop dev1 [--open] [--stop] [--size WxH] [--public]
 
 network:
   map           map ports: pvm map dev1 8080:80 [--udp] | ls | rm <port> [--udp]

@@ -87,12 +87,15 @@ pvm route ls                     # shows rules, per-VM routes, and the cluster d
 ```bash
 pvm desktop dev1
 # prints http://127.0.0.1:<port>/vnc.html?password=... — open in a browser, no login page
+pvm desktop dev1 --public
+# optional: listen on 0.0.0.0 so another device can use http://<host-ip>:<port>/vnc.html?password=...
 pvm desktop dev1 --stop
 ```
 
 - Requires a VM built from a **golden image** (XFCE + TigerVNC + noVNC preinstalled). Base images lack the desktop packages and `pvm desktop` says so (a 503 means the VM is still booting — retry shortly).
 - This is the VM's own desktop (not a container): the filesystem, users, and processes are the same machine you see over SSH, including the `/share` mount.
-- The desktop is passwordless and XFCE screen locking is disabled. The session persists inside the VM (closing the browser changes nothing); timezone/locale follow the VM's region profile. The VNC password rides in the noVNC URL over loopback only. `--open` opens the system browser, `--size 2560x1440` changes resolution.
+- The desktop is passwordless and XFCE screen locking is disabled. The session persists inside the VM (closing the browser changes nothing); timezone/locale follow the VM's region profile. The VNC password rides in the noVNC URL over loopback by default. `--open` opens the system browser, `--size 2560x1440` changes resolution.
+- `--public` makes the host relay listen on `0.0.0.0` and returns an `0.0.0.0` URL; use the host's actual LAN/VPN IP when connecting remotely. Anyone who can reach that port can attempt the VNC password. Switching between public and loopback keeps the same desktop session and VNC password.
 - Clipboard is enabled by default in noVNC. Open the Clipboard panel on the left and grant clipboard read/write permission in Chrome when prompted; loopback URLs are considered secure contexts. Golden images include a small CJK font set and an IBus pinyin input method, with `ibus-daemon` started in each desktop session. This only adds Chinese display and input support; the default locale remains `en_US.UTF-8`.
 
 ### 5. Port maps
