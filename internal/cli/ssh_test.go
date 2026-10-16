@@ -16,3 +16,25 @@ func TestSSHWantTTY(t *testing.T) {
 		t.Fatal("piped stdin must not allocate a TTY")
 	}
 }
+
+func TestSSHLoginCommand(t *testing.T) {
+	for _, tc := range []struct {
+		tty  bool
+		want string
+	}{
+		{false, `exec "${SHELL:-/bin/sh}" -lc 'claude --version'`},
+		{true, `exec "${SHELL:-/bin/sh}" -lic 'claude --version'`},
+	} {
+		if got := sshLoginCommand([]string{"claude", "--version"}, tc.tty); got != tc.want {
+			t.Errorf("sshLoginCommand(tty=%v) = %q, want %q", tc.tty, got, tc.want)
+		}
+	}
+}
+
+func TestSSHLoginCommandQuotes(t *testing.T) {
+	got := sshLoginCommand([]string{`printf '%s' "a b"`}, false)
+	want := `exec "${SHELL:-/bin/sh}" -lc 'printf '"'"'%s'"'"' "a b"'`
+	if got != want {
+		t.Fatalf("quoted command = %q, want %q", got, want)
+	}
+}

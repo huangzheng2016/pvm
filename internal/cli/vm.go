@@ -538,11 +538,14 @@ func CmdSSH(args []string) int {
 		sshArgs = append(sshArgs, "-o", "ProxyCommand="+proxy)
 		target = fmt.Sprintf("%s@%s", info.Spec.User, info.Spec.IP)
 	}
-	if !disableTTY && (forceTTY || sshWantsTTY(args[1:], stdinIsTTY(), isTTY(os.Stdout))) {
+	tty := !disableTTY && (forceTTY || sshWantsTTY(args[1:], stdinIsTTY(), isTTY(os.Stdout)))
+	if tty {
 		sshArgs = append(sshArgs, "-tt")
 	}
 	sshArgs = append(sshArgs, target)
-	sshArgs = append(sshArgs, args[1:]...)
+	if len(args) > 1 {
+		sshArgs = append(sshArgs, sshLoginCommand(args[1:], tty))
+	}
 
 	cmd := exec.Command("ssh", sshArgs...)
 	cmd.Stdin = os.Stdin
@@ -573,6 +576,18 @@ func CmdSSH(args []string) int {
 		return fatalf("ssh: %v", err)
 	}
 	return 0
+}
+
+func sshLoginCommand(command []string, tty bool) string {
+	mode := "-lc"
+	if tty {
+		mode = "-lic"
+	}
+	return `exec "${SHELL:-/bin/sh}" ` + mode + " " + sshShellQuote(strings.Join(command, " "))
+}
+
+func sshShellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 func sshWantsTTY(commandArgs []string, stdinTTY, stdoutTTY bool) bool {
