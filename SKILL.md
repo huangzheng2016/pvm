@@ -152,7 +152,20 @@ pvm clone dev1 dev2             # source VM must be stopped; --no-start clones w
 - On first boot a clone regenerates its hostname, machine-id, and SSH host keys so the two VMs do not share an identity.
 - Note: the clone reset does not touch AI-client device IDs (the random userID in the client's local config dotfile) — cloning a VM that already ran the client leaves both machines looking like one device server-side. For a fresh device identity, create a new VM (or clone first, then install the client).
 
-### 8. Snapshots and troubleshooting
+### 8. Disk capacity and host space
+
+- VM disks use sparse qcow2 files. `--disk` at create and `pvm resize` set the virtual capacity ceiling; neither allocates the full size on the host up front. `resize` is grow-only and never shrinks the guest partition or filesystem.
+- QEMU enables `discard=unmap` and `detect-zeroes=unmap`. Deleting files alone can leave historical allocations and metadata behind, so run `sudo fstrim -av` in the guest before offline compaction for the best result.
+- Reclaim host space with an offline sparse conversion:
+  ```bash
+  pvm ssh dev1 'sudo fstrim -av'
+  pvm stop dev1
+  pvm compact dev1
+  pvm start dev1
+  ```
+- `pvm compact` requires a stopped VM and refuses an unconsumed RAM snapshot. It validates the new image, virtual capacity, and backing chain, then atomically replaces the original only when the new file uses less host space. It does not enable compression or reduce virtual capacity.
+
+### 9. Snapshots and troubleshooting
 
 ```bash
 pvm snapshot create dev1        # capture RAM+disk state and stop (VM must be running)

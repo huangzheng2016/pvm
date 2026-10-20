@@ -19,6 +19,7 @@ vm:
   start|stop    start/stop a vm (start waits for provisioning; --no-wait returns early)
   rm            stop and delete a vm (asks for confirmation; -y|--force to skip)
   resize        grow a stopped vm's disk (grow-only): pvm resize dev1 40
+  compact       reclaim unused host disk space (vm must be stopped): pvm compact dev1
   mount         dynamic host mounts: pvm mount dev1 /host:/guest | ls dev1 | rm dev1 /guest
   ssh           ssh into a vm: pvm ssh [-t|-T] dev1 [cmd...]
   snapshot      ram snapshots: create <name> | ls [name] | rm <name>
@@ -132,6 +133,8 @@ func main() {
 		code = cli.CmdRm(args)
 	case "resize":
 		code = cli.CmdResize(args)
+	case "compact":
+		code = cli.CmdCompact(args)
 	case "mount":
 		code = cli.CmdMount(args)
 	case "clone":

@@ -174,6 +174,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /v1/vms/{name}/stop", s.handleStop)
 	mux.HandleFunc("POST /v1/vms/{name}/clone", s.handleClone)
 	mux.HandleFunc("POST /v1/vms/{name}/resize", s.handleResize)
+	mux.HandleFunc("POST /v1/vms/{name}/compact", s.handleCompact)
 	mux.HandleFunc("POST /v1/vms/{name}/snapshot", s.handleSnapshotCreate)
 	mux.HandleFunc("GET /v1/vms/{name}/snapshot", s.handleSnapshotGet)
 	mux.HandleFunc("DELETE /v1/vms/{name}/snapshot", s.handleSnapshotDelete)
