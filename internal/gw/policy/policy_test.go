@@ -87,6 +87,33 @@ func TestClusterDefaultExit(t *testing.T) {
 	}
 }
 
+func TestExitForVM(t *testing.T) {
+	e, _, _ := newTestEngine(t)
+	if got := e.ExitForVM("dev1"); got != "" {
+		t.Fatalf("no exit configured: %q", got)
+	}
+	e.SetDefaultExit("my-exit")
+	if got := e.ExitForVM("dev1"); got != "my-exit" {
+		t.Fatalf("cluster default: %q", got)
+	}
+	e.SetVMExit("dev1", "jp")
+	if got := e.ExitForVM("dev1"); got != "jp" {
+		t.Fatalf("per-vm exit must beat the default: %q", got)
+	}
+	e.SetVMExit("dev1", "direct")
+	if got := e.ExitForVM("dev1"); got != "" {
+		t.Fatalf("explicit direct must normalize to empty: %q", got)
+	}
+	e.SetVMExit("dev1", "")
+	if got := e.ExitForVM("dev1"); got != "my-exit" {
+		t.Fatalf("cleared per-vm exit must fall back to the default: %q", got)
+	}
+	e.SetDefaultExit("direct")
+	if got := e.ExitForVM("dev1"); got != "" {
+		t.Fatalf("direct default must normalize to empty: %q", got)
+	}
+}
+
 func TestCIDRRuleByIP(t *testing.T) {
 	e, eng, _ := newTestEngine(t)
 	if err := eng.Add(rules.Rule{Type: rules.CIDR, Pattern: "10.0.0.0/8", Action: rules.Direct}); err != nil {

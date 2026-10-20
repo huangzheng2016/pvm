@@ -449,13 +449,13 @@ func (b *boundedBuffer) String() string {
 }
 
 // fakeUDPTransparentReceiver runs inside namespace A. It installs the real
-// fake-udp policy route and nftables ruleset, then relays UDP for the
+// fake-ip policy route and nftables ruleset, then relays UDP for the
 // allocated fake IP to a loopback echo server. The single "ready" line on
 // stdout is the handshake with the parent; the relay lives until stdin EOF.
 func fakeUDPTransparentReceiver(t *testing.T) {
 	t.Helper()
-	if err := ensureFakeUDPRoute(); err != nil {
-		t.Fatalf("ensureFakeUDPRoute: %v", err)
+	if err := ensureFakeIPRoute(); err != nil {
+		t.Fatalf("ensureFakeIPRoute: %v", err)
 	}
 	iface := os.Getenv(fakeUDPE2EIfEnv)
 	if iface == "" {

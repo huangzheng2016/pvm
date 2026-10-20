@@ -74,6 +74,14 @@ func exitIndex(exitNames []string, name string) int {
 // tunnelIfName maps a tunnel index to its interface name.
 func tunnelIfName(idx int) string { return fmt.Sprintf("pvmwg%d", idx) }
 
+func tunnelMSS(def ExitDef) int {
+	mtu := def.MTU
+	if mtu == 0 {
+		mtu = exit.MTUFor(def.Transport)
+	}
+	return mtu - 40
+}
+
 func loadOrCreatePeerKey(dir, name string) (string, error) {
 	if !exit.ValidName(name) {
 		return "", fmt.Errorf("invalid exit name %q", name)

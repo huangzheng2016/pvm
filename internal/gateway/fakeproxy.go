@@ -199,6 +199,10 @@ func (p *fakeProxy) untrack(tc *trackedConn) {
 }
 
 func (p *fakeProxy) dialDirect(src *net.TCPConn, domain string, port int, vmName string) {
+	if domain == probeDomain {
+		log.Printf("fakeproxy: reserved probe has no direct target")
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	ips, err := p.resolver.LookupIP(ctx, "ip4", domain)
 	cancel()

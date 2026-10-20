@@ -340,6 +340,9 @@ func (p *fakeUDP) dial(domain string, dst *net.UDPAddr, vmName string) (*net.UDP
 }
 
 func (p *fakeUDP) resolveDirect(ctx context.Context, domain string) (net.IP, error) {
+	if domain == probeDomain {
+		return nil, fmt.Errorf("reserved probe has no direct target")
+	}
 	ips, err := p.resolver.LookupIP(ctx, "ip4", domain)
 	return firstIPv4(ips, err)
 }

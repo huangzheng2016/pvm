@@ -18,8 +18,9 @@ import (
 // Domain-connect is the in-tunnel "dial this domain for me" channel: the
 // gateway sends a domain and port, the exit resolves and dials them from
 // the VPS (the gateway performs no DNS resolution for proxied domains at
-// all). cmd 2 is the resolve-only variant for the UDP fake-ip relay: the
-// exit answers with the egress-permitted IPv4 and closes, without a relay.
+// all). cmd 2 is the resolve-only variant used by fake-ip relays and
+// real-IP DNS: the exit answers with the egress-permitted IPv4 and closes,
+// without a relay.
 // Listeners live on each tunnel NIC's server address
 // (10.<base>.0.1 / 10.<base+1>.0.1), so only authenticated WG peers can
 // reach them.

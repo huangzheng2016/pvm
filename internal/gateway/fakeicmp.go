@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/exit"
@@ -22,14 +23,18 @@ const (
 	icmpEchoRequest = 8
 )
 
-// fakeICMP relays ICMP echo requests the nft rules DNAT from the fake-ip
-// range to the gateway: the original destination (a fake IP) is recovered
-// with IP_RECVORIGDSTADDR, mapped back to its domain, routed by policy
-// and echoed to the real target over a per-flow raw socket. Direct flows
-// (including internal-rule destinations) resolve via the uplink resolver;
-// proxied flows resolve through the exit tunnel only, so a tunnel or
-// resolve failure drops the flow instead of leaking it direct. Replies
-// leave through the same raw socket, letting conntrack reverse the DNAT.
+// fakeICMP relays ICMP echo requests to fake-ip destinations: nft marks
+// them (no DNAT, so the original fake destination is preserved) and the
+// fake-ip local route delivers them to the relay's wildcard raw socket,
+// which recovers the destination with IP_RECVORIGDSTADDR, maps it back to
+// its domain, routes by policy and echoes to the real target over a
+// per-flow raw socket. Direct flows (including internal-rule destinations)
+// resolve via the uplink resolver; proxied flows resolve through the exit
+// tunnel only, so a tunnel or resolve failure drops the flow instead of
+// leaking it direct. Replies leave through a per-flow downstream raw
+// socket bound to the fake destination, so the VM sees the fake source it
+// pinged; flows built by tests without Start fall back to the listener's
+// WriteToIP.
 type fakeICMP struct {
 	policy     *gwpolicy.Engine
 	resolver   *net.Resolver
@@ -43,13 +48,14 @@ type fakeICMP struct {
 	dialICMP     func(ctx context.Context, address string, mark int) (net.Conn, error)
 	dialDC       func(ctx context.Context, address string, mark int) (net.Conn, error)
 
-	mu       sync.Mutex
-	ln       icmpPacketConn
-	closed   bool
-	wg       sync.WaitGroup
-	nextUpID uint32
-	flows    map[fakeICMPKey]*fakeICMPFlow
-	pending  map[fakeICMPKey]bool
+	mu         sync.Mutex
+	ln         icmpPacketConn
+	rawReplies bool
+	closed     bool
+	wg         sync.WaitGroup
+	nextUpID   uint32
+	flows      map[fakeICMPKey]*fakeICMPFlow
+	pending    map[fakeICMPKey]bool
 }
 
 // icmpPacketConn is the subset of *net.IPConn the relay needs; tests swap
@@ -68,6 +74,14 @@ type fakeICMPKey struct {
 	id    int
 }
 
+// icmpReplyConn is the downstream write side of a flow: the production
+// implementation is a raw ip4:icmp socket bound to the fake destination
+// and connected to the VM; tests substitute a fake.
+type icmpReplyConn interface {
+	Write(b []byte) (int, error)
+	Close() error
+}
+
 type fakeICMPFlow struct {
 	key        fakeICMPKey
 	src        *net.IPAddr
@@ -78,7 +92,15 @@ type fakeICMPFlow struct {
 	origID     int // identifier the VM used, restored on the reply
 	upID       int // identifier assigned by the upstream socket
 	up         net.Conn
+	down       icmpReplyConn // nil on flows built without Start
 	lastActive time.Time
+}
+
+func (f *fakeICMPFlow) close() {
+	f.up.Close()
+	if f.down != nil {
+		f.down.Close()
+	}
 }
 
 func newFakeICMP(policy *gwpolicy.Engine, upstream string, vmByIP func(net.IP) string) *fakeICMP {
@@ -97,12 +119,17 @@ func newFakeICMP(policy *gwpolicy.Engine, upstream string, vmByIP func(net.IP) s
 	}
 }
 
+// Start binds the relay's raw ICMP socket. The socket is wildcard-bound
+// on purpose: nft marks echo requests to fake destinations instead of
+// DNATing them, so they arrive addressed to the fake IP and only a
+// wildcard socket sees them; IP_RECVORIGDSTADDR then reports the fake
+// destination. bindIP is kept for signature compatibility with the
+// gateway's other relays and only validated.
 func (p *fakeICMP) Start(bindIP string) error {
-	ip := net.ParseIP(bindIP)
-	if ip == nil {
+	if net.ParseIP(bindIP) == nil {
 		return fmt.Errorf("invalid ICMP relay bind address %q", bindIP)
 	}
-	ln, err := net.ListenIP("ip4:icmp", &net.IPAddr{IP: ip})
+	ln, err := net.ListenIP("ip4:icmp", &net.IPAddr{IP: net.IPv4zero})
 	if err != nil {
 		return err
 	}
@@ -112,6 +139,7 @@ func (p *fakeICMP) Start(bindIP string) error {
 	}
 	p.mu.Lock()
 	p.ln = ln
+	p.rawReplies = true
 	p.wg.Add(2)
 	p.mu.Unlock()
 	go p.readLoop(ln)
@@ -130,7 +158,7 @@ func (p *fakeICMP) SetPolicy(eng *gwpolicy.Engine) {
 		dec := eng.DecideFlow(flow.domain, net.ParseIP(key.dstIP), flow.vm)
 		if dec.Route != flow.route || dec.Exit != flow.exit {
 			delete(p.flows, key)
-			flow.up.Close()
+			flow.close()
 		}
 	}
 }
@@ -144,7 +172,7 @@ func (p *fakeICMP) SetExitHooks(markFor func(string) int, dcAddrFor, dnsAddrFor 
 	for key, flow := range p.flows {
 		if flow.route == gwpolicy.Proxy && markFor(flow.exit) < 0 {
 			delete(p.flows, key)
-			flow.up.Close()
+			flow.close()
 		}
 	}
 }
@@ -252,12 +280,27 @@ func (p *fakeICMP) openFlow(key fakeICMPKey, src *net.IPAddr, dstIP net.IP, doma
 		return
 	}
 	p.mu.Lock()
+	rawReplies := p.rawReplies
+	p.mu.Unlock()
+	var down icmpReplyConn
+	if rawReplies {
+		down, err = dialICMPReply(dstIP, src.IP)
+		if err != nil {
+			up.Close()
+			p.mu.Lock()
+			delete(p.pending, key)
+			p.mu.Unlock()
+			log.Printf("fakeicmp: open %s via %s: reply path: %v", domain, exitName, err)
+			return
+		}
+	}
+	p.mu.Lock()
 	delete(p.pending, key)
 	var flow *fakeICMPFlow
 	if !p.closed && p.policy != nil {
 		dec := p.policy.DecideFlow(domain, dstIP, vmName)
 		if dec.Route == route && dec.Exit == exitName && (route != gwpolicy.Proxy || p.markFor(exitName) >= 0) {
-			flow = &fakeICMPFlow{key: key, src: src, domain: domain, vm: vmName, route: route, exit: exitName, origID: key.id, upID: p.allocUpID(), up: up, lastActive: time.Now()}
+			flow = &fakeICMPFlow{key: key, src: src, domain: domain, vm: vmName, route: route, exit: exitName, origID: key.id, upID: p.allocUpID(), up: up, down: down, lastActive: time.Now()}
 			p.flows[key] = flow
 			p.wg.Add(1)
 			go p.pump(flow)
@@ -266,6 +309,9 @@ func (p *fakeICMP) openFlow(key fakeICMPKey, src *net.IPAddr, dstIP net.IP, doma
 	p.mu.Unlock()
 	if flow == nil {
 		up.Close()
+		if down != nil {
+			down.Close()
+		}
 		return
 	}
 	if err := p.writeUpstream(flow, payload); err != nil {
@@ -327,6 +373,36 @@ func (p *fakeICMP) dialRaw(ctx context.Context, address string, mark int) (net.C
 	return d.DialContext(ctx, "ip4:icmp", address)
 }
 
+// dialICMPReply opens the downstream raw ICMP socket for a flow: bound to
+// the original fake destination and connected to the VM, so replies leave
+// with the fake source the VM pinged (no DNAT is left to reverse).
+// IP_TRANSPARENT permits the non-local bind; SO_MARK tags the replies so
+// the output chain drops only the kernel's own fake-source echo replies.
+func dialICMPReply(originalDst, client net.IP) (*net.IPConn, error) {
+	d := net.Dialer{
+		Timeout:   5 * time.Second,
+		LocalAddr: &net.IPAddr{IP: originalDst},
+		Control:   transparentMarkedSocket(fakeICMPReplyMark),
+	}
+	conn, err := d.Dial("ip4:icmp", client.String())
+	if err != nil {
+		return nil, err
+	}
+	return conn.(*net.IPConn), nil
+}
+
+// transparentMarkedSocket composes IP_TRANSPARENT (bind to the fake
+// destination) with SO_MARK (spare the relay's replies in the output
+// chain).
+func transparentMarkedSocket(mark int) func(network, address string, c syscall.RawConn) error {
+	return func(network, address string, c syscall.RawConn) error {
+		if err := transparentSocket(network, address, c); err != nil {
+			return err
+		}
+		return soMark(mark)(network, address, c)
+	}
+}
+
 // dialDCRaw opens the TCP connection to the exit's domain-connect
 // service. Replaceable in tests.
 func (p *fakeICMP) dialDCRaw(ctx context.Context, address string, mark int) (net.Conn, error) {
@@ -338,6 +414,9 @@ func (p *fakeICMP) dialDCRaw(ctx context.Context, address string, mark int) (net
 }
 
 func (p *fakeICMP) resolveDirect(ctx context.Context, domain string) (net.IP, error) {
+	if domain == probeDomain {
+		return nil, fmt.Errorf("reserved probe has no direct target")
+	}
 	ips, err := p.resolver.LookupIP(ctx, "ip4", domain)
 	return firstIPv4(ips, err)
 }
@@ -377,8 +456,10 @@ func (p *fakeICMP) writeUpstream(flow *fakeICMPFlow, payload []byte) error {
 	return err
 }
 
-// pump forwards echo replies from the raw socket back to the VM,
-// restoring the VM's identifier so conntrack can reverse the DNAT.
+// pump forwards echo replies from the upstream raw socket back to the VM,
+// restoring the VM's identifier. Production flows write through the
+// downstream raw socket, which keeps the fake source address; the
+// listener's WriteToIP is the fallback for flows built without Start.
 func (p *fakeICMP) pump(flow *fakeICMPFlow) {
 	defer p.wg.Done()
 	buf := make([]byte, 64*1024)
@@ -403,7 +484,12 @@ func (p *fakeICMP) pump(flow *fakeICMPFlow) {
 		reply := append([]byte(nil), msg...)
 		binary.BigEndian.PutUint16(reply[4:6], uint16(flow.origID))
 		icmpSetChecksum(reply)
-		if ln != nil {
+		if flow.down != nil {
+			if _, err := flow.down.Write(reply); err != nil {
+				p.closeKey(flow.key)
+				return
+			}
+		} else if ln != nil {
 			if _, err := ln.WriteToIP(reply, flow.src); err != nil {
 				p.closeKey(flow.key)
 				return
@@ -418,7 +504,7 @@ func (p *fakeICMP) closeKey(key fakeICMPKey) {
 	delete(p.flows, key)
 	p.mu.Unlock()
 	if flow != nil {
-		flow.up.Close()
+		flow.close()
 	}
 }
 
@@ -433,7 +519,7 @@ func (p *fakeICMP) reapIdle() {
 	for key, flow := range p.flows {
 		if time.Since(flow.lastActive) > fakeICMPIdleTimeout {
 			delete(p.flows, key)
-			flow.up.Close()
+			flow.close()
 		}
 	}
 }
@@ -472,7 +558,7 @@ func (p *fakeICMP) Close() {
 		p.ln.Close()
 	}
 	for _, flow := range p.flows {
-		flow.up.Close()
+		flow.close()
 	}
 	p.mu.Unlock()
 	p.wg.Wait()
@@ -532,7 +618,8 @@ func icmpSum(msg []byte) uint16 {
 }
 
 // enableIPOriginalDst turns on IP_RECVORIGDSTADDR so ReadMsgIP reports
-// the pre-DNAT destination for the DNATed echo requests.
+// the packet's real destination: the fake IP, which survives end-to-end
+// now that nft only marks echo requests instead of DNATing them.
 func enableIPOriginalDst(conn *net.IPConn) error {
 	raw, err := conn.SyscallConn()
 	if err != nil {

@@ -168,12 +168,15 @@ func (a *Agent) Run() error {
 				// a rule that flipped direct -> proxy must not keep its
 				// previously learned bypass IPs.
 				a.exits.ReconcileLearned(fdns.Rules())
+				pol := gwpolicy.New(fdns.Rules(), fdns.Pool())
+				for name, exit := range c.VMExits {
+					pol.SetVMExit(name, exit)
+				}
+				pol.SetDefaultExit(c.DefaultExit)
+				// DNS follows the same policy as the relays: unmatched
+				// names resolve through the source VM's effective exit.
+				fdns.SetExitHooks(pol, a.vmNameByIP, a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
 				if fproxy != nil {
-					pol := gwpolicy.New(fdns.Rules(), fdns.Pool())
-					for name, exit := range c.VMExits {
-						pol.SetVMExit(name, exit)
-					}
-					pol.SetDefaultExit(c.DefaultExit)
 					fproxy.SetPolicy(pol)
 					fproxy.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
 					if fudp != nil {

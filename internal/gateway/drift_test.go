@@ -32,10 +32,10 @@ func TestEnsureTunnelRoute(t *testing.T) {
 	}
 }
 
-func TestEnsureFakeUDPRoute(t *testing.T) {
+func TestEnsureFakeIPRoute(t *testing.T) {
 	ruleLog := stubIPRule(t)
 	routeLog := stubIPRoute(t)
-	if err := ensureFakeUDPRoute(); err != nil {
+	if err := ensureFakeIPRoute(); err != nil {
 		t.Fatal(err)
 	}
 	if !ruleLog.has("add", "fwmark", "80", "lookup", "80", "pref", "20") {
@@ -65,7 +65,8 @@ func TestCheckNFT(t *testing.T) {
 	// marks are zero-padded. Neither may read as drift.
 	nftListTable = func() (string, error) {
 		out := strings.Replace(expected, `oifname { "pvmwg0" } masquerade`, `oifname "pvmwg0" masquerade`, 1)
-		out = strings.Replace(out, "meta mark set 0x50", "meta mark set 0x00000050", 1)
+		out = strings.ReplaceAll(out, "meta mark set 0x50", "meta mark set 0x00000050")
+		out = strings.ReplaceAll(out, "meta mark != 0x51", "meta mark != 0x00000051")
 		return out, nil
 	}
 	if err := a.checkNFT(cfg); err != nil {
@@ -82,6 +83,18 @@ func TestCheckNFT(t *testing.T) {
 	}
 	if err := a.checkNFT(cfg); err == nil || !strings.Contains(err.Error(), "missing rule") {
 		t.Fatalf("missing tproxy mark was not detected: %v", err)
+	}
+	nftListTable = func() (string, error) {
+		return strings.Replace(expected, "icmp type echo-request meta mark set 0x50", "icmp type echo-request", 1), nil
+	}
+	if err := a.checkNFT(cfg); err == nil || !strings.Contains(err.Error(), "missing rule") {
+		t.Fatalf("missing ICMP mark was not detected: %v", err)
+	}
+	nftListTable = func() (string, error) {
+		return strings.Replace(expected, "icmp type echo-reply meta mark != 0x51 drop", "icmp type echo-reply drop", 1), nil
+	}
+	if err := a.checkNFT(cfg); err == nil || !strings.Contains(err.Error(), "missing rule") {
+		t.Fatalf("changed echo-reply drop was not detected: %v", err)
 	}
 	nftListTable = func() (string, error) {
 		return strings.Replace(expected, `oifname { "pvmwg0" } masquerade`, "", 1), nil

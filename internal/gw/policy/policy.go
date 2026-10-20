@@ -40,7 +40,8 @@ func New(eng *rules.Engine, pool *dns.Pool) *Engine {
 	return &Engine{rules: eng, pool: pool, vmExit: make(map[string]string)}
 }
 
-// SetVMExit pins a VM's default route; exit "" restores direct egress.
+// SetVMExit pins a VM's default route; exit "" clears the override and
+// falls back to the cluster default.
 func (e *Engine) SetVMExit(vmID, exit string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -68,6 +69,22 @@ func (e *Engine) LookupByFakeIP(ip net.IP) (string, bool) {
 
 func (e *Engine) IsFakeIP(ip net.IP) bool { return e.pool.Contains(ip) }
 
+// ExitForVM returns the effective exit name for a VM: the per-VM
+// override first, then the cluster default; "direct" and unset both
+// normalize to "" (direct egress).
+func (e *Engine) ExitForVM(vmID string) string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	exit, ok := e.vmExit[vmID]
+	if !ok {
+		exit = e.defExit
+	}
+	if exit == "direct" {
+		return ""
+	}
+	return exit
+}
+
 func (e *Engine) DecideFlow(domain string, dstIP net.IP, vmID string) Decision {
 	if domain == "" && dstIP != nil && e.pool.Contains(dstIP) {
 		domain, _ = e.pool.Lookup(dstIP)
@@ -79,15 +96,8 @@ func (e *Engine) DecideFlow(domain string, dstIP net.IP, vmID string) Decision {
 		}
 		return Decision{Route: Proxy, Exit: d.Exit}
 	}
-	e.mu.RLock()
-	exit, ok := e.vmExit[vmID]
-	def := e.defExit
-	e.mu.RUnlock()
-	if !ok {
-		exit = def
+	if exit := e.ExitForVM(vmID); exit != "" {
+		return Decision{Route: Proxy, Exit: exit}
 	}
-	if exit == "" || exit == "direct" {
-		return Decision{Route: Direct}
-	}
-	return Decision{Route: Proxy, Exit: exit}
+	return Decision{Route: Direct}
 }

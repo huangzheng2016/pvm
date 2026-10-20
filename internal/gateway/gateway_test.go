@@ -100,10 +100,41 @@ func TestRenderNFT(t *testing.T) {
 		`iifname "enp0s1" tcp dport 30000 dnat ip to 192.168.1.10:80`,
 		`iifname "enp0s1" udp dport 30053 dnat ip to 192.168.1.11:53`,
 		`iifname "br0" ip daddr 198.18.0.0/16 udp dport != 53 tproxy ip to 192.168.1.1:7894 meta mark set 0x50`,
-		`iifname "br0" ip daddr 198.18.0.0/16 icmp type echo-request dnat ip to 192.168.1.1`,
+		`iifname "br0" ip daddr 198.18.0.0/16 icmp type echo-request meta mark set 0x50`,
+		`ip saddr 198.18.0.0/16 ip daddr 192.168.1.0/24 icmp type echo-reply meta mark != 0x51 drop`,
 		"type nat hook prerouting",
 		"type nat hook postrouting",
 		"type filter hook prerouting priority -150; policy accept;",
+		"type filter hook output priority 0; policy accept;",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("ruleset missing %q\n%s", want, out)
+		}
+	}
+	// the fake-IP ICMP DNAT must be gone: it made the gateway kernel
+	// answer fake pings locally instead of relaying them
+	if strings.Contains(out, "icmp type echo-request dnat ip to") {
+		t.Errorf("ICMP DNAT rule must be replaced by the mark rule\n%s", out)
+	}
+}
+
+func TestRenderNFTTunnelMSS(t *testing.T) {
+	cfg := &Config{
+		CIDR: "192.168.1.0/24", GwIP: "192.168.1.1",
+		Exits: map[string]ExitDef{
+			"exit-a": {Transport: "udp"},
+			"exit-b": {Transport: "tcp"},
+			"exit-c": {Transport: "udp", MTU: 1400},
+		},
+	}
+	out := RenderNFT(cfg, "enp0s1", "br0", nil)
+	for _, want := range []string{
+		`oifname "pvmwg0" tcp flags syn tcp option maxseg size set 1380`,
+		`iifname "pvmwg0" tcp flags syn tcp option maxseg size set 1380`,
+		`oifname "pvmwg1" tcp flags syn tcp option maxseg size set 1340`,
+		`iifname "pvmwg1" tcp flags syn tcp option maxseg size set 1340`,
+		`oifname "pvmwg2" tcp flags syn tcp option maxseg size set 1360`,
+		`iifname "pvmwg2" tcp flags syn tcp option maxseg size set 1360`,
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("ruleset missing %q\n%s", want, out)

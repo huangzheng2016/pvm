@@ -77,6 +77,34 @@ func (f *fakeICMPListener) written() []fakeICMPPacket {
 	return append([]fakeICMPPacket(nil), f.out...)
 }
 
+// fakeReplyConn is an in-memory icmpReplyConn capturing what the relay
+// sends through a flow's downstream raw socket.
+type fakeReplyConn struct {
+	mu     sync.Mutex
+	out    [][]byte
+	closed bool
+}
+
+func (f *fakeReplyConn) Write(b []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.out = append(f.out, append([]byte(nil), b...))
+	return len(b), nil
+}
+
+func (f *fakeReplyConn) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closed = true
+	return nil
+}
+
+func (f *fakeReplyConn) writes() [][]byte {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]byte(nil), f.out...)
+}
+
 // origDstOOB builds the IP_RECVORIGDSTADDR control message carrying ip,
 // in the sockaddr_in layout originalDstUDP parses.
 func origDstOOB(t *testing.T, ip net.IP) []byte {
@@ -237,7 +265,92 @@ func TestFakeICMPRelayRoundTrip(t *testing.T) {
 			if !icmpChecksumValid(reply) {
 				t.Fatal("downstream checksum invalid")
 			}
+			// Start was never called, so the flow must use the listener
+			// fallback; a downstream socket here would mean a root-only
+			// dial in a unit test.
+			p.mu.Lock()
+			var withDown int
+			for _, f := range p.flows {
+				if f.down != nil {
+					withDown++
+				}
+			}
+			p.mu.Unlock()
+			if withDown != 0 {
+				t.Error("flow built without Start must rely on the listener fallback, not a downstream socket")
+			}
 		})
+	}
+}
+
+// A production flow (Start called) answers through its downstream raw
+// socket, preserving the fake source address; the listener's WriteToIP is
+// only the fallback for flows built without Start.
+func TestFakeICMPDownstreamReplyPreferred(t *testing.T) {
+	eng, pool := newFakeUDPTestPolicy(t)
+	fake := pool.Allocate("example.com")
+	p := newFakeICMP(eng, "10.0.2.3", nil)
+	ln := newFakeICMPListener()
+	p.ln = ln
+	relay, target := net.Pipe()
+	defer target.Close()
+	down := &fakeReplyConn{}
+	key := fakeICMPKey{srcIP: "192.168.1.10", dstIP: fake.String(), id: 0x1234}
+	flow := &fakeICMPFlow{key: key, src: &net.IPAddr{IP: net.ParseIP("192.168.1.10")}, domain: "example.com", vm: "dev1", route: gwpolicy.Direct, origID: 0x1234, upID: 1, up: relay, down: down, lastActive: time.Now()}
+	p.flows[key] = flow
+	p.wg.Add(1)
+	go p.pump(flow)
+	t.Cleanup(p.Close)
+
+	go func() {
+		// the upstream reply carries the flow's upID, not the VM's id
+		_, _ = target.Write(buildEcho(icmpEchoReply, 1, 7, []byte("ping")))
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	var out [][]byte
+	for time.Now().Before(deadline) {
+		if out = down.writes(); len(out) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(out) == 0 {
+		t.Fatal("reply was not written to the downstream socket")
+	}
+	reply := out[0]
+	if reply[0] != icmpEchoReply {
+		t.Errorf("downstream type = %d, want echo reply", reply[0])
+	}
+	if id := int(binary.BigEndian.Uint16(reply[4:6])); id != 0x1234 {
+		t.Errorf("downstream id = %#x, want 0x1234", id)
+	}
+	if seq := int(binary.BigEndian.Uint16(reply[6:8])); seq != 7 {
+		t.Errorf("downstream seq = %d, want 7", seq)
+	}
+	if string(reply[8:]) != "ping" {
+		t.Errorf("downstream payload = %q, want ping", reply[8:])
+	}
+	if !icmpChecksumValid(reply) {
+		t.Fatal("downstream checksum invalid")
+	}
+	if n := len(ln.written()); n != 0 {
+		t.Fatalf("listener writes = %d, want 0 when a downstream socket exists", n)
+	}
+}
+
+// close must tear down both flow sockets so no raw socket outlives its flow.
+func TestFakeICMPFlowCloseClosesBoth(t *testing.T) {
+	relay, target := net.Pipe()
+	defer target.Close()
+	down := &fakeReplyConn{}
+	flow := &fakeICMPFlow{up: relay, down: down}
+	flow.close()
+	if !down.closed {
+		t.Error("downstream socket was not closed")
+	}
+	_ = target.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := target.Read(make([]byte, 1)); err == nil {
+		t.Error("upstream socket was not closed")
 	}
 }
 
@@ -633,9 +746,11 @@ func TestFakeICMPChecksum(t *testing.T) {
 }
 
 // Real end-to-end echo through the relay over raw sockets: loopback
-// stands in for the DNATed fake destination (the fake IP comes from
-// 127.0.0.0/8, so IP_RECVORIGDSTADDR reports it without nft). Needs root;
-// skips elsewhere.
+// delivers the fake destination locally (the fake IP comes from
+// 127.0.0.0/8, so IP_RECVORIGDSTADDR reports it without nft), the
+// wildcard listener sees the request and the reply leaves through the
+// real downstream raw socket bound to the fake IP. Needs root; skips
+// elsewhere.
 func TestFakeICMPRealEchoLinux(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("raw ICMP relay runs on the linux gateway")

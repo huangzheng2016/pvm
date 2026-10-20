@@ -231,7 +231,7 @@ func TestAuditRunningExit(t *testing.T) {
 		case strings.HasPrefix(cmd, "python3 -c "):
 			return "", nil
 		case strings.HasPrefix(cmd, "getent hosts "):
-			return "198.18.0.7  pvm.probe\n", nil
+			return "203.0.113.5  pvm.probe\n", nil
 		case strings.HasPrefix(cmd, "sysctl -n "):
 			return "1\n", nil
 		case strings.HasPrefix(cmd, "cat /etc/timezone"):
@@ -254,6 +254,11 @@ func TestAuditRunningExit(t *testing.T) {
 	}
 	if c := checks["route"]; c.Detail != "via my-exit (per-vm)" {
 		t.Fatalf("route detail = %q", c.Detail)
+	}
+	// Agent route: pvm.probe must resolve to the exit's real in-tunnel
+	// address, not the reserved fake-ip.
+	if c := checks["dns"]; !strings.Contains(c.Detail, "203.0.113.5") || !strings.Contains(c.Detail, "real-ip") {
+		t.Fatalf("dns detail = %q, want the real exit address", c.Detail)
 	}
 	// The UDP probe must speak the exit-agent's magic+nonce protocol to
 	// pvm.probe on exit.UDPProbePort.
@@ -309,7 +314,7 @@ func TestAuditClusterDefaultExit(t *testing.T) {
 		case strings.HasPrefix(cmd, "python3 -c "):
 			return "", nil
 		case strings.HasPrefix(cmd, "getent hosts "):
-			return "198.18.0.9  pvm.probe\n", nil
+			return "203.0.113.9  pvm.probe\n", nil
 		case strings.HasPrefix(cmd, "sysctl -n "):
 			return "1\n", nil
 		default:
@@ -328,6 +333,10 @@ func TestAuditClusterDefaultExit(t *testing.T) {
 	}
 	requireAuditStatus(t, checks, "udp", "ok")
 	requireAuditStatus(t, checks, "icmp", "ok")
+	// cluster default exit is still an agent route: real-ip expected
+	if c := requireAuditStatus(t, checks, "dns", "ok"); !strings.Contains(c.Detail, "real-ip") {
+		t.Fatalf("dns detail = %q", c.Detail)
+	}
 }
 
 func TestAuditWarpSkipsProbes(t *testing.T) {
@@ -401,7 +410,7 @@ func TestAuditProbeFailures(t *testing.T) {
 		case strings.HasPrefix(cmd, "python3 -c "):
 			return "", errors.New("exit status 1")
 		case strings.HasPrefix(cmd, "getent hosts "):
-			return "203.0.113.5  pvm.probe\n", nil
+			return "198.18.0.7  pvm.probe\n", nil
 		case strings.HasPrefix(cmd, "sysctl -n "):
 			return "0\n", nil
 		case strings.HasPrefix(cmd, "cat /etc/timezone"):

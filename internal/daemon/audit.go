@@ -15,13 +15,15 @@ import (
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
-// probeDomain is the reserved probe name: the gateway's fake-ip path maps
-// it to the exit-agent's probe service, so a successful UDP/ICMP probe
-// proves the whole tunnel path works. It never resolves publicly.
+// probeDomain is the reserved probe name: on pvm exit-agent routes the
+// gateway resolves it to the exit's real in-tunnel server address, so a
+// successful UDP/ICMP probe proves the whole tunnel path works over L3
+// forwarding; direct and WARP routes keep a reserved fake-ip answer. It
+// never resolves publicly.
 const probeDomain = "pvm.probe"
 
-// fakeIPCIDR is the gateway's fake-ip pool; DNS checks expect the probe
-// name to resolve inside it.
+// fakeIPCIDR is the gateway's fake-ip pool; direct/WARP DNS checks
+// expect the probe name to resolve inside it.
 var fakeIPCIDR = netip.MustParsePrefix("198.18.0.0/16")
 
 // Check statuses. fail means the probe ran and the target is broken;
@@ -116,7 +118,7 @@ func (s *Server) auditRoute(spec *vm.Spec) (auditCheck, *exit.Entry) {
 	return check("route", auditOK, "via %s (%s)", via, source), entry
 }
 
-// auditProbes runs the UDP/ICMP tunnel probes and the DNS fake-ip check.
+// auditProbes runs the UDP/ICMP tunnel probes and the route-aware DNS check.
 // Only a VM routed through its own pvm exit-agent gets probes: direct and
 // WARP routes have no probe service, and third-party targets are never
 // substituted.
@@ -136,17 +138,17 @@ func (s *Server) auditProbes(spec *vm.Spec, routeChk auditCheck, entry *exit.Ent
 		return []auditCheck{
 			check("udp", auditSkipped, "%s", reason),
 			check("icmp", auditSkipped, "%s", reason),
-			auditDNS(run, spec),
+			auditDNS(run, spec, false),
 		}
 	}
 	if entry.IsWARP() {
 		return []auditCheck{
 			check("udp", auditSkipped, "warp exits have no probe agent"),
 			check("icmp", auditSkipped, "warp exits have no probe agent"),
-			auditDNS(run, spec),
+			auditDNS(run, spec, false),
 		}
 	}
-	return []auditCheck{auditUDP(run, spec), auditICMP(run, spec), auditDNS(run, spec)}
+	return []auditCheck{auditUDP(run, spec), auditICMP(run, spec), auditDNS(run, spec, true)}
 }
 
 // auditUDP challenges the exit-agent's probe service with a magic+nonce
@@ -182,9 +184,12 @@ func auditICMP(run guestRunner, spec *vm.Spec) auditCheck {
 	return check("icmp", auditOK, "echo reply via %s", probeDomain)
 }
 
-// auditDNS requires the probe name to resolve to a fake-ip: a real answer
-// means guest DNS is bypassing the gateway.
-func auditDNS(run guestRunner, spec *vm.Spec) auditCheck {
+// auditDNS requires pvm.probe to resolve the way the route demands: a
+// real (non-fake) IPv4 for pvm exit-agent routes — the name maps to the
+// server's in-tunnel address so the probes exercise L3 forwarding — and
+// the reserved fake-ip for direct/WARP routes, where a real answer would
+// mean guest DNS is bypassing the gateway.
+func auditDNS(run guestRunner, spec *vm.Spec, agentRoute bool) auditCheck {
 	out, err := run(spec, "getent hosts "+probeDomain)
 	if err != nil {
 		if isCmdMissing(err) {
@@ -197,7 +202,16 @@ func auditDNS(run guestRunner, spec *vm.Spec) auditCheck {
 		return check("dns", auditFail, "empty getent response")
 	}
 	addr, err := netip.ParseAddr(ip)
-	if err != nil || !addr.Is4() || !fakeIPCIDR.Contains(addr) {
+	if err != nil || !addr.Is4() {
+		return check("dns", auditFail, "%s resolved to %s, want IPv4", probeDomain, ip)
+	}
+	if agentRoute {
+		if fakeIPCIDR.Contains(addr) {
+			return check("dns", auditFail, "%s resolved to fake-ip %s, want the exit's tunnel address", probeDomain, ip)
+		}
+		return check("dns", auditOK, "%s -> %s (real-ip)", probeDomain, ip)
+	}
+	if !fakeIPCIDR.Contains(addr) {
 		return check("dns", auditFail, "%s resolved to %s, want fake-ip in %s", probeDomain, ip, fakeIPCIDR)
 	}
 	return check("dns", auditOK, "%s -> %s (fake-ip)", probeDomain, ip)

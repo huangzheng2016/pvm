@@ -1,7 +1,9 @@
 // Package dns implements the gateway DNS relay: internal suffixes are
-// answered locally, direct-rule domains are resolved upstream, and all
-// other names get a fake IP whose mapping the gateway uses to route by
-// domain at connect time.
+// answered locally, direct-rule domains are resolved upstream, explicit
+// proxy rules get a fake IP whose mapping the gateway uses to route by
+// domain at connect time, and unmatched names follow the source VM's
+// effective route: a real IPv4 resolved through its exit, or the direct
+// upstream when no exit applies.
 package dns
 
 import (
@@ -19,6 +21,28 @@ import (
 type Upstream interface {
 	Exchange(ctx context.Context, req *mdns.Msg) (*mdns.Msg, error)
 }
+
+// ExitResolveMode tells the server how to answer an unmatched name once
+// the source VM's effective route is known.
+type ExitResolveMode int
+
+const (
+	// ExitResolveFake keeps the reserved fake-ip answer: names that must
+	// never resolve publicly (pvm.probe) on routes with no in-tunnel
+	// target.
+	ExitResolveFake ExitResolveMode = iota
+	// ExitResolveDirect answers via the server's normal direct upstream.
+	ExitResolveDirect
+	// ExitResolveReal answers with the returned real IPv4, which was
+	// resolved through the source VM's exit.
+	ExitResolveReal
+)
+
+// ExitResolver resolves an unmatched name for the given exit ("" = the
+// source VM's effective route is direct). The IP is only meaningful with
+// ExitResolveReal. An error means SERVFAIL: exit-side resolution must
+// never fall back to the host's resolver.
+type ExitResolver func(ctx context.Context, name, exit string) (net.IP, ExitResolveMode, error)
 
 type UDPUpstream struct{ Addr string }
 
@@ -49,6 +73,13 @@ type Server struct {
 	// uplink and designated-resolver paths), so the routing layer can
 	// learn bypass IPs for internal domains.
 	OnInternalAnswer func(name string, resp *mdns.Msg)
+
+	// exitFor maps a query's source IP to the effective exit name of the
+	// VM ("" = direct); exitResolver then decides how an unmatched name
+	// is answered for that route. Both nil keeps the legacy mode where
+	// every unmatched name gets a fake IP.
+	exitFor     func(sourceIP net.IP) string
+	exitResolve ExitResolver
 
 	mu     sync.RWMutex
 	rules  *rules.Engine
@@ -84,6 +115,22 @@ func (s *Server) SetStatic(name string, ip net.IP) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.static[strings.ToLower(strings.TrimSuffix(name, "."))] = ip
+}
+
+// SetExitDNS installs the exit-routed real-IP path: exitFor maps the
+// query's source IP to the effective exit name ("" = direct) and
+// resolver answers unmatched names for that route. Passing nil, nil
+// restores the legacy all-fake behavior.
+func (s *Server) SetExitDNS(exitFor func(sourceIP net.IP) string, resolver ExitResolver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.exitFor, s.exitResolve = exitFor, resolver
+}
+
+func (s *Server) exitDNS() (func(net.IP) string, ExitResolver) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.exitFor, s.exitResolve
 }
 
 func (s *Server) Pool() *Pool { return s.pool }
@@ -128,13 +175,25 @@ func (s *Server) serve(w mdns.ResponseWriter, req *mdns.Msg) {
 
 	switch q.Qtype {
 	case mdns.TypeA, mdns.TypeAAAA:
-		s.answerHost(req, &resp, name, q.Qtype)
+		s.answerHost(req, &resp, name, q.Qtype, sourceIP(w))
 	case mdns.TypePTR:
-		s.answerPTR(req, &resp, name)
+		s.answerPTR(req, &resp, name, sourceIP(w))
 	default:
 		s.answerOther(req, &resp, name)
 	}
 	w.WriteMsg(&resp)
+}
+
+// sourceIP extracts the query's source IP from the response writer;
+// nil when the transport does not expose one.
+func sourceIP(w mdns.ResponseWriter) net.IP {
+	switch a := w.RemoteAddr().(type) {
+	case *net.UDPAddr:
+		return a.IP
+	case *net.TCPAddr:
+		return a.IP
+	}
+	return nil
 }
 
 func (s *Server) answerOther(req, resp *mdns.Msg, name string) {
@@ -155,7 +214,7 @@ func (s *Server) answerOther(req, resp *mdns.Msg, name string) {
 	}
 }
 
-func (s *Server) answerHost(req, resp *mdns.Msg, name string, qtype uint16) {
+func (s *Server) answerHost(req, resp *mdns.Msg, name string, qtype uint16, srcIP net.IP) {
 	if s.Rules().IsInternal(name) {
 		// internal names never go upstream: static record or NODATA
 		if ip, ok := s.static[name]; ok && qtype == mdns.TypeA {
@@ -184,10 +243,57 @@ func (s *Server) answerHost(req, resp *mdns.Msg, name string, qtype uint16) {
 		case rules.Direct:
 			s.forward(req, resp)
 			return
+		case rules.Proxy:
+			// explicit split rules keep fake-ip; the exit resolver below
+			// only ever sees unmatched names.
+			s.answerFake(req, resp, name, qtype)
+			return
 		}
 	}
+	exitFor, resolve := s.exitDNS()
+	if resolve == nil {
+		s.answerFake(req, resp, name, qtype)
+		return
+	}
 	if qtype == mdns.TypeAAAA {
-		// fake-IP is v4-only; NODATA makes the client fall back to A
+		// v4-only model: exit-routed traffic never gets AAAA, and the
+		// direct path keeps its historical NODATA fallback to A.
+		return
+	}
+	exit := ""
+	if exitFor != nil {
+		exit = exitFor(srcIP)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ip, mode, err := resolve(ctx, name, exit)
+	if err != nil {
+		// tunnel down or in-tunnel resolution failure: fail closed,
+		// never fall back to the host's resolver.
+		resp.Rcode = mdns.RcodeServerFailure
+		return
+	}
+	switch mode {
+	case ExitResolveDirect:
+		s.forward(req, resp)
+	case ExitResolveReal:
+		if ip == nil {
+			resp.Rcode = mdns.RcodeServerFailure
+			return
+		}
+		resp.Answer = append(resp.Answer, &mdns.A{
+			Hdr: mdns.RR_Header{Name: req.Question[0].Name, Rrtype: mdns.TypeA, Class: mdns.ClassINET, Ttl: s.fakeTTL},
+			A:   ip,
+		})
+	default: // ExitResolveFake
+		s.answerFake(req, resp, name, qtype)
+	}
+}
+
+// answerFake hands out a fake IP for A queries; AAAA stays NODATA so the
+// client falls back to A.
+func (s *Server) answerFake(req, resp *mdns.Msg, name string, qtype uint16) {
+	if qtype == mdns.TypeAAAA {
 		return
 	}
 	ip := s.pool.Allocate(name)
@@ -197,7 +303,7 @@ func (s *Server) answerHost(req, resp *mdns.Msg, name string, qtype uint16) {
 	})
 }
 
-func (s *Server) answerPTR(req, resp *mdns.Msg, arpa string) {
+func (s *Server) answerPTR(req, resp *mdns.Msg, arpa string, srcIP net.IP) {
 	ip := arpaToIP(arpa)
 	if ip != nil && s.pool.Contains(ip) {
 		if domain, ok := s.pool.Lookup(ip); ok {
@@ -208,6 +314,24 @@ func (s *Server) answerPTR(req, resp *mdns.Msg, arpa string) {
 		} else {
 			resp.Rcode = mdns.RcodeNameError
 		}
+		return
+	}
+	if d, ok := s.Rules().Match("", ip); ok && !d.Internal {
+		switch d.Action {
+		case rules.Internal:
+			if d.DNS == "" {
+				s.forward(req, resp)
+			} else {
+				s.forwardInternal(req, resp, d.DNS)
+			}
+		case rules.Direct:
+			s.forward(req, resp)
+		}
+		return
+	}
+	// There is no in-tunnel PTR resolver. Return NODATA for exit-routed
+	// real IPs instead of leaking the reverse lookup to the host resolver.
+	if exitFor, _ := s.exitDNS(); exitFor != nil && exitFor(srcIP) != "" {
 		return
 	}
 	s.forward(req, resp)

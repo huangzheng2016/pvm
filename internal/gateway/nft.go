@@ -53,20 +53,43 @@ func RenderNFT(c *Config, uplink, br string, bypassIPs []string) string {
 	// already hijacked, so this only breaks the hard-coded-DoH bypass.
 	fmt.Fprintf(&b, "    iifname %q ip daddr %s tcp dport 443 reject\n", br, dohResolverSet())
 	fmt.Fprintf(&b, "    iifname %q ip daddr %s udp dport 443 reject\n", br, dohResolverSet())
-	// fake-ip data plane: TCP and ICMP echo requests terminate on local
-	// relays, which apply the same domain policy. Plain DNS :53 was
-	// already hijacked above. UDP is tproxyed in the fakeudp chain below:
-	// REDIRECT would make IP_ORIGDSTADDR report the gateway address, while
-	// tproxy preserves the fake-ip destination for the relay.
-	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 icmp type echo-request dnat ip to %s\n", br, c.GwIP)
+	// fake-ip data plane: TCP is REDIRECTed to the local relay, which
+	// applies the same domain policy; plain DNS :53 was already hijacked
+	// above. UDP and ICMP cannot use REDIRECT either: it would make
+	// IP_ORIGDSTADDR report the gateway address (UDP is tproxied instead,
+	// preserving the fake-ip destination for the relay), and ICMP echo
+	// has no ports to redirect on, so the fakeip chain below only marks
+	// it and the fake-ip local route delivers it to the relay's wildcard
+	// raw socket with the fake destination intact.
 	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 tcp dport != 53 redirect to :%d\n", br, fakeProxyPort)
 	b.WriteString("  }\n")
-	b.WriteString("  chain fakeudp {\n")
+	b.WriteString("  chain fakeip {\n")
 	b.WriteString("    type filter hook prerouting priority -150; policy accept;\n")
-	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 udp dport != 53 tproxy ip to %s:%d meta mark set 0x%x\n", br, c.GwIP, fakeUDPPort, fakeUDPMark)
+	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 udp dport != 53 tproxy ip to %s:%d meta mark set 0x%x\n", br, c.GwIP, fakeUDPPort, fakeIPMark)
+	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 icmp type echo-request meta mark set 0x%x\n", br, fakeIPMark)
+	b.WriteString("  }\n")
+	b.WriteString("  chain output {\n")
+	b.WriteString("    type filter hook output priority 0; policy accept;\n")
+	// The fake-ip local route makes the kernel treat marked echo requests
+	// as addressed to itself, so it would answer them with a fake-source
+	// echo reply the VM reads as success. Only the relay's downstream
+	// sockets (SO_MARK fakeICMPReplyMark) may emit those; the kernel's
+	// own replies carry no mark and are dropped here.
+	fmt.Fprintf(&b, "    ip saddr 198.18.0.0/16 ip daddr %s icmp type echo-reply meta mark != 0x%x drop\n", c.CIDR, fakeICMPReplyMark)
 	b.WriteString("  }\n")
 	b.WriteString("  chain forward {\n")
 	b.WriteString("    type filter hook forward priority 0; policy accept;\n")
+	names := make([]string, 0, len(c.Exits))
+	for name := range c.Exits {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		ifn := tunnelIfName(exitIndex(names, name))
+		mss := tunnelMSS(c.Exits[name])
+		fmt.Fprintf(&b, "    oifname %q tcp flags syn tcp option maxseg size set %d\n", ifn, mss)
+		fmt.Fprintf(&b, "    iifname %q tcp flags syn tcp option maxseg size set %d\n", ifn, mss)
+	}
 	// IPv6 must never reach the uplink: the cluster is v4-only and the
 	// kill-switch below is v4-only. (The gateway also sets
 	// net.ipv6.conf.all.disable_ipv6=1; this is the belt-and-suspenders.)
