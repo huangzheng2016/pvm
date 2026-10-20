@@ -5,7 +5,17 @@ import (
 	"log"
 	"os/exec"
 	"sort"
+	"strconv"
 	"strings"
+)
+
+// fake-ip UDP policy routing: the fakeudp chain marks matching flows and
+// tproxies them to the gateway listener; the marked lookup delivers them
+// locally so the original destination survives.
+const (
+	fakeUDPMark       = 0x50
+	fakeUDPRouteTable = 80
+	fakeUDPRulePref   = 20
 )
 
 // applyNetwork creates br0, assigns the gateway address, enables
@@ -26,6 +36,9 @@ func (a *Agent) applyNetwork(c *Config) error {
 		return fmt.Errorf("bridge addr: %v\n%s", err, out)
 	}
 	if err := run("ip", "link", "set", a.br, "up"); err != nil {
+		return err
+	}
+	if err := ensureFakeUDPRoute(); err != nil {
 		return err
 	}
 	if err := ApplyNFT(RenderNFT(c, upl, a.br, a.exits.BypassList())); err != nil {
@@ -52,23 +65,55 @@ func (a *Agent) checkNFT(c *Config) error {
 			return err
 		}
 	}
-	required := []string{
-		`iifname "br0" ip daddr 198.18.0.0/16 udp dport != 53 redirect to :7894`,
-		`iifname "br0" ip daddr 198.18.0.0/16 tcp dport != 53 redirect to :7893`,
-		`iifname "br0" ip daddr 198.18.0.0/16 icmp type echo-request dnat ip to ` + c.GwIP,
-		`iifname "br0" oifname "` + upl + `" drop`,
+	// nft pads marks to 8 hex digits and flattens single-element oifname
+	// sets; each required rule lists the accepted spellings.
+	tproxy := fmt.Sprintf(`iifname "br0" ip daddr 198.18.0.0/16 udp dport != 53 tproxy ip to %s:%d`, c.GwIP, fakeUDPPort)
+	required := [][]string{
+		{
+			tproxy + fmt.Sprintf(" meta mark set 0x%x", fakeUDPMark),
+			tproxy + fmt.Sprintf(" meta mark set 0x%08x", fakeUDPMark),
+		},
+		{`iifname "br0" ip daddr 198.18.0.0/16 tcp dport != 53 redirect to :7893`},
+		{`iifname "br0" ip daddr 198.18.0.0/16 icmp type echo-request dnat ip to ` + c.GwIP},
+		{`iifname "br0" oifname "` + upl + `" drop`},
 	}
-	names := make([]string, 0, len(c.Exits))
-	for name := range c.Exits {
-		names = append(names, name)
-	}
-	for _, name := range names {
-		required = append(required, fmt.Sprintf(`oifname { "%s" } masquerade`, tunnelIfName(exitIndex(names, name))))
-	}
-	for _, want := range required {
-		if !strings.Contains(out, want) {
-			return fmt.Errorf("missing rule %q", want)
+	if len(c.Exits) > 0 {
+		alts := []string{fmt.Sprintf(`oifname { %s } masquerade`, quotedTunnels(c.Exits))}
+		if len(c.Exits) == 1 {
+			alts = append(alts, fmt.Sprintf(`oifname %q masquerade`, tunnelIfName(0)))
 		}
+		required = append(required, alts)
+	}
+	for _, alts := range required {
+		found := false
+		for _, want := range alts {
+			if strings.Contains(out, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("missing rule %q", alts[0])
+		}
+	}
+	// Repairing the rule/route here keeps their drift from forcing a full
+	// tunnel rebuild.
+	if err := ensureFakeUDPRoute(); err != nil {
+		return fmt.Errorf("repair fake-udp route: %w", err)
+	}
+	return nil
+}
+
+// ensureFakeUDPRoute installs the policy rule and local route that deliver
+// fake-ip UDP flows (marked by the fakeudp chain) to the tproxy listener
+// on the gateway. `ip rule` already tolerates "File exists"; the route
+// replace is idempotent.
+func ensureFakeUDPRoute() error {
+	if err := ipRuleCmd("add", "fwmark", strconv.Itoa(fakeUDPMark), "lookup", strconv.Itoa(fakeUDPRouteTable), "pref", strconv.Itoa(fakeUDPRulePref)); err != nil {
+		return fmt.Errorf("fake-udp fwmark rule: %w", err)
+	}
+	if err := ipRoute("replace", "local", "default", "dev", "lo", "table", strconv.Itoa(fakeUDPRouteTable)); err != nil {
+		return fmt.Errorf("fake-udp local route: %w", err)
 	}
 	return nil
 }

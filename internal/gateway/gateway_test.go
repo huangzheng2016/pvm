@@ -99,10 +99,11 @@ func TestRenderNFT(t *testing.T) {
 		`oifname "enp0s1" masquerade`,
 		`iifname "enp0s1" tcp dport 30000 dnat ip to 192.168.1.10:80`,
 		`iifname "enp0s1" udp dport 30053 dnat ip to 192.168.1.11:53`,
-		`iifname "br0" ip daddr 198.18.0.0/16 udp dport != 53 redirect to :7894`,
+		`iifname "br0" ip daddr 198.18.0.0/16 udp dport != 53 tproxy ip to 192.168.1.1:7894 meta mark set 0x50`,
 		`iifname "br0" ip daddr 198.18.0.0/16 icmp type echo-request dnat ip to 192.168.1.1`,
 		"type nat hook prerouting",
 		"type nat hook postrouting",
+		"type filter hook prerouting priority -150; policy accept;",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("ruleset missing %q\n%s", want, out)

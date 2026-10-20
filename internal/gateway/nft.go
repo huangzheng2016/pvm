@@ -53,12 +53,17 @@ func RenderNFT(c *Config, uplink, br string, bypassIPs []string) string {
 	// already hijacked, so this only breaks the hard-coded-DoH bypass.
 	fmt.Fprintf(&b, "    iifname %q ip daddr %s tcp dport 443 reject\n", br, dohResolverSet())
 	fmt.Fprintf(&b, "    iifname %q ip daddr %s udp dport 443 reject\n", br, dohResolverSet())
-	// fake-ip data plane: TCP, UDP, and ICMP echo requests terminate on
-	// local relays, which apply the same domain policy. Plain DNS :53 was
-	// already hijacked above.
+	// fake-ip data plane: TCP and ICMP echo requests terminate on local
+	// relays, which apply the same domain policy. Plain DNS :53 was
+	// already hijacked above. UDP is tproxyed in the fakeudp chain below:
+	// REDIRECT would make IP_ORIGDSTADDR report the gateway address, while
+	// tproxy preserves the fake-ip destination for the relay.
 	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 icmp type echo-request dnat ip to %s\n", br, c.GwIP)
-	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 udp dport != 53 redirect to :%d\n", br, fakeUDPPort)
 	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 tcp dport != 53 redirect to :%d\n", br, fakeProxyPort)
+	b.WriteString("  }\n")
+	b.WriteString("  chain fakeudp {\n")
+	b.WriteString("    type filter hook prerouting priority -150; policy accept;\n")
+	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 udp dport != 53 tproxy ip to %s:%d meta mark set 0x%x\n", br, c.GwIP, fakeUDPPort, fakeUDPMark)
 	b.WriteString("  }\n")
 	b.WriteString("  chain forward {\n")
 	b.WriteString("    type filter hook forward priority 0; policy accept;\n")

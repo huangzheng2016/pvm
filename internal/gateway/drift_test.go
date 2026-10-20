@@ -32,6 +32,20 @@ func TestEnsureTunnelRoute(t *testing.T) {
 	}
 }
 
+func TestEnsureFakeUDPRoute(t *testing.T) {
+	ruleLog := stubIPRule(t)
+	routeLog := stubIPRoute(t)
+	if err := ensureFakeUDPRoute(); err != nil {
+		t.Fatal(err)
+	}
+	if !ruleLog.has("add", "fwmark", "80", "lookup", "80", "pref", "20") {
+		t.Fatalf("missing fwmark rule: %v", ruleLog.calls)
+	}
+	if !routeLog.has("replace", "local", "default", "dev", "lo", "table", "80") {
+		t.Fatalf("missing local route: %v", routeLog.calls)
+	}
+}
+
 func TestCheckNFT(t *testing.T) {
 	cfg := &Config{
 		CIDR: "192.168.1.0/24", GwIP: "192.168.1.1",
@@ -40,21 +54,65 @@ func TestCheckNFT(t *testing.T) {
 	expected := RenderNFT(cfg, "enp0s1", "br0", nil)
 	orig := nftListTable
 	t.Cleanup(func() { nftListTable = orig })
+	stubIPRule(t)
+	stubIPRoute(t)
 	a := &Agent{upl: "enp0s1"}
 	nftListTable = func() (string, error) { return expected, nil }
 	if err := a.checkNFT(cfg); err != nil {
 		t.Fatal(err)
 	}
+	// nft normalizes output: single-element oifname sets are flattened and
+	// marks are zero-padded. Neither may read as drift.
 	nftListTable = func() (string, error) {
-		return strings.Replace(expected, "redirect to :7894", "redirect to :9999", 1), nil
+		out := strings.Replace(expected, `oifname { "pvmwg0" } masquerade`, `oifname "pvmwg0" masquerade`, 1)
+		out = strings.Replace(out, "meta mark set 0x50", "meta mark set 0x00000050", 1)
+		return out, nil
+	}
+	if err := a.checkNFT(cfg); err != nil {
+		t.Fatalf("normalized nft output read as drift: %v", err)
+	}
+	nftListTable = func() (string, error) {
+		return strings.Replace(expected, "tproxy ip to 192.168.1.1:7894", "tproxy ip to 192.168.1.1:9999", 1), nil
 	}
 	if err := a.checkNFT(cfg); err == nil || !strings.Contains(err.Error(), "missing rule") {
-		t.Fatalf("missing UDP relay rule was not detected: %v", err)
+		t.Fatalf("changed UDP tproxy rule was not detected: %v", err)
+	}
+	nftListTable = func() (string, error) {
+		return strings.Replace(expected, " meta mark set 0x50", "", 1), nil
+	}
+	if err := a.checkNFT(cfg); err == nil || !strings.Contains(err.Error(), "missing rule") {
+		t.Fatalf("missing tproxy mark was not detected: %v", err)
 	}
 	nftListTable = func() (string, error) {
 		return strings.Replace(expected, `oifname { "pvmwg0" } masquerade`, "", 1), nil
 	}
 	if err := a.checkNFT(cfg); err == nil {
 		t.Fatal("missing tunnel NAT rule was not detected")
+	}
+}
+
+func TestCheckNFTMultipleExits(t *testing.T) {
+	cfg := &Config{
+		CIDR: "192.168.1.0/24", GwIP: "192.168.1.1",
+		Exits: map[string]ExitDef{
+			"exit-a": {Server: "127.0.0.1:1"},
+			"exit-b": {Server: "127.0.0.1:2"},
+		},
+	}
+	expected := RenderNFT(cfg, "enp0s1", "br0", nil)
+	orig := nftListTable
+	t.Cleanup(func() { nftListTable = orig })
+	stubIPRule(t)
+	stubIPRoute(t)
+	a := &Agent{upl: "enp0s1"}
+	nftListTable = func() (string, error) { return expected, nil }
+	if err := a.checkNFT(cfg); err != nil {
+		t.Fatal(err)
+	}
+	nftListTable = func() (string, error) {
+		return strings.Replace(expected, `"pvmwg0", `, "", 1), nil
+	}
+	if err := a.checkNFT(cfg); err == nil {
+		t.Fatal("missing tunnel in a multi-exit NAT rule was not detected")
 	}
 }

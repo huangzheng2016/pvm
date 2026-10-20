@@ -2,10 +2,12 @@ package gateway
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/exit"
@@ -29,12 +31,21 @@ type fakeUDPKey struct {
 type fakeUDPFlow struct {
 	key        fakeUDPKey
 	src        *net.UDPAddr
+	dst        *net.UDPAddr
 	domain     string
 	vm         string
 	route      gwpolicy.Route
 	exit       string
 	up         *net.UDPConn
+	down       *net.IPConn
 	lastActive time.Time
+}
+
+func (f *fakeUDPFlow) close() {
+	f.up.Close()
+	if f.down != nil {
+		f.down.Close()
+	}
 }
 
 type fakeUDP struct {
@@ -48,12 +59,13 @@ type fakeUDP struct {
 	lookupDirect func(context.Context, string) (net.IP, error)
 	lookupProxy  func(context.Context, string, string, int) (net.IP, error)
 
-	mu      sync.Mutex
-	ln      *net.UDPConn
-	closed  bool
-	wg      sync.WaitGroup
-	flows   map[fakeUDPKey]*fakeUDPFlow
-	pending map[fakeUDPKey]bool
+	mu         sync.Mutex
+	ln         *net.UDPConn
+	rawReplies bool
+	closed     bool
+	wg         sync.WaitGroup
+	flows      map[fakeUDPKey]*fakeUDPFlow
+	pending    map[fakeUDPKey]bool
 }
 
 func newFakeUDP(policy *gwpolicy.Engine, upstream string, vmByIP func(net.IP) string) *fakeUDP {
@@ -81,17 +93,59 @@ func (p *fakeUDP) Start(bindIP string, port int) error {
 	if err != nil {
 		return err
 	}
+	if err := enableUDPTransparentSocket(ln); err != nil {
+		ln.Close()
+		return err
+	}
 	if err := enableUDPOriginalDst(ln); err != nil {
 		ln.Close()
 		return err
 	}
 	p.mu.Lock()
 	p.ln = ln
+	p.rawReplies = true
 	p.wg.Add(2)
 	p.mu.Unlock()
 	go p.readLoop(ln)
 	go p.reaper()
 	return nil
+}
+
+const ipTransparent = 19
+
+func setSocketTransparent(c syscall.RawConn) error {
+	var sockErr error
+	if err := c.Control(func(fd uintptr) {
+		sockErr = unix.SetsockoptInt(int(fd), 0, ipTransparent, 1)
+	}); err != nil {
+		return err
+	}
+	return sockErr
+}
+
+func transparentSocket(_, _ string, c syscall.RawConn) error {
+	return setSocketTransparent(c)
+}
+
+func enableUDPTransparentSocket(conn *net.UDPConn) error {
+	raw, err := conn.SyscallConn()
+	if err != nil {
+		return err
+	}
+	return setSocketTransparent(raw)
+}
+
+func dialUDPReply(originalDst, client *net.UDPAddr) (*net.IPConn, error) {
+	d := net.Dialer{
+		Timeout:   5 * time.Second,
+		LocalAddr: &net.IPAddr{IP: originalDst.IP},
+		Control:   transparentSocket,
+	}
+	conn, err := d.Dial("ip4:udp", client.IP.String())
+	if err != nil {
+		return nil, err
+	}
+	return conn.(*net.IPConn), nil
 }
 
 func (p *fakeUDP) SetPolicy(eng *gwpolicy.Engine) {
@@ -102,7 +156,7 @@ func (p *fakeUDP) SetPolicy(eng *gwpolicy.Engine) {
 		dec := eng.DecideFlow(flow.domain, net.ParseIP(key.dstIP), flow.vm)
 		if dec.Route != flow.route || dec.Exit != flow.exit {
 			delete(p.flows, key)
-			flow.up.Close()
+			flow.close()
 		}
 	}
 }
@@ -114,7 +168,7 @@ func (p *fakeUDP) SetExitHooks(markFor func(string) int, dcAddrFor, dnsAddrFor f
 	for key, flow := range p.flows {
 		if flow.route == gwpolicy.Proxy && markFor(flow.exit) < 0 {
 			delete(p.flows, key)
-			flow.up.Close()
+			flow.close()
 		}
 	}
 }
@@ -202,12 +256,27 @@ func (p *fakeUDP) openFlow(key fakeUDPKey, src, dst *net.UDPAddr, domain string,
 		return
 	}
 	p.mu.Lock()
+	rawReplies := p.rawReplies
+	p.mu.Unlock()
+	var down *net.IPConn
+	if rawReplies {
+		down, err = dialUDPReply(dst, src)
+		if err != nil {
+			up.Close()
+			p.mu.Lock()
+			delete(p.pending, key)
+			p.mu.Unlock()
+			log.Printf("fakeudp: open %s via %s: reply path: %v", domain, exitName, err)
+			return
+		}
+	}
+	p.mu.Lock()
 	delete(p.pending, key)
 	adopt := false
 	if !p.closed && p.policy != nil {
 		dec := p.policy.DecideFlow(domain, dst.IP, vmName)
 		if dec.Route == route && dec.Exit == exitName && (route != gwpolicy.Proxy || p.markFor(exitName) >= 0) {
-			flow := &fakeUDPFlow{key: key, src: src, domain: domain, vm: vmName, route: route, exit: exitName, up: up, lastActive: time.Now()}
+			flow := &fakeUDPFlow{key: key, src: src, dst: dst, domain: domain, vm: vmName, route: route, exit: exitName, up: up, down: down, lastActive: time.Now()}
 			p.flows[key] = flow
 			p.wg.Add(1)
 			go p.pump(flow)
@@ -217,6 +286,9 @@ func (p *fakeUDP) openFlow(key fakeUDPKey, src, dst *net.UDPAddr, domain string,
 	p.mu.Unlock()
 	if !adopt {
 		up.Close()
+		if down != nil {
+			down.Close()
+		}
 		return
 	}
 	if _, err := up.Write(payload); err != nil {
@@ -346,7 +418,12 @@ func (p *fakeUDP) pump(flow *fakeUDPFlow) {
 		flow.lastActive = time.Now()
 		ln := p.ln
 		p.mu.Unlock()
-		if ln != nil {
+		if flow.down != nil {
+			if err := writeUDPReply(flow.down, flow.dst, flow.src, buf[:n]); err != nil {
+				p.closeKey(flow.key)
+				return
+			}
+		} else if ln != nil {
 			if _, err := ln.WriteToUDP(buf[:n], flow.src); err != nil {
 				p.closeKey(flow.key)
 				return
@@ -355,13 +432,48 @@ func (p *fakeUDP) pump(flow *fakeUDPFlow) {
 	}
 }
 
+func writeUDPReply(conn *net.IPConn, originalDst, client *net.UDPAddr, payload []byte) error {
+	packet := make([]byte, 8+len(payload))
+	binary.BigEndian.PutUint16(packet[0:2], uint16(originalDst.Port))
+	binary.BigEndian.PutUint16(packet[2:4], uint16(client.Port))
+	binary.BigEndian.PutUint16(packet[4:6], uint16(len(packet)))
+	copy(packet[8:], payload)
+	binary.BigEndian.PutUint16(packet[6:8], udpChecksum(originalDst.IP, client.IP, packet))
+	_, err := conn.Write(packet)
+	return err
+}
+
+func udpChecksum(src, dst net.IP, packet []byte) uint16 {
+	var sum uint32
+	for _, ip := range []net.IP{src.To4(), dst.To4()} {
+		for i := 0; i < net.IPv4len; i += 2 {
+			sum += uint32(ip[i])<<8 | uint32(ip[i+1])
+		}
+	}
+	sum += uint32(17) + uint32(len(packet))
+	for i := 0; i < len(packet); i += 2 {
+		sum += uint32(packet[i]) << 8
+		if i+1 < len(packet) {
+			sum += uint32(packet[i+1])
+		}
+	}
+	for sum>>16 != 0 {
+		sum = sum&0xffff + sum>>16
+	}
+	checksum := ^uint16(sum)
+	if checksum == 0 {
+		return 0xffff
+	}
+	return checksum
+}
+
 func (p *fakeUDP) closeKey(key fakeUDPKey) {
 	p.mu.Lock()
 	flow := p.flows[key]
 	delete(p.flows, key)
 	p.mu.Unlock()
 	if flow != nil {
-		flow.up.Close()
+		flow.close()
 	}
 }
 
@@ -380,7 +492,7 @@ func (p *fakeUDP) reaper() {
 			for key, flow := range p.flows {
 				if time.Since(flow.lastActive) > fakeUDPIdleTimeout {
 					delete(p.flows, key)
-					flow.up.Close()
+					flow.close()
 				}
 			}
 			p.mu.Unlock()
@@ -410,7 +522,7 @@ func (p *fakeUDP) Close() {
 		p.ln.Close()
 	}
 	for _, flow := range p.flows {
-		flow.up.Close()
+		flow.close()
 	}
 	p.mu.Unlock()
 	p.wg.Wait()
