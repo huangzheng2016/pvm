@@ -176,6 +176,21 @@ func TestFakeUDPProxyRelayLinux(t *testing.T) {
 	}
 }
 
+func TestProbeAddress(t *testing.T) {
+	addrFor := func(string) (string, bool) { return "203.0.113.1:18080", true }
+	ip, err := probeAddress(probeDomain, "my-exit", addrFor)
+	if err != nil || ip.String() != "203.0.113.1" {
+		t.Fatalf("probeAddress = %v, %v", ip, err)
+	}
+	ip, err = probeAddress("example.com", "my-exit", addrFor)
+	if ip != nil || err != nil {
+		t.Fatalf("non-probe domain = %v, %v", ip, err)
+	}
+	if _, err := probeAddress(probeDomain, "my-exit", func(string) (string, bool) { return "", false }); err == nil {
+		t.Fatal("missing self-hosted probe must fail")
+	}
+}
+
 func TestOriginalDstUDPLinux(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux netfilter socket option")

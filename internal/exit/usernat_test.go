@@ -20,7 +20,8 @@ func TestUDPSessionTableReaper(t *testing.T) {
 
 	var wg sync.WaitGroup
 	done := make(chan struct{})
-	go func() { tab.reaper(&wg); close(done) }()
+	wg.Add(1)
+	go func() { defer wg.Done(); tab.reaper(); close(done) }()
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -230,7 +231,8 @@ func TestICMPSessionTableReaper(t *testing.T) {
 
 	var wg sync.WaitGroup
 	done := make(chan struct{})
-	go func() { tab.reaper(&wg); close(done) }()
+	wg.Add(1)
+	go func() { defer wg.Done(); tab.reaper(); close(done) }()
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {

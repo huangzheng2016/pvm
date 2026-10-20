@@ -89,12 +89,13 @@ func (a *Agent) loadConfig() (*Config, error) {
 
 func (a *Agent) Run() error {
 	var (
-		dhcpSrv *DHCPServer
-		fdns    *fakeDNS
-		fproxy  *fakeProxy
-		fudp    *fakeUDP
-		ficmp   *fakeICMP
-		lastCfg []byte
+		dhcpSrv       *DHCPServer
+		fdns          *fakeDNS
+		fproxy        *fakeProxy
+		fudp          *fakeUDP
+		ficmp         *fakeICMP
+		lastCfg       []byte
+		lastReconcile time.Time
 	)
 	for {
 		raw, err := os.ReadFile(a.configPath)
@@ -185,25 +186,29 @@ func (a *Agent) Run() error {
 					}
 				}
 			}
-			// exit tunnels + policy routing converge on every apply
-			vmIPs := map[string]string{}
-			for _, v := range c.VMs {
-				vmIPs[v.Name] = v.IP
-			}
-			var proxiedCIDRs, directCIDRs []string
-			for _, r := range c.Rules {
-				if r.Type != rules.CIDR {
-					continue
-				}
-				if r.Action == rules.Proxy && r.Exit != "" {
-					proxiedCIDRs = append(proxiedCIDRs, r.Pattern+"@"+r.Exit)
-				} else {
-					directCIDRs = append(directCIDRs, r.Pattern)
-				}
-			}
-			a.exits.Sync(c.Exits, c.VMExits, vmIPs, proxiedCIDRs, directCIDRs, c.CIDR, c.DefaultExit)
+			a.syncExits(&c)
 			if !applyErr {
 				lastCfg = raw
+				lastReconcile = time.Now()
+			}
+		}
+		if len(lastCfg) > 0 && time.Since(lastReconcile) >= watchdogPeriod {
+			var c Config
+			if err := json.Unmarshal(lastCfg, &c); err != nil {
+				log.Printf("config drift decode: %v", err)
+				lastReconcile = time.Now()
+			} else {
+				a.syncExits(&c)
+				if err := a.checkNFT(&c); err != nil {
+					log.Printf("network drift: %v; reapplying", err)
+					if err := a.applyNetwork(&c); err != nil {
+						log.Printf("apply network after drift: %v", err)
+					} else {
+						lastReconcile = time.Now()
+					}
+				} else {
+					lastReconcile = time.Now()
+				}
 			}
 		}
 		a.reconcileLinks()
@@ -214,6 +219,25 @@ func (a *Agent) Run() error {
 		case <-time.After(2 * time.Second):
 		}
 	}
+}
+
+func (a *Agent) syncExits(c *Config) {
+	vmIPs := map[string]string{}
+	for _, v := range c.VMs {
+		vmIPs[v.Name] = v.IP
+	}
+	var proxiedCIDRs, directCIDRs []string
+	for _, r := range c.Rules {
+		if r.Type != rules.CIDR {
+			continue
+		}
+		if r.Action == rules.Proxy && r.Exit != "" {
+			proxiedCIDRs = append(proxiedCIDRs, r.Pattern+"@"+r.Exit)
+		} else {
+			directCIDRs = append(directCIDRs, r.Pattern)
+		}
+	}
+	a.exits.Sync(c.Exits, c.VMExits, vmIPs, proxiedCIDRs, directCIDRs, c.CIDR, c.DefaultExit)
 }
 
 // vmNameByIP maps a cluster source IP back to the VM name from config.

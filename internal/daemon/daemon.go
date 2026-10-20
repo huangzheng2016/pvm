@@ -194,6 +194,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /v1/vms/{name}/desktop", s.handleDesktop)
 	mux.HandleFunc("DELETE /v1/vms/{name}/desktop", s.handleDesktopStop)
 	mux.HandleFunc("GET /v1/vms/{name}/console", s.handleConsole)
+	mux.HandleFunc("GET /v1/vms/{name}/audit", s.handleVMAudit)
 	mux.HandleFunc("GET /v1/dns", s.handleDNSList)
 	mux.HandleFunc("POST /v1/shutdown", s.handleShutdown)
 	return mux

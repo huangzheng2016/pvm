@@ -27,6 +27,7 @@ vm:
   exec          run a command via the guest agent (no network needed): pvm exec dev1 cmd...
   logs          stream a vm console: pvm logs dev1 [--follow] [--tail N]
   desktop       open the vm's native xfce desktop: pvm desktop dev1 [--open] [--stop] [--size WxH] [--public]
+  audit         read-only health audit: pvm audit dev1 (vm, route, udp/icmp probes, dns, ipv6, timezone, locale)
 
 network:
   map           map ports: pvm map dev1 8080:80 [--udp] | ls | rm <port> [--udp]
@@ -173,6 +174,8 @@ func main() {
 		code = cli.CmdUpgrade(args)
 	case "desktop":
 		code = cli.CmdDesktop(args)
+	case "audit":
+		code = cli.CmdAudit(args)
 	case "gateway":
 		fmt.Println("gateway is managed automatically by the pvm daemon; no manual action is required")
 	default:

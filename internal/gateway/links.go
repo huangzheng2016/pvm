@@ -35,6 +35,44 @@ func (a *Agent) applyNetwork(c *Config) error {
 	return os_WriteSysctl()
 }
 
+var nftListTable = func() (string, error) {
+	out, err := exec.Command("nft", "list", "table", "inet", "pvm").CombinedOutput()
+	return string(out), err
+}
+
+func (a *Agent) checkNFT(c *Config) error {
+	out, err := nftListTable()
+	if err != nil {
+		return fmt.Errorf("list pvm table: %w", err)
+	}
+	upl := a.upl
+	if upl == "" {
+		upl, err = uplinkIface()
+		if err != nil {
+			return err
+		}
+	}
+	required := []string{
+		`iifname "br0" ip daddr 198.18.0.0/16 udp dport != 53 redirect to :7894`,
+		`iifname "br0" ip daddr 198.18.0.0/16 tcp dport != 53 redirect to :7893`,
+		`iifname "br0" ip daddr 198.18.0.0/16 icmp type echo-request dnat ip to ` + c.GwIP,
+		`iifname "br0" oifname "` + upl + `" drop`,
+	}
+	names := make([]string, 0, len(c.Exits))
+	for name := range c.Exits {
+		names = append(names, name)
+	}
+	for _, name := range names {
+		required = append(required, fmt.Sprintf(`oifname { "%s" } masquerade`, tunnelIfName(exitIndex(names, name))))
+	}
+	for _, want := range required {
+		if !strings.Contains(out, want) {
+			return fmt.Errorf("missing rule %q", want)
+		}
+	}
+	return nil
+}
+
 func os_WriteSysctl() error {
 	if err := run("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
 		return err

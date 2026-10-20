@@ -3,8 +3,11 @@ package gateway
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -265,7 +268,7 @@ func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, 
 	}
 
 	m.reconcileRulesLocked(wantVM, wantCIDR, wantBypass)
-	m.reconcileDefaultLocked(wantDirect, wantCluster, defIdx)
+	m.reconcileDefaultLocked(wantDirect, wantCluster, defIdx, vmIPs)
 
 	// Cluster-local destinations (gateway replies, vm-to-vm) must never
 	// enter a tunnel table: the from-rules above match gateway-local
@@ -432,10 +435,17 @@ func (m *exitManager) reconcileRulesLocked(wantVM map[string]int, wantCIDR map[s
 
 // reconcileDefaultLocked converges the cluster-default-exit rules: with
 // a default exit set, the whole cluster CIDR selects its table at
-// pref 103, and every direct VM (no explicit exit) overrides with
-// lookup-main at pref 102 — explicit per-VM exits at pref 101 always
-// win. With no default exit both rule sets are removed.
-func (m *exitManager) reconcileDefaultLocked(wantDirect map[string]bool, wantCluster string, defIdx int) {
+// pref 103, and every explicitly direct VM overrides with lookup-main at
+// pref 102 — explicit per-VM exits at pref 101 always win. With no default
+// exit both rule sets are removed.
+func (m *exitManager) reconcileDefaultLocked(wantDirect map[string]bool, wantCluster string, defIdx int, vmIPs map[string]string) {
+	for _, ip := range vmIPs {
+		if !wantDirect[ip] && !m.vmDirect[ip] {
+			// Also clear stale main overrides written by older versions;
+			// the in-memory cache alone cannot discover them after a restart.
+			ipRuleCmd("del", "from", ip+"/32", "lookup", "main", "pref", "102")
+		}
+	}
 	for ip := range m.vmDirect {
 		if !wantDirect[ip] {
 			if err := ipRuleCmd("del", "from", ip+"/32", "lookup", "main"); err == nil {
@@ -680,7 +690,27 @@ func (m *exitManager) watch(t *exitTunnel) bool {
 	}
 }
 
+func (m *exitManager) ensureTunnelRoute(t *exitTunnel) error {
+	table := strconv.Itoa(ruleTableBase + t.idx)
+	if err := ipRoute("replace", "default", "dev", tunnelIfName(t.idx), "table", table); err != nil {
+		return err
+	}
+	mark := strconv.Itoa(fwMarkBase + t.idx)
+	if err := ipRuleCmd("add", "fwmark", mark, "lookup", table, "pref", "100"); err != nil {
+		return err
+	}
+	if t.server != "" {
+		if err := ipRuleCmd("add", "to", t.server+"/32", "lookup", "main", "pref", "40"); err != nil {
+			log.Printf("exit %s: endpoint host rule: %v", t.name, err)
+		}
+	}
+	return nil
+}
+
 func (m *exitManager) probe(t *exitTunnel) error {
+	if err := m.ensureTunnelRoute(t); err != nil {
+		return err
+	}
 	if t.def.Provider == exit.ProviderWARP {
 		return nil
 	}
@@ -704,6 +734,65 @@ func (m *exitManager) probe(t *exitTunnel) error {
 	}
 	if !strings.Contains(status, " 200") {
 		return fmt.Errorf("probe status: %s", strings.TrimSpace(status))
+	}
+	if err := m.probeUDP(t); err != nil {
+		return err
+	}
+	return m.probeICMP(t)
+}
+
+func (m *exitManager) probeUDP(t *exitTunnel) error {
+	mark := fwMarkBase + t.idx
+	addr := net.JoinHostPort(t.serverTunIP, strconv.Itoa(exit.UDPProbePort))
+	conn, err := exitProbeDial(context.Background(), "udp4", addr, mark)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(exitProbeTimeout))
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return err
+	}
+	packet := append([]byte("PVMP"), nonce...)
+	if _, err := conn.Write(packet); err != nil {
+		return err
+	}
+	resp := make([]byte, len(packet))
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		return err
+	}
+	if string(resp) != string(packet) {
+		return fmt.Errorf("udp probe response mismatch")
+	}
+	return nil
+}
+
+func (m *exitManager) probeICMP(t *exitTunnel) error {
+	conn, err := exitProbeDial(context.Background(), "ip4:icmp", t.serverTunIP, fwMarkBase+t.idx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(exitProbeTimeout))
+	id := uint16(time.Now().UnixNano())
+	msg := make([]byte, 12)
+	msg[0], msg[1] = 8, 0
+	binary.BigEndian.PutUint16(msg[4:6], id)
+	binary.BigEndian.PutUint16(msg[6:8], 1)
+	copy(msg[8:], "PVM!")
+	icmpSetChecksum(msg)
+	if _, err := conn.Write(msg); err != nil {
+		return err
+	}
+	resp := make([]byte, 64)
+	n, err := conn.Read(resp)
+	if err != nil {
+		return err
+	}
+	reply := icmpMessage(resp[:n])
+	if len(reply) < 12 || reply[0] != 0 || reply[1] != 0 || binary.BigEndian.Uint16(reply[4:6]) != id || binary.BigEndian.Uint16(reply[6:8]) != 1 || string(reply[8:12]) != "PVM!" {
+		return fmt.Errorf("icmp probe response mismatch")
 	}
 	return nil
 }
@@ -769,7 +858,9 @@ func ipRule(args ...string) error {
 	return nil
 }
 
-func ipRoute(args ...string) error {
+var ipRoute = ipRouteImpl
+
+func ipRouteImpl(args ...string) error {
 	out, err := exec.Command("ip", append([]string{"route"}, args...)...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ip route %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))

@@ -46,6 +46,13 @@ type userspaceBackend struct {
 
 	intercept   map[string]func(net.Conn) // dst addr -> in-stack handler
 	interceptMu sync.RWMutex
+
+	interceptUDP map[string]func(*gonet.UDPConn) // dst addr -> in-stack datagram handler
+
+	// icmpLocal lists tunnel-side .1 addresses this stack answers echo for
+	// itself; no host ping socket or external route is involved.
+	icmpLocal   map[string]bool
+	icmpLocalMu sync.RWMutex
 }
 
 // Intercept registers an in-stack handler for connections to dst
@@ -64,6 +71,41 @@ func (u *userspaceBackend) interceptor(dst string) func(net.Conn) {
 	u.interceptMu.RLock()
 	defer u.interceptMu.RUnlock()
 	return u.intercept[dst]
+}
+
+// InterceptUDP registers an in-stack datagram handler for UDP flows to dst
+// (host:port, e.g. a tunnel NIC's probe address) instead of dialing that
+// address from the VPS.
+func (u *userspaceBackend) InterceptUDP(dst string, h func(*gonet.UDPConn)) {
+	u.interceptMu.Lock()
+	defer u.interceptMu.Unlock()
+	if u.interceptUDP == nil {
+		u.interceptUDP = map[string]func(*gonet.UDPConn){}
+	}
+	u.interceptUDP[dst] = h
+}
+
+func (u *userspaceBackend) udpInterceptor(dst string) func(*gonet.UDPConn) {
+	u.interceptMu.RLock()
+	defer u.interceptMu.RUnlock()
+	return u.interceptUDP[dst]
+}
+
+// AnswerICMPLocal registers addr (a tunnel NIC's .1 address) as answered by
+// the stack itself instead of relayed to a host ping socket.
+func (u *userspaceBackend) AnswerICMPLocal(addr string) {
+	u.icmpLocalMu.Lock()
+	defer u.icmpLocalMu.Unlock()
+	if u.icmpLocal == nil {
+		u.icmpLocal = map[string]bool{}
+	}
+	u.icmpLocal[addr] = true
+}
+
+func (u *userspaceBackend) icmpIsLocal(addr string) bool {
+	u.icmpLocalMu.RLock()
+	defer u.icmpLocalMu.RUnlock()
+	return u.icmpLocal[addr]
 }
 
 func newUserspaceBackend() *userspaceBackend {
@@ -181,7 +223,16 @@ func (u *userspaceBackend) setup(_ []string, _ []string) error {
 		defer u.wg.Done()
 		u.icmpReadLoop(&entry, ch)
 	}()
-	go u.icmpTable.reaper(&u.wg)
+	u.wg.Add(1)
+	go func() {
+		defer u.wg.Done()
+		u.sessions.reaper()
+	}()
+	u.wg.Add(1)
+	go func() {
+		defer u.wg.Done()
+		u.icmpTable.reaper()
+	}()
 	log.Printf("userspace NAT: forwarding TCP/UDP in userspace; ICMP echo relayed via host ping sockets (no direct fallback)")
 	return nil
 }
@@ -337,10 +388,10 @@ func (t *udpSessionTable) remove(flow udpFlow, s *udpSession) {
 	}
 }
 
-// reaper closes sessions idle longer than the timeout.
-func (t *udpSessionTable) reaper(wg *sync.WaitGroup) {
-	wg.Add(1)
-	defer wg.Done()
+// reaper closes sessions idle longer than the timeout. The caller owns the
+// goroutine lifecycle (wg.Add before go); Add inside the goroutine would
+// race a concurrent Wait.
+func (t *udpSessionTable) reaper() {
 	tick := time.NewTicker(t.interval)
 	defer tick.Stop()
 	for {
@@ -386,6 +437,15 @@ func (u *userspaceBackend) handleUDP(req *udp.ForwarderRequest) {
 	}
 	if u.sessions.get(flow) != nil {
 		return // existing session owns subsequent packets
+	}
+	if h := u.udpInterceptor(net.JoinHostPort(flow.dstIP, fmt.Sprintf("%d", flow.dstPort))); h != nil {
+		var wq waiter.Queue
+		ep, terr := req.CreateEndpoint(&wq)
+		if terr != nil {
+			return
+		}
+		go h(gonet.NewUDPConn(&wq, ep))
+		return
 	}
 	// each session costs 2 goroutines + 2 sockets + buffers; a peer
 	// sweeping dst ports would otherwise exhaust memory/fd in minutes.
@@ -538,10 +598,10 @@ func (t *icmpSessionTable) remove(flow icmpFlow, s *icmpSession) {
 	}
 }
 
-// reaper closes sessions idle longer than the timeout.
-func (t *icmpSessionTable) reaper(wg *sync.WaitGroup) {
-	wg.Add(1)
-	defer wg.Done()
+// reaper closes sessions idle longer than the timeout. The caller owns the
+// goroutine lifecycle (wg.Add before go); Add inside the goroutine would
+// race a concurrent Wait.
+func (t *icmpSessionTable) reaper() {
 	tick := time.NewTicker(t.interval)
 	defer tick.Stop()
 	for {
@@ -614,6 +674,10 @@ func (u *userspaceBackend) handleICMPPacket(data []byte, remote tcpip.FullAddres
 		return
 	}
 	src, dst := iph.SourceAddress(), iph.DestinationAddress()
+	if u.icmpIsLocal(dst.String()) {
+		u.answerICMPLocally(iph, msg, remote.NIC)
+		return
+	}
 	flow := icmpFlow{srcIP: src.String(), dstIP: dst.String(), ident: header.ICMPv4(msg).Ident()}
 	if sess := u.icmpTable.get(flow); sess != nil {
 		sess.touch()
@@ -646,6 +710,38 @@ func (u *userspaceBackend) handleICMPPacket(data []byte, remote tcpip.FullAddres
 	if _, err := sess.conn.Write(msg); err != nil {
 		sess.close()
 		u.icmpTable.remove(flow, sess)
+	}
+}
+
+// answerICMPLocally turns an echo request to one of our own tunnel
+// addresses into an echo reply sourced from that address; ident, sequence
+// and payload pass through unchanged.
+func (u *userspaceBackend) answerICMPLocally(iph header.IPv4, msg []byte, nicID tcpip.NICID) {
+	src, dst := iph.SourceAddress(), iph.DestinationAddress()
+	reply := make([]byte, len(msg))
+	copy(reply, msg)
+	rh := header.ICMPv4(reply)
+	rh.SetType(header.ICMPv4EchoReply)
+	rh.SetCode(0)
+	rh.SetChecksum(0)
+	rh.SetChecksum(header.ICMPv4Checksum(reply[:header.ICMPv4MinimumSize], checksum.Checksum(reply[header.ICMPv4MinimumSize:], 0)))
+	route, err := u.stack.FindRoute(nicID, dst, src, header.IPv4ProtocolNumber, false)
+	if err != nil {
+		log.Printf("userspace-nat: local icmp reply route: %s (dropping packet)", err)
+		return
+	}
+	defer route.Release()
+	pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
+		ReserveHeaderBytes: header.IPv4MaximumHeaderSize,
+		Payload:            buffer.MakeWithData(reply),
+	})
+	werr := route.WritePacket(stack.NetworkHeaderParams{
+		Protocol: header.ICMPv4ProtocolNumber,
+		TTL:      64,
+	}, pkt)
+	pkt.DecRef()
+	if werr != nil {
+		log.Printf("userspace-nat: local icmp reply to %s: %s (dropping packet)", src, werr)
 	}
 }
 

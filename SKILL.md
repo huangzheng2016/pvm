@@ -66,15 +66,17 @@ pvm ssh dev1 'whoami && ls /share'
 pvm exit ls
 pvm route dev1 --via my-exit     # UDP preferred
 pvm route dev1 --via my-exit-tcp # TCP fallback
-pvm ssh dev1 'curl -s ipinfo.io'
+pvm audit dev1
+pvm exit test my-exit
 ```
 
-- The `ipinfo.io` IP, city, and timezone should match the VPS location; the region profile automatically switches the VM's timezone/locale to the exit region (`en_US.UTF-8`, applied over SSH — skipped if the VM's SSH is down; rerun `pvm route` to retry).
+- The region profile automatically switches the VM's timezone/locale to the exit region (`en_US.UTF-8`, applied over SSH — skipped if the VM's SSH is down; rerun `pvm route` to retry). `pvm audit` is read-only: it reports route, UDP, ICMP, DNS, IPv6, timezone, and locale without starting/stopping the VM or blocking startup.
 - Restore host egress: `pvm route dev1 --via direct`.
 - **Fail-closed**: when the exit tunnel is down, VMs bound to it lose all networking — this is intentional leak protection. Do not "fix" it by switching to direct; the VM recovers once the VPS service is back.
-- Switching `--via` causes a seconds-long network blip (tunnel enroll/handshake convergence); the gateway probes each exit every 10s and rebuilds a dead tunnel after two failed checks (~20s), during which bound VMs stay offline (expected).
+- Switching `--via` stops the VM first, applies the new route, then starts it again if it was running. A VM that was already stopped is not started automatically.
+- The gateway checks route and nft state every 10s, repairs drift, and probes TCP, UDP, and ICMP through the selected exit. Two failed checks (~20s) rebuild the tunnel, during which bound VMs stay offline (expected).
 - Gateway peer keys persist in the gateway VM, so daemon/gateway restarts re-enroll as the same peer instead of leaking stale registrations. TCP exits use keepalives and bounded writes to recover from half-open connections.
-- DNS for proxied domains is resolved only through the selected exit (on the VPS or through the WARP tunnel), never through host DNS. Check tunnel health with `pvm exit test my-exit` (stale pvm peers re-enroll automatically).
+- DNS for proxied domains is resolved only through the selected exit (on the VPS or through the WARP tunnel), never through host DNS. `pvm exit test` uses the exit-agent's own TCP, UDP, and ICMP probes; WARP is handshake-only. No third-party STUN or probe service is required.
 - TCP, UDP, and ICMP follow the selected exit, including fake-ip UDP and ICMP echo relay. Only explicit direct/internal rules use the direct path. Unsupported packets and flows with no live tunnel or resolver are dropped; userspace NAT supports TCP, UDP, and ICMP, not arbitrary IP protocols.
 
 ### 3. Cluster-wide default route
@@ -263,7 +265,7 @@ pvm route dev1 --via my-warp
 - `add-warp` registers a device directly through Cloudflare's API. pvm does not install `warp-cli` or `wgcf`, does not generate a `wgcf-profile.conf`, and does not modify any VM image.
 - The private key and device token stay in `~/.pvm/exits/my-warp.json` with mode `0600`. Only the referenced exit's WireGuard data-plane parameters are pushed to the managed gateway; the Cloudflare API token is not.
 - Registration alone changes no routes. Bind a VM explicitly with `pvm route`, or use `pvm route default --via my-warp` deliberately. `pvm exit rm my-warp` removes the local entry and makes a best-effort Cloudflare device deletion.
-- WARP uses UDP WireGuard only. `pvm exit test` checks handshake, in-tunnel DNS, and observed egress IP; VPS-only `--speed` and `client-config` are not available. Fake-IP domains resolve through `1.1.1.1` inside the WARP tunnel, never through host DNS.
+- WARP uses UDP WireGuard only. `pvm exit test` is handshake-only for WARP; the self-contained TCP/UDP/ICMP probes and VPS-only `--speed` / `client-config` are not available. Fake-IP domains resolve through `1.1.1.1` inside the WARP tunnel, never through host DNS.
 - WARP egress location can vary and has no pvm VPS timezone probe. Set the intended region explicitly with `--tz` / `--locale`, or later with `pvm exit set`, before routing a VM.
 
 ### Connect a standard WireGuard client

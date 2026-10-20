@@ -196,6 +196,7 @@ func TestSyncClusterDefaultExit(t *testing.T) {
 		{"add", "from 192.168.1.10/32", "pref", "101"},
 		{"add", "from 192.168.1.11/32", "lookup", "main", "pref", "102"},
 		{"add", "from 192.168.1.0/24", "lookup", "100", "pref", "103"},
+		{"del", "from 192.168.1.12/32", "lookup", "main", "pref", "102"},
 	} {
 		if !log.has(want...) {
 			t.Fatalf("missing rule %v\n%v", want, log.calls)

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -11,10 +12,38 @@ import (
 )
 
 func TestExitProbe(t *testing.T) {
+	stubIPRule(t)
+	stubIPRoute(t)
 	target := ""
 	orig := exitProbeDial
 	exitProbeDial = func(ctx context.Context, network, address string, mark int) (net.Conn, error) {
-		return net.DialTimeout(network, target, time.Second)
+		switch network {
+		case "tcp4":
+			return net.DialTimeout("tcp", target, time.Second)
+		case "udp4":
+			client, server := net.Pipe()
+			go func() {
+				defer server.Close()
+				buf := make([]byte, 20)
+				if _, err := server.Read(buf); err == nil {
+					_, _ = server.Write(buf)
+				}
+			}()
+			return client, nil
+		case "ip4:icmp":
+			client, server := net.Pipe()
+			go func() {
+				defer server.Close()
+				buf := make([]byte, 12)
+				if _, err := server.Read(buf); err == nil {
+					buf[0] = 0
+					_, _ = server.Write(buf)
+				}
+			}()
+			return client, nil
+		default:
+			return nil, fmt.Errorf("unexpected probe network %q", network)
+		}
 	}
 	t.Cleanup(func() { exitProbeDial = orig })
 

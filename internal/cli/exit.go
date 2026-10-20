@@ -429,7 +429,9 @@ func exitTest(args []string) int {
 		}
 		target := e.ServerIP
 		if e.IsWARP() {
-			target = "1.1.1.1"
+			// Any packet forces the handshake; TEST-NET-3 keeps the
+			// trigger off real third-party infrastructure.
+			target = "203.0.113.1"
 		}
 		if err := t.WaitHandshake(ctx, target); err != nil {
 			t.Close()
@@ -453,8 +455,24 @@ func exitTest(args []string) int {
 	defer t.Close()
 	serverIP := e.ServerIP
 	fmt.Println("wireguard handshake: ok")
+	if e.IsWARP() {
+		fmt.Println("own-agent probes: skipped (WARP exits are handshake-only; there is no pvm exit-agent to probe)")
+		return 0
+	}
+	sip := netip.MustParseAddr(serverIP)
+	if _, err := t.Ping(ctx, sip); err != nil {
+		return fatalf("tcp /ping: %v", err)
+	}
+	fmt.Println("tcp /ping: ok")
+	if err := t.ProbeUDP(ctx, sip); err != nil {
+		return fatalf("udp probe: %v", err)
+	}
+	fmt.Println("udp probe: ok")
+	if err := t.ProbeICMP(ctx, sip); err != nil {
+		return fatalf("icmp probe: %v", err)
+	}
+	fmt.Println("icmp probe: ok")
 	if *speed {
-		sip := netip.MustParseAddr(serverIP)
 		results := t.SampleSpeed(ctx, sip, exit.ProbeSpeedBytes, *samples)
 		for i, s := range results {
 			if s.Err != nil {
@@ -469,31 +487,7 @@ func exitTest(args []string) int {
 		}
 		fmt.Printf("avg: %.1f MB/s, rtt %s\n", mbps, rtt.Round(time.Millisecond))
 	}
-	ip, err := t.FetchExitIP(ctx)
-	if err != nil {
-		return fatalf("fetch exit ip: %v", err)
-	}
-	fmt.Printf("exit ip observed through tunnel: %s\n", ip)
-	if e.IsWARP() {
-		fmt.Println("Cloudflare WARP data plane: ok")
-		return 0
-	}
-
-	host, _, err := net.SplitHostPort(e.Server)
-	if err != nil {
-		host = e.Server
-	}
-	matches, err := observedIPMatchesHost(host, ip, func(h string) ([]net.IP, error) {
-		return net.DefaultResolver.LookupIP(ctx, "ip", h)
-	})
-	if err != nil {
-		return fatalf("resolve server %s: %v", host, err)
-	}
-	if matches {
-		fmt.Println("matches server address: traffic exits via the VPS")
-		return 0
-	}
-	return fatalf("MISMATCH: exit ip %s != server %s", ip, host)
+	return 0
 }
 
 type hostIPResolver func(string) ([]net.IP, error)

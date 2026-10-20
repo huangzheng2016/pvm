@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/huangzheng2016/pvm/internal/cluster"
 	"github.com/huangzheng2016/pvm/internal/exit"
@@ -189,26 +190,124 @@ func (s *Server) handleVMRoute(w http.ResponseWriter, r *http.Request) {
 	if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
 		previousExit = cl.VMExits[spec.Name]
 	}
-	if err := s.Clusters.SetVMExit(spec.ClusterID, spec.Name, via); err != nil {
+	ops := vmRouteOps{
+		running: func() (bool, error) {
+			st, err := s.instance(fresh).Running()
+			return st != nil, err
+		},
+		stop:  func() error { return s.instance(fresh).Stop() },
+		start: func() error { return s.startForRouteSwitch(fresh) },
+		setExit: func(v string) error {
+			return s.Clusters.SetVMExit(fresh.ClusterID, fresh.Name, v)
+		},
+		push: func() error { return s.pushGatewayConfig(fresh.ClusterID) },
+	}
+	note, restarted, err := s.switchVMRoute(fresh, via, previousExit, ops)
+	if err != nil {
 		writeErr(w, 500, err)
 		return
-	}
-	if err := s.pushGatewayConfig(spec.ClusterID); err != nil {
-		_ = s.Clusters.SetVMExit(spec.ClusterID, spec.Name, previousExit)
-		_ = s.pushGatewayConfig(spec.ClusterID)
-		writeErr(w, 500, fmt.Errorf("vm route rolled back after gateway push failed: %w", err))
-		return
-	}
-	note := ""
-	if via == "direct" || via == "" {
-		note = s.restoreRegion(fresh)
-	} else {
-		note = s.applyRegionProfile(fresh, via)
 	}
 	s.mu.Lock()
 	s.vms[name] = fresh
 	s.mu.Unlock()
-	writeJSON(w, 200, map[string]any{"vm": spec.Name, "via": via, "note": note})
+	writeJSON(w, 200, map[string]any{"vm": spec.Name, "via": via, "note": note, "restarted": restarted})
+}
+
+// vmRouteOps are the side-effecting steps of a VM route switch, injected
+// so the lifecycle orchestration stays testable without QEMU or a live
+// gateway.
+type vmRouteOps struct {
+	running func() (bool, error)
+	stop    func() error
+	start   func() error
+	setExit func(via string) error
+	push    func() error
+}
+
+// switchVMRoute stops a running VM before switching its exit and restarts
+// it once the new config is pushed: the guest re-converges DHCP/NAT only
+// across a reboot, so a live switch would leave it on the old exit. A
+// failed push rolls the route back to previousExit, and every failure
+// path restores the original run state and names the next command.
+func (s *Server) switchVMRoute(spec *vm.Spec, via, previousExit string, ops vmRouteOps) (note string, restarted bool, err error) {
+	wasRunning, err := ops.running()
+	if err != nil {
+		return "", false, err
+	}
+	if wasRunning {
+		if err := ops.stop(); err != nil {
+			return "", false, fmt.Errorf("cannot stop %s to switch its route: %w (route unchanged)", spec.Name, err)
+		}
+	}
+	restore := func() error {
+		if !wasRunning {
+			return nil
+		}
+		return ops.start()
+	}
+	if err := ops.setExit(via); err != nil {
+		if rerr := restore(); rerr != nil {
+			return "", false, fmt.Errorf("%w (additionally failed to restart %s: %v; run `pvm start %s`)", err, spec.Name, rerr, spec.Name)
+		}
+		return "", false, err
+	}
+	if err := ops.push(); err != nil {
+		_ = ops.setExit(previousExit)
+		rbErr := ops.push()
+		msg := fmt.Sprintf("vm route rolled back to %s after gateway push failed: %v", routeExitLabel(previousExit), err)
+		next := fmt.Sprintf("fix the gateway and retry `pvm route %s --via %s`", spec.Name, routeExitLabel(via))
+		if rbErr != nil {
+			next = fmt.Sprintf("the rollback config push also failed (%v); check `pvm ls` and retry `pvm route %s --via %s`", rbErr, spec.Name, routeExitLabel(via))
+		}
+		if rerr := restore(); rerr != nil {
+			next = fmt.Sprintf("restarting %s failed: %v; run `pvm start %s` first", spec.Name, rerr, spec.Name)
+		}
+		return "", false, fmt.Errorf("%s; %s", msg, next)
+	}
+	if wasRunning {
+		if err := ops.start(); err != nil {
+			return "", false, fmt.Errorf("route switched to %s, but restarting %s failed: %w", routeExitLabel(via), spec.Name, err)
+		}
+		restarted = true
+	}
+	if via == "direct" || via == "" {
+		note = s.restoreRegion(spec)
+	} else {
+		note = s.applyRegionProfile(spec, via)
+	}
+	return note, restarted, nil
+}
+
+// routeSwitchReadyTimeout bounds the post-restart ssh wait so a route
+// switch cannot hang the CLI longer than a plain `pvm start` follow.
+const routeSwitchReadyTimeout = 3 * time.Minute
+
+// startForRouteSwitch restarts a VM after a route switch and waits for
+// ssh readiness. The route is already switched at this point, so every
+// error names the exact recovery command instead of a bare failure.
+func (s *Server) startForRouteSwitch(spec *vm.Spec) error {
+	inst, man, err := s.startVM(spec)
+	if err != nil {
+		return fmt.Errorf("vm failed to start: %w; run `pvm start %s`", err, spec.Name)
+	}
+	s.ensureAgentAsync(spec)
+	if man != nil {
+		if err := inst.WaitRestored(s.P.VMDir(spec.Name)); err != nil {
+			inst.Stop()
+			return fmt.Errorf("snapshot restore failed, vm stopped: %w; run `pvm start %s`", err, spec.Name)
+		}
+	}
+	if err := s.waitSSH(spec, routeSwitchReadyTimeout); err != nil {
+		return fmt.Errorf("vm started but never became ssh-ready: %w; check `pvm logs %s`", err, spec.Name)
+	}
+	return nil
+}
+
+func routeExitLabel(via string) string {
+	if via == "" {
+		return "direct"
+	}
+	return via
 }
 
 func (s *Server) handleDNSList(w http.ResponseWriter, r *http.Request) {

@@ -272,7 +272,31 @@ func (p *fakeUDP) resolveDirect(ctx context.Context, domain string) (net.IP, err
 	return firstIPv4(ips, err)
 }
 
+const probeDomain = "pvm.probe"
+
+func probeAddress(domain, exitName string, dcAddrFor func(string) (string, bool)) (net.IP, error) {
+	if domain != probeDomain {
+		return nil, nil
+	}
+	addr, ok := dcAddrFor(exitName)
+	if !ok {
+		return nil, fmt.Errorf("no self-hosted probe for %s", exitName)
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return nil, fmt.Errorf("invalid probe address %q", addr)
+	}
+	return ip, nil
+}
+
 func (p *fakeUDP) resolveProxy(ctx context.Context, domain, exitName string, mark int, dcAddrFor, dnsAddrFor func(string) (string, bool)) (net.IP, error) {
+	if ip, err := probeAddress(domain, exitName, dcAddrFor); ip != nil || err != nil {
+		return ip, err
+	}
 	if dcAddr, ok := dcAddrFor(exitName); ok {
 		d := net.Dialer{Timeout: 10 * time.Second, Control: soMark(mark)}
 		conn, err := d.DialContext(ctx, "tcp4", dcAddr)

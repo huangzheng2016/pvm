@@ -80,19 +80,20 @@ type transportRT struct {
 }
 
 type Server struct {
-	cfg     ServerConfig
-	store   *PeerStore
-	priv    string // base64 wg private key (shared by both transports)
-	pub     string
-	sugTZ   string // suggested client timezone (enroll response)
-	nat     natBackend
-	dcAllow []*net.IPNet
-	tr      map[string]*transportRT
-	http    *http.Server
-	ln      net.Listener
-	speed   []*http.Server
-	closed  chan struct{}
-	once    sync.Once
+	cfg      ServerConfig
+	store    *PeerStore
+	priv     string // base64 wg private key (shared by both transports)
+	pub      string
+	sugTZ    string // suggested client timezone (enroll response)
+	nat      natBackend
+	dcAllow  []*net.IPNet
+	tr       map[string]*transportRT
+	http     *http.Server
+	ln       net.Listener
+	speed    []*http.Server
+	udpProbe []*net.UDPConn
+	closed   chan struct{}
+	once     sync.Once
 }
 
 func NewServer(cfg ServerConfig) (*Server, error) {
@@ -226,6 +227,29 @@ func (s *Server) Start() (string, error) {
 			}
 			s.speed = append(s.speed, srv)
 			go srv.Serve(ln)
+		}
+	}
+
+	// built-in UDP/ICMP probes, one per tunnel NIC server address: netfilter
+	// backends answer on the real .1 address (ICMP is answered by the kernel),
+	// the userspace backend intercepts both inside its stack.
+	if s.cfg.TunFactory == nil {
+		for _, t := range s.tr {
+			probeAddr := net.JoinHostPort(t.serverIP, itoa(UDPProbePort))
+			if s.nat.name() == NATUserspace {
+				if ub, ok := s.nat.(*userspaceBackend); ok {
+					ub.InterceptUDP(probeAddr, serveUDPProbeConn)
+					ub.AnswerICMPLocal(t.serverIP)
+				}
+				continue
+			}
+			ln, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP(t.serverIP), Port: UDPProbePort})
+			if err != nil {
+				s.Close()
+				return "", fmt.Errorf("udp probe endpoint %s: %w", probeAddr, err)
+			}
+			s.udpProbe = append(s.udpProbe, ln)
+			go udpProbeListener(ln)
 		}
 	}
 
@@ -488,6 +512,9 @@ func (s *Server) Close() {
 		}
 		for _, srv := range s.speed {
 			_ = srv.Close()
+		}
+		for _, ln := range s.udpProbe {
+			_ = ln.Close()
 		}
 		for _, t := range s.tr {
 			t.dev.Close()

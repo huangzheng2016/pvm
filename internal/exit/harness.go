@@ -18,6 +18,9 @@ import (
 type Tunnel struct {
 	Net *netstack.Net
 	Dev *device.Device
+	// localIP is this side's tunnel address; unconnected probe sockets must
+	// bind to it (binding to the wildcard fails route resolution).
+	localIP netip.Addr
 }
 
 // DialEntry uses an in-memory netstack, so no OS TUN or root is required.
@@ -65,7 +68,7 @@ persistent_keepalive_interval=15
 		dev.Close()
 		return nil, fmt.Errorf("configure device: %w", err)
 	}
-	return &Tunnel{Net: tn, Dev: dev}, nil
+	return &Tunnel{Net: tn, Dev: dev, localIP: ip}, nil
 }
 
 // Close shuts the tunnel down.
@@ -125,29 +128,6 @@ func (t *Tunnel) handshakeDone() bool {
 		}
 	}
 	return false
-}
-
-// FetchExitIP requests http://ifconfig.me/ip through the tunnel and returns
-// the observed public IP — proof the VPS NATs our traffic.
-func (t *Tunnel) FetchExitIP(ctx context.Context) (string, error) {
-	addrs, err := t.Net.LookupHost("ifconfig.me")
-	if err != nil || len(addrs) == 0 {
-		return "", fmt.Errorf("dns via tunnel: %v", err)
-	}
-	var lastErr error
-	for _, a := range addrs {
-		ip, err := netip.ParseAddr(a)
-		if err != nil || !ip.Is4() {
-			continue
-		}
-		body, err := t.httpGet(ctx, ip, 80, "ifconfig.me", "/ip")
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		return strings.TrimSpace(body), nil
-	}
-	return "", fmt.Errorf("fetch exit ip: %v", lastErr)
 }
 
 func (t *Tunnel) httpGet(ctx context.Context, ip netip.Addr, port uint16, host, path string) (string, error) {

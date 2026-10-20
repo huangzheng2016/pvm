@@ -345,6 +345,9 @@ func (p *fakeICMP) resolveDirect(ctx context.Context, domain string) (net.IP, er
 // resolveProxy resolves through the tunnel only: the exit-agent's
 // domain-connect service when available, else the exit's in-tunnel DNS.
 func (p *fakeICMP) resolveProxy(ctx context.Context, domain, exitName string, mark int, dcAddrFor, dnsAddrFor func(string) (string, bool)) (net.IP, error) {
+	if ip, err := probeAddress(domain, exitName, dcAddrFor); ip != nil || err != nil {
+		return ip, err
+	}
 	if dcAddr, ok := dcAddrFor(exitName); ok {
 		conn, err := p.dialDCRaw(ctx, dcAddr, mark)
 		if err != nil {

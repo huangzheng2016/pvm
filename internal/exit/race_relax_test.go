@@ -11,6 +11,9 @@ func init() {
 	httpTimeout = 2 * time.Minute
 	probeHandshakeTimeout = 2 * time.Minute
 	clientHTTPTimeout = 2 * time.Minute
+	udpProbeTimeout = 2 * time.Minute
+	icmpProbeTimeout = 2 * time.Minute
 	testOpTimeout = 2 * time.Minute
 	testLongTimeout = 4 * time.Minute
+	testProbeTimeout = 10 * time.Second
 }
