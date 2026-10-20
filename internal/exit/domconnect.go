@@ -1,6 +1,7 @@
 package exit
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -17,18 +18,26 @@ import (
 // Domain-connect is the in-tunnel "dial this domain for me" channel: the
 // gateway sends a domain and port, the exit resolves and dials them from
 // the VPS (the gateway performs no DNS resolution for proxied domains at
-// all). Listeners live on each tunnel NIC's server address
+// all). cmd 2 is the resolve-only variant for the UDP fake-ip relay: the
+// exit answers with the egress-permitted IPv4 and closes, without a relay.
+// Listeners live on each tunnel NIC's server address
 // (10.<base>.0.1 / 10.<base+1>.0.1), so only authenticated WG peers can
 // reach them.
 //
 // Request:  [ver:1][cmd:1][domain_len:2 BE][domain][port:2 BE]
+//
+//	[ver:1][cmd:2][domain_len:2 BE][domain]         (resolve only)
+//
 // Response: [status:1][msg_len:2 BE][msg]
-// status 0 = connected; the connection then becomes a raw relay pipe.
+// status 0 = connected; for cmd 1 the connection then becomes a raw relay
+// pipe. For cmd 2 status 0 means resolved and msg carries the IPv4 string;
+// the exit closes the connection without relaying.
 const (
 	DomainConnectPort = 18080
 
 	dcVersion    = 1
 	dcCmdConnect = 1
+	dcCmdResolve = 2
 
 	dcMaxDomain = 253
 	dcMaxMsg    = 1024
@@ -84,6 +93,45 @@ func WriteDomainConnect(conn net.Conn, domain string, port int) error {
 	return conn.SetDeadline(time.Time{})
 }
 
+// WriteDomainResolve performs the client side of the resolve handshake:
+// it asks the exit to resolve domain from the VPS (no port, no relay) and
+// returns the egress-permitted IPv4 address. Any failure closes nothing;
+// caller owns conn.
+func WriteDomainResolve(conn net.Conn, domain string) (net.IP, error) {
+	if len(domain) == 0 || len(domain) > dcMaxDomain {
+		return nil, fmt.Errorf("bad domain length %d", len(domain))
+	}
+	frame := make([]byte, 0, 2+2+len(domain))
+	frame = append(frame, dcVersion, dcCmdResolve, byte(len(domain)>>8), byte(len(domain)))
+	frame = append(frame, domain...)
+	if err := conn.SetDeadline(time.Now().Add(20 * time.Second)); err != nil {
+		return nil, err
+	}
+	if _, err := conn.Write(frame); err != nil {
+		return nil, fmt.Errorf("write resolve: %w", err)
+	}
+	hdr := make([]byte, 3)
+	if _, err := io.ReadFull(conn, hdr); err != nil {
+		return nil, fmt.Errorf("read status: %w", err)
+	}
+	mlen := int(binary.BigEndian.Uint16(hdr[1:3]))
+	if mlen > dcMaxMsg {
+		return nil, errors.New("status message too long")
+	}
+	msg := make([]byte, mlen)
+	if _, err := io.ReadFull(conn, msg); err != nil {
+		return nil, fmt.Errorf("read status msg: %w", err)
+	}
+	if hdr[0] != 0 {
+		return nil, fmt.Errorf("exit refused %s: %s", domain, string(msg))
+	}
+	ip := net.ParseIP(string(msg)).To4()
+	if ip == nil {
+		return nil, fmt.Errorf("exit returned bad IPv4 %q", string(msg))
+	}
+	return ip, conn.SetDeadline(time.Time{})
+}
+
 // dcServer is the server side of domain-connect with egress policy
 // (no loopback/link-local/RFC1918/metadata unless explicitly allowed),
 // per-peer relay caps and idle timeouts. Without these the service is
@@ -92,6 +140,8 @@ type dcServer struct {
 	allow []*net.IPNet // extra CIDRs exempt from the private-egress block
 	// dial is replaceable in tests; nil uses restrictedDial.
 	dial func(network, address string) (net.Conn, error)
+	// resolve is replaceable in tests; nil uses restrictedResolve.
+	resolve func(domain string) (net.IP, error)
 
 	mu     sync.Mutex
 	active map[string]int // peer IP -> active relay count
@@ -206,6 +256,45 @@ func (d *dcServer) restrictedDial(network, address string) (net.Conn, error) {
 	return dialer.Dial(network, address)
 }
 
+// restrictedResolve resolves domain with the VPS's own resolver and
+// returns the first egress-permitted IPv4 under the same policy as the
+// dial path, so a resolved-but-private answer can never leak into a relay.
+func (d *dcServer) restrictedResolve(domain string) (net.IP, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip4", domain)
+	if err != nil {
+		return nil, err
+	}
+	ip, err := d.pickResolveIP(ips)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %s: %w", domain, err)
+	}
+	return ip, nil
+}
+
+// pickResolveIP returns the first resolved IPv4 allowed by the egress
+// policy; allow CIDRs exempt an address from the private-egress block.
+func (d *dcServer) pickResolveIP(ips []net.IP) (net.IP, error) {
+	for _, ip := range ips {
+		v4 := ip.To4()
+		if v4 == nil {
+			continue
+		}
+		blocked := blockedEgressIP(v4)
+		for _, n := range d.allow {
+			if n.Contains(v4) {
+				blocked = false
+				break
+			}
+		}
+		if !blocked {
+			return v4, nil
+		}
+	}
+	return nil, errors.New("no public IPv4 permitted by exit policy")
+}
+
 func (d *dcServer) handle(conn net.Conn) {
 	defer conn.Close()
 	peer := "unknown"
@@ -230,13 +319,35 @@ func (d *dcServer) handle(conn net.Conn) {
 	if _, err := io.ReadFull(conn, hdr); err != nil {
 		return
 	}
-	if hdr[0] != dcVersion || hdr[1] != dcCmdConnect {
+	if hdr[0] != dcVersion || hdr[1] != dcCmdConnect && hdr[1] != dcCmdResolve {
 		reply(1, "bad version/cmd")
 		return
 	}
 	dlen := int(binary.BigEndian.Uint16(hdr[2:4]))
 	if dlen == 0 || dlen > dcMaxDomain {
 		reply(1, "bad domain length")
+		return
+	}
+	if hdr[1] == dcCmdResolve {
+		buf := make([]byte, dlen)
+		if _, err := io.ReadFull(conn, buf); err != nil {
+			return
+		}
+		domain := strings.ToLower(string(buf))
+		if !validConnectDomain(domain) {
+			reply(1, "invalid or disallowed domain")
+			return
+		}
+		resolveFn := d.resolve
+		if resolveFn == nil {
+			resolveFn = d.restrictedResolve
+		}
+		ip, err := resolveFn(domain)
+		if err != nil {
+			reply(1, err.Error())
+			return
+		}
+		reply(0, ip.String())
 		return
 	}
 	buf := make([]byte, dlen+2)

@@ -132,9 +132,27 @@ func (s *Server) serve(w mdns.ResponseWriter, req *mdns.Msg) {
 	case mdns.TypePTR:
 		s.answerPTR(req, &resp, name)
 	default:
-		s.forward(req, &resp)
+		s.answerOther(req, &resp, name)
 	}
 	w.WriteMsg(&resp)
+}
+
+func (s *Server) answerOther(req, resp *mdns.Msg, name string) {
+	if s.Rules().IsInternal(name) {
+		return
+	}
+	if d, ok := s.Rules().Match(name, nil); ok && !d.Internal {
+		switch d.Action {
+		case rules.Internal:
+			if d.DNS == "" {
+				s.forward(req, resp)
+			} else {
+				s.forwardInternal(req, resp, d.DNS)
+			}
+		case rules.Direct:
+			s.forward(req, resp)
+		}
+	}
 }
 
 func (s *Server) answerHost(req, resp *mdns.Msg, name string, qtype uint16) {

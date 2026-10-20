@@ -117,8 +117,12 @@ func (p *fakeProxy) exitHooks() (func(string) int, func(string) (string, bool), 
 	return p.markFor, p.dcAddrFor, p.dnsAddrFor
 }
 
-func (p *fakeProxy) Start(port int) error {
-	ln, err := net.ListenTCP("tcp4", &net.TCPAddr{Port: port})
+func (p *fakeProxy) Start(bindIP string, port int) error {
+	ip := net.ParseIP(bindIP)
+	if ip == nil {
+		return fmt.Errorf("invalid fake proxy bind address %q", bindIP)
+	}
+	ln, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: ip, Port: port})
 	if err != nil {
 		return err
 	}

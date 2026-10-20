@@ -60,7 +60,7 @@ common choices:
   images        ubuntu:26.04 | ubuntu:24.04 | debian:13 | debian:12
   transports    udp (default, wireguard) | tcp (wireguard over tcp; pvm exits only)
   providers     pvm exit-agent | cloudflare warp (udp only)
-  nat backends  auto | nft | iptables | userspace (no root, no icmp)
+  nat backends  auto | nft | iptables | userspace (no root; icmp via ping socket)
   route via     direct | <exit-name>  (for example: my-exit)
 
 create options:

@@ -86,7 +86,7 @@ func (e *Engine) DecideFlow(domain string, dstIP net.IP, vmID string) Decision {
 	if !ok {
 		exit = def
 	}
-	if exit == "" {
+	if exit == "" || exit == "direct" {
 		return Decision{Route: Direct}
 	}
 	return Decision{Route: Proxy, Exit: exit}

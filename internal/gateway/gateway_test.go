@@ -99,6 +99,8 @@ func TestRenderNFT(t *testing.T) {
 		`oifname "enp0s1" masquerade`,
 		`iifname "enp0s1" tcp dport 30000 dnat ip to 192.168.1.10:80`,
 		`iifname "enp0s1" udp dport 30053 dnat ip to 192.168.1.11:53`,
+		`iifname "br0" ip daddr 198.18.0.0/16 udp dport != 53 redirect to :7894`,
+		`iifname "br0" ip daddr 198.18.0.0/16 icmp type echo-request dnat ip to 192.168.1.1`,
 		"type nat hook prerouting",
 		"type nat hook postrouting",
 	} {
@@ -179,6 +181,24 @@ func TestRenderNFTDirectVMRegisteredPair(t *testing.T) {
 	}
 	if strings.Index(out, slirp) > strings.Index(out, `iifname "br0" oifname "enp0s1" drop`) {
 		t.Errorf("slirp accept must come before the default drop\n%s", out)
+	}
+}
+
+func TestRenderNFTClusterDefaultDoesNotAllowDirect(t *testing.T) {
+	cfg := &Config{
+		CIDR: "192.168.1.0/24", GwIP: "192.168.1.1", DefaultExit: "my-exit",
+		VMs: []VMEntry{
+			{Name: "dev1", MAC: "52:54:00:00:00:10", IP: "192.168.1.10"},
+			{Name: "dev2", MAC: "52:54:00:00:00:11", IP: "192.168.1.11"},
+		},
+		VMExits: map[string]string{"dev2": "direct"},
+	}
+	out := RenderNFT(cfg, "enp0s1", "br0", nil)
+	if strings.Contains(out, "52:54:00:00:00:10") {
+		t.Fatalf("default-exit VM must not get an uplink accept\n%s", out)
+	}
+	if !strings.Contains(out, "52:54:00:00:00:11") {
+		t.Fatalf("explicit direct VM must keep its uplink accept\n%s", out)
 	}
 }
 

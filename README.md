@@ -5,7 +5,7 @@ Personal QEMU dev VMs in a single binary: create an isolated Linux development m
 ## Features
 
 - **Fast, ready-to-use VMs:** Golden images include Docker, common development tools, and a desktop. `pvm create` automatically downloads the base image and bakes a missing golden; the one-time first bake takes about ten minutes, while later VMs are usually ready in about 30 seconds.
-- **Fail-closed exit routing:** Route an entire VM through WireGuard to your VPS over UDP or TCP, or to Cloudflare WARP over UDP. `pvm exit add` probes both VPS transports and picks the fastest. If the tunnel goes down, the VM loses networking instead of falling back to host egress.
+- **Fail-closed exit routing:** Route TCP, UDP, and ICMP through WireGuard to your VPS over UDP or TCP, or to Cloudflare WARP over UDP. Only explicit direct/internal rules bypass the selected exit; if the tunnel goes down, traffic is dropped instead of falling back to host egress.
 - **Fake-IP DNS and split routing:** Proxied domains are resolved only through the selected exit, keeping them invisible to the host and local network. Internal domains use host DNS, and domain or CIDR rules take effect without a restart.
 - **Native browser desktop:** `pvm desktop` serves the VM's own XFCE desktop through TigerVNC and noVNC. It uses a loopback URL by default; `--public` optionally listens on `0.0.0.0` with VNC authentication still required. It is the same machine as SSH, not a container.
 - **Host-shaped defaults:** New VMs default to all host CPU cores and half of host RAM, with a balloon driver returning idle memory to the host. Sparse qcow2 disks default to 20 GB, grow with `pvm resize`, and release unused host space with `pvm compact`.

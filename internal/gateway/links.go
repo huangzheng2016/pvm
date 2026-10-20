@@ -28,10 +28,11 @@ func (a *Agent) applyNetwork(c *Config) error {
 	if err := run("ip", "link", "set", a.br, "up"); err != nil {
 		return err
 	}
-	if err := os_WriteSysctl(); err != nil {
+	if err := ApplyNFT(RenderNFT(c, upl, a.br, a.exits.BypassList())); err != nil {
+		_ = run("sysctl", "-w", "net.ipv4.ip_forward=0")
 		return err
 	}
-	return ApplyNFT(RenderNFT(c, upl, a.br, a.exits.BypassList()))
+	return os_WriteSysctl()
 }
 
 func os_WriteSysctl() error {

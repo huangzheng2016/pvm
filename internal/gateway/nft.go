@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// RenderNFT rebuilds the table atomically so stale rules cannot linger.
-// The br0 -> uplink forward policy is default-deny: only bypass
+// RenderNFT renders the complete table; applyNetwork disables forwarding
+// if installation fails. The br0 -> uplink forward policy is default-deny: only bypass
 // destinations and registered MAC/IP pairs of direct VMs may pass, so
 // exit-routed VMs fail closed and spoofed sources cannot escape.
 // bypassIPs preserves learned direct-domain bypasses across rebuilds.
@@ -53,12 +53,11 @@ func RenderNFT(c *Config, uplink, br string, bypassIPs []string) string {
 	// already hijacked, so this only breaks the hard-coded-DoH bypass.
 	fmt.Fprintf(&b, "    iifname %q ip daddr %s tcp dport 443 reject\n", br, dohResolverSet())
 	fmt.Fprintf(&b, "    iifname %q ip daddr %s udp dport 443 reject\n", br, dohResolverSet())
-	// fake-ip data plane: TCP goes to the local transparent proxy. All
-	// UDP to fake IPs is refused (QUIC udp/443 retries over TCP; other
-	// UDP has no proxy path and must fail fast instead of leaking into
-	// the uplink or a tunnel with no reverse route). Bare "udp reject"
-	// is an nft syntax error — match L4 via meta l4proto.
-	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 meta l4proto udp reject\n", br)
+	// fake-ip data plane: TCP, UDP, and ICMP echo requests terminate on
+	// local relays, which apply the same domain policy. Plain DNS :53 was
+	// already hijacked above.
+	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 icmp type echo-request dnat ip to %s\n", br, c.GwIP)
+	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 udp dport != 53 redirect to :%d\n", br, fakeUDPPort)
 	fmt.Fprintf(&b, "    iifname %q ip daddr 198.18.0.0/16 tcp dport != 53 redirect to :%d\n", br, fakeProxyPort)
 	b.WriteString("  }\n")
 	b.WriteString("  chain forward {\n")
@@ -84,6 +83,9 @@ func RenderNFT(c *Config, uplink, br string, bypassIPs []string) string {
 	fmt.Fprintf(&b, "    iifname %q oifname %q ip daddr @bypass4 accept\n", br, uplink)
 	for _, v := range c.VMs {
 		exitName, via := c.VMExits[v.Name]
+		if c.DefaultExit != "" && !via {
+			continue // unmatched VMs inherit the default exit
+		}
 		if via && exitName != "" && exitName != "direct" {
 			continue // exit-routed VMs only get bypass + tunnel
 		}

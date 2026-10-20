@@ -24,7 +24,7 @@ pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, l
 
 - **Images**: `ubuntu:26.04`, `ubuntu:24.04`, `debian:13`, `debian:12`
 - **Exit providers**: pvm exit-agent (`udp` default / `tcp` fallback) or Cloudflare WARP (`udp` only); see `pvm exit add-warp` below
-- **exit-agent NAT backend**: `auto` (probe) / `nft` / `iptables` / `userspace` (no root, no ICMP)
+- **exit-agent NAT backend**: `auto` (probe) / `nft` / `iptables` / `userspace` (no root; ICMP requires ping-socket permission)
 - **Route targets**: `direct` (host egress) or an exit name such as `my-exit`
 - **create flags**: `--image`, `--distro`, `--version`, `--name`, `--user`, `--cpus`, `--mem`, `--disk`, `--tz`, `--locale`, `--git-email`, `--git-name`, `--smbios-spoof`, `--no-start`, `--no-wait`
 
@@ -75,6 +75,7 @@ pvm ssh dev1 'curl -s ipinfo.io'
 - Switching `--via` causes a seconds-long network blip (tunnel enroll/handshake convergence); the gateway probes each exit every 10s and rebuilds a dead tunnel after two failed checks (~20s), during which bound VMs stay offline (expected).
 - Gateway peer keys persist in the gateway VM, so daemon/gateway restarts re-enroll as the same peer instead of leaking stale registrations. TCP exits use keepalives and bounded writes to recover from half-open connections.
 - DNS for proxied domains is resolved only through the selected exit (on the VPS or through the WARP tunnel), never through host DNS. Check tunnel health with `pvm exit test my-exit` (stale pvm peers re-enroll automatically).
+- TCP, UDP, and ICMP follow the selected exit, including fake-ip UDP and ICMP echo relay. Only explicit direct/internal rules use the direct path. Unsupported packets and flows with no live tunnel or resolver are dropped; userspace NAT supports TCP, UDP, and ICMP, not arbitrary IP protocols.
 
 ### 3. Cluster-wide default route
 
@@ -133,7 +134,8 @@ pvm route rm <index>
 pvm dns ls
 ```
 
-- Domains matching no internal/direct/proxy rule get a fake-ip (198.18.x.x). **Exit-bound VMs**: domains are resolved only through the selected tunnel (by the VPS exit-agent or WARP's in-tunnel resolver). **Direct VMs**: the gateway resolves via the host uplink DNS at connect time and dials on their behalf.
+- Domains matching no internal/direct/proxy rule get a fake-ip (198.18.x.x). **Exit-bound VMs**: domains are resolved only through the selected tunnel (by the VPS exit-agent or WARP's in-tunnel resolver). **Direct VMs**: the gateway resolves via the host uplink DNS at connect time and dials on their behalf. TCP, UDP, and ICMP echo are relayed by policy; unsupported packets are dropped.
+- Non-A/AAAA query types for proxied names return NODATA and are never forwarded to the host resolver. Direct/internal names may still use their designated direct resolver.
 - Domain rules only affect resolution that goes through the gateway DNS; apps with hardcoded DoH bypass it, and rules do not apply to them.
 - Rules take effect immediately, but established connections are not retroactively switched.
 
@@ -247,7 +249,7 @@ Notes:
 - Control plane: HTTPS + Bearer token + TOFU fingerprint pinning. Data plane: WireGuard, UDP preferred with TCP fallback.
 - Speed probes never touch third-party public servers: the exit-agent serves `/speed?bytes=N` (64MB cap) and `/ping` at `.1:18081` on each tunnel NIC, reachable only inside the tunnel. The gateway uses `/ping` as its data-plane health probe.
 - Registrations idle for 24h are reaped by the exit-agent; a gateway returning after sleep re-enrolls automatically with its persisted peer key.
-- exit-agent NAT backends: `nft` / `iptables` / `userspace`; userspace needs no root but does not forward ICMP ping.
+- exit-agent NAT backends: `nft` / `iptables` / `userspace`; userspace needs no root and forwards TCP/UDP/ICMP. ICMP uses Linux ping sockets, so insufficient socket permission drops only that ICMP flow and never falls back to another egress.
 - Tunnel pools use separate `/16` networks: UDP `10.<base>.0.0/16`, TCP `10.<base+1>.0.0/16` (default base `99`). Set a different `--subnet-base` for multiple agents on one VPS or to avoid VPS-internal networks. A larger pool does not prevent address conflicts. Changing the layout drops stale registrations; expect tunnels to re-enroll.
 
 ### Add a Cloudflare WARP exit without a VPS

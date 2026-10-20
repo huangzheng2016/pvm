@@ -129,3 +129,24 @@ func TestDCServerPeerCap(t *testing.T) {
 		t.Fatal("leave did not free a slot")
 	}
 }
+
+// pickResolveIP applies the egress policy to resolver answers.
+func TestPickResolveIP(t *testing.T) {
+	dc := newDCServer(nil)
+	ip, err := dc.pickResolveIP([]net.IP{net.ParseIP("10.0.0.7"), net.ParseIP("203.0.113.10")})
+	if err != nil || !ip.Equal(net.ParseIP("203.0.113.10")) {
+		t.Fatalf("want first permitted IPv4, got %v, %v", ip, err)
+	}
+	if _, err := dc.pickResolveIP([]net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("192.168.1.1")}); err == nil {
+		t.Fatal("private-only answers must be refused")
+	}
+	if _, err := dc.pickResolveIP(nil); err == nil {
+		t.Fatal("empty answer must error")
+	}
+	_, allowNet, _ := net.ParseCIDR("10.0.0.0/8")
+	dc2 := newDCServer([]*net.IPNet{allowNet})
+	ip, err = dc2.pickResolveIP([]net.IP{net.ParseIP("10.0.0.7")})
+	if err != nil || !ip.Equal(net.ParseIP("10.0.0.7")) {
+		t.Fatalf("allowlisted private answer must pass, got %v, %v", ip, err)
+	}
+}

@@ -205,10 +205,20 @@ func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, 
 
 	// desired rule state
 	wantVM := map[string]int{}
+	wantDirect := map[string]bool{}
 	for vm, exitName := range vmExits {
-		idx := exitIndex(names, exitName)
 		ip := vmIPs[vm]
-		if idx >= 0 && ip != "" {
+		if ip == "" {
+			continue
+		}
+		if exitName == "direct" {
+			wantDirect[ip] = true
+			continue
+		}
+		if exitName == "" {
+			continue
+		}
+		if idx := exitIndex(names, exitName); idx >= 0 {
 			wantVM[ip] = idx
 		}
 	}
@@ -227,14 +237,8 @@ func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, 
 	if defaultExit != "" {
 		defIdx = exitIndex(names, defaultExit)
 	}
-	wantDirect := map[string]bool{}
 	wantCluster := ""
 	if defIdx >= 0 {
-		for _, ip := range vmIPs {
-			if _, proxied := wantVM[ip]; !proxied {
-				wantDirect[ip] = true
-			}
-		}
 		wantCluster = clusterCIDR
 	}
 	wantBypass := map[string]bool{}

@@ -44,6 +44,31 @@ func TestSetDefaultExit(t *testing.T) {
 	}
 }
 
+func TestSetVMExitDirectPersists(t *testing.T) {
+	s, err := LoadStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Ensure(1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetVMExit(1, "dev1", "direct"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDefaultExit(1, "my-exit"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Get(1).VMExits["dev1"]; got != "direct" {
+		t.Fatalf("explicit direct = %q, want direct", got)
+	}
+	if err := s.SetVMExit(1, "dev1", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Get(1).VMExits["dev1"]; ok {
+		t.Fatal("clearing the override must remove it")
+	}
+}
+
 func TestSetRulesRestoresSnapshot(t *testing.T) {
 	s, err := LoadStore(t.TempDir())
 	if err != nil {

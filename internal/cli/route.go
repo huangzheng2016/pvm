@@ -55,7 +55,11 @@ func CmdRoute(args []string) int {
 			fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", i, r.Type, r.Pattern, r.Action, via)
 		}
 		for vm, exit := range v.VMExits {
-			fmt.Fprintf(tw, "\tvm\t%s\tproxy\t%s\n", vm, exit)
+			action := "proxy"
+			if exit == "direct" {
+				action = "direct"
+			}
+			fmt.Fprintf(tw, "\tvm\t%s\t%s\t%s\n", vm, action, exit)
 		}
 		def := v.DefaultExit
 		if def == "" {

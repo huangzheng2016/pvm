@@ -81,6 +81,10 @@ func TestClusterDefaultExit(t *testing.T) {
 	if d := e.DecideFlow("x.example.com", nil, "dev1"); d.Exit != "jp" {
 		t.Fatalf("vm exit must beat cluster default: %+v", d)
 	}
+	e.SetVMExit("dev2", "direct")
+	if d := e.DecideFlow("x.example.com", nil, "dev2"); d.Route != Direct {
+		t.Fatalf("explicit direct must beat cluster default: %+v", d)
+	}
 }
 
 func TestCIDRRuleByIP(t *testing.T) {

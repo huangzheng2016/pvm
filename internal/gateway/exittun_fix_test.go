@@ -189,9 +189,9 @@ func TestSyncClusterDefaultExit(t *testing.T) {
 	log := stubIPRule(t)
 	m := newExitManager()
 	exits := map[string]ExitDef{"my-exit": {Server: "127.0.0.1:1", Token: "x", Transport: "udp", Fingerprint: "00"}}
-	vmIPs := map[string]string{"proxied": "192.168.1.10", "open": "192.168.1.11"}
+	vmIPs := map[string]string{"proxied": "192.168.1.10", "open": "192.168.1.11", "inherit": "192.168.1.12"}
 
-	m.Sync(exits, map[string]string{"proxied": "my-exit"}, vmIPs, nil, nil, "192.168.1.0/24", "my-exit")
+	m.Sync(exits, map[string]string{"proxied": "my-exit", "open": "direct"}, vmIPs, nil, nil, "192.168.1.0/24", "my-exit")
 	for _, want := range [][]string{
 		{"add", "from 192.168.1.10/32", "pref", "101"},
 		{"add", "from 192.168.1.11/32", "lookup", "main", "pref", "102"},
@@ -200,6 +200,9 @@ func TestSyncClusterDefaultExit(t *testing.T) {
 		if !log.has(want...) {
 			t.Fatalf("missing rule %v\n%v", want, log.calls)
 		}
+	}
+	if log.has("add", "from 192.168.1.12/32", "lookup", "main", "pref", "102") {
+		t.Fatal("unmatched VM must inherit the cluster exit instead of a main override")
 	}
 
 	// removing the default exit tears the cluster rule and overrides down

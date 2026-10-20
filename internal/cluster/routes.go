@@ -49,8 +49,8 @@ func (s *Store) RemoveRule(id, index int) error {
 	return s.save()
 }
 
-// SetVMExit pins a VM's default route; exit "" or "direct" restores
-// direct egress.
+// SetVMExit pins a VM's default route. An explicit "direct" is kept so
+// the VM does not inherit a later cluster default; "" removes the override.
 func (s *Store) SetVMExit(id int, vmName, exit string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -61,7 +61,7 @@ func (s *Store) SetVMExit(id int, vmName, exit string) error {
 	if c.VMExits == nil {
 		c.VMExits = map[string]string{}
 	}
-	if exit == "" || exit == "direct" {
+	if exit == "" {
 		delete(c.VMExits, vmName)
 	} else {
 		c.VMExits[vmName] = exit

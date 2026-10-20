@@ -92,6 +92,8 @@ func (a *Agent) Run() error {
 		dhcpSrv *DHCPServer
 		fdns    *fakeDNS
 		fproxy  *fakeProxy
+		fudp    *fakeUDP
+		ficmp   *fakeICMP
 		lastCfg []byte
 	)
 	for {
@@ -147,8 +149,16 @@ func (a *Agent) Run() error {
 					fdns = f
 					fdns.RunDumpLoop("/run/pvm/fakeip.json", 3*time.Second)
 					fproxy = newFakeProxy(nil, c.DNSUpstream, a.vmNameByIP)
-					if err := fproxy.Start(fakeProxyPort); err != nil {
+					if err := fproxy.Start(c.GwIP, fakeProxyPort); err != nil {
 						fail("fake proxy listen", err)
+					}
+					fudp = newFakeUDP(nil, c.DNSUpstream, a.vmNameByIP)
+					if err := fudp.Start(c.GwIP, fakeUDPPort); err != nil {
+						fail("fake udp listen", err)
+					}
+					ficmp = newFakeICMP(nil, c.DNSUpstream, a.vmNameByIP)
+					if err := ficmp.Start(c.GwIP); err != nil {
+						fail("fake icmp listen", err)
 					}
 				}
 			}
@@ -160,13 +170,19 @@ func (a *Agent) Run() error {
 				if fproxy != nil {
 					pol := gwpolicy.New(fdns.Rules(), fdns.Pool())
 					for name, exit := range c.VMExits {
-						if exit != "" && exit != "direct" {
-							pol.SetVMExit(name, exit)
-						}
+						pol.SetVMExit(name, exit)
 					}
 					pol.SetDefaultExit(c.DefaultExit)
 					fproxy.SetPolicy(pol)
 					fproxy.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
+					if fudp != nil {
+						fudp.SetPolicy(pol)
+						fudp.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
+					}
+					if ficmp != nil {
+						ficmp.SetPolicy(pol)
+						ficmp.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
+					}
 				}
 			}
 			// exit tunnels + policy routing converge on every apply

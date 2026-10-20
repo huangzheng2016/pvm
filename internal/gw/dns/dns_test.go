@@ -188,11 +188,21 @@ func TestPTRReverseLookup(t *testing.T) {
 	}
 }
 
-func TestOtherTypesForwarded(t *testing.T) {
-	srv, up, _ := newTestServer(t)
-	query(t, srv, "example.com", mdns.TypeMX)
-	if !up.queried("example.com.") {
-		t.Fatal("MX should be forwarded upstream")
+func TestOtherTypesOnlyForwardedForDirectRules(t *testing.T) {
+	srv, up, eng := newTestServer(t)
+	resp := query(t, srv, "example.com", mdns.TypeMX)
+	if up.queried("example.com.") {
+		t.Fatal("proxy-domain MX query must not leak upstream")
+	}
+	if len(resp.Answer) != 0 {
+		t.Fatalf("proxy-domain MX should be NODATA: %+v", resp.Answer)
+	}
+	if err := eng.Add(rules.Rule{Type: rules.DomainSuffix, Pattern: "corp.example", Action: rules.Direct}); err != nil {
+		t.Fatal(err)
+	}
+	query(t, srv, "mail.corp.example", mdns.TypeMX)
+	if !up.queried("mail.corp.example.") {
+		t.Fatal("direct-domain MX should be forwarded upstream")
 	}
 }
 

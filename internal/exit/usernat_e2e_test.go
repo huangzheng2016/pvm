@@ -2,11 +2,13 @@ package exit
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -141,5 +143,65 @@ func TestUserspaceNATEndToEnd(t *testing.T) {
 				t.Fatalf("http body = %q", body)
 			}
 		})
+	}
+}
+
+// ICMP echo through the userspace NAT relay. The relay's host side needs
+// a Linux ping socket (net.ipv4.ping_group_range); without it the relay
+// fails closed by design, so the test skips there - it cannot pass.
+func TestUserspaceNATICMP(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("icmp relay e2e requires linux ping sockets")
+	}
+	hostIP := hostLANIPv4(t)
+	probe, err := net.DialTimeout("ip4:icmp", hostIP, 3*time.Second)
+	if err != nil {
+		t.Skipf("ping socket unavailable: %v", err)
+	}
+	probe.Close()
+
+	srv := startUserspaceServer(t, "udp")
+	entry := enrollViaTOFU(t, srv, "udp")
+	tun, err := DialEntry(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tun.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), testLongTimeout)
+	defer cancel()
+	if err := tun.WaitHandshake(ctx, "10.99.0.1"); err != nil {
+		t.Fatal(err)
+	}
+
+	pc, err := tun.Net.DialPingAddr(netip.Addr{}, netip.MustParseAddr(hostIP))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+
+	// The client stack's icmp endpoint overwrites ident and recomputes the
+	// checksum; sequence and payload pass through, so match on those.
+	msg := make([]byte, 8+4)
+	msg[0] = 8 // echo request
+	binary.BigEndian.PutUint16(msg[6:8], 1)
+	copy(msg[8:], "pvm!")
+	if _, err := pc.Write(msg); err != nil {
+		t.Fatal(err)
+	}
+	_ = pc.SetReadDeadline(time.Now().Add(10 * time.Second))
+	buf := make([]byte, 2048)
+	n, err := pc.Read(buf)
+	if err != nil {
+		t.Fatalf("icmp echo via userspace NAT: %v", err)
+	}
+	reply := buf[:n]
+	if len(reply) < 8+4 || reply[0] != 0 || reply[1] != 0 {
+		t.Fatalf("not an echo reply: % x", reply)
+	}
+	if got := binary.BigEndian.Uint16(reply[6:8]); got != 1 {
+		t.Fatalf("reply seq = %d, want 1", got)
+	}
+	if string(reply[8:12]) != "pvm!" {
+		t.Fatalf("reply payload = %q", reply[8:n])
 	}
 }
