@@ -305,6 +305,9 @@ const soMarkOpt = 36
 // soMark returns a net.Dialer Control hook setting SO_MARK, which the
 // gateway's policy routing (ip rule fwmark) sends into the exit tunnel.
 func soMark(mark int) func(network, address string, c syscall.RawConn) error {
+	if mark == 0 {
+		return nil
+	}
 	return func(network, address string, c syscall.RawConn) error {
 		var serr error
 		err := c.Control(func(fd uintptr) {
