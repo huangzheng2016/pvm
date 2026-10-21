@@ -17,7 +17,7 @@ import (
 
 // probeDomain is the reserved probe name: on pvm exit-agent routes the
 // gateway resolves it to the exit's real in-tunnel server address, so a
-// successful UDP/ICMP probe proves the whole tunnel path works over L3
+// successful TCP/UDP/ICMP probe proves the whole tunnel path works over L3
 // forwarding; direct and WARP routes keep a reserved fake-ip answer. It
 // never resolves publicly.
 const probeDomain = "pvm.probe"
@@ -70,7 +70,7 @@ func (s *Server) auditVM(w http.ResponseWriter, r *http.Request, run guestRunner
 	}
 	if st == nil {
 		checks := []auditCheck{check("vm", auditWarn, "stopped")}
-		for _, name := range []string{"route", "udp", "icmp", "dns", "ipv6", "timezone", "locale"} {
+		for _, name := range []string{"route", "tcp", "udp", "icmp", "dns", "ipv6", "timezone", "locale"} {
 			checks = append(checks, check(name, auditSkipped, "vm not running"))
 		}
 		writeJSON(w, 200, checks)
@@ -118,13 +118,14 @@ func (s *Server) auditRoute(spec *vm.Spec) (auditCheck, *exit.Entry) {
 	return check("route", auditOK, "via %s (%s)", via, source), entry
 }
 
-// auditProbes runs the UDP/ICMP tunnel probes and the route-aware DNS check.
-// Only a VM routed through its own pvm exit-agent gets probes: direct and
-// WARP routes have no probe service, and third-party targets are never
+// auditProbes runs the TCP/UDP/ICMP tunnel probes and the route-aware DNS
+// check. Only a VM routed through its own pvm exit-agent gets probes: direct
+// and WARP routes have no probe service, and third-party targets are never
 // substituted.
 func (s *Server) auditProbes(spec *vm.Spec, routeChk auditCheck, entry *exit.Entry, run guestRunner) []auditCheck {
 	if spec.Role == "gateway" || spec.ClusterID == 0 {
 		return []auditCheck{
+			check("tcp", auditSkipped, "no cluster gateway"),
 			check("udp", auditSkipped, "no cluster gateway"),
 			check("icmp", auditSkipped, "no cluster gateway"),
 			check("dns", auditSkipped, "no cluster gateway"),
@@ -136,6 +137,7 @@ func (s *Server) auditProbes(spec *vm.Spec, routeChk auditCheck, entry *exit.Ent
 			reason = "route target unavailable"
 		}
 		return []auditCheck{
+			check("tcp", auditSkipped, "%s", reason),
 			check("udp", auditSkipped, "%s", reason),
 			check("icmp", auditSkipped, "%s", reason),
 			auditDNS(run, spec, false),
@@ -143,12 +145,34 @@ func (s *Server) auditProbes(spec *vm.Spec, routeChk auditCheck, entry *exit.Ent
 	}
 	if entry.IsWARP() {
 		return []auditCheck{
+			check("tcp", auditSkipped, "warp exits have no probe agent"),
 			check("udp", auditSkipped, "warp exits have no probe agent"),
 			check("icmp", auditSkipped, "warp exits have no probe agent"),
 			auditDNS(run, spec, false),
 		}
 	}
-	return []auditCheck{auditUDP(run, spec), auditICMP(run, spec), auditDNS(run, spec, true)}
+	return []auditCheck{auditTCP(run, spec), auditUDP(run, spec), auditICMP(run, spec), auditDNS(run, spec, true)}
+}
+
+// auditTCP opens a TCP connection to the exit-agent's in-tunnel HTTP
+// service, requests /ping and requires an HTTP 200 status line, so connect
+// success alone never counts: the exit must actually answer. pvm.probe
+// resolves to the server's real tunnel address on agent routes, so this
+// exercises the guest's L3 forwarding through the tunnel.
+func auditTCP(run guestRunner, spec *vm.Spec) auditCheck {
+	script := `python3 -c 'import socket,sys;` +
+		`s=socket.create_connection(("` + probeDomain + `",` + strconv.Itoa(exit.SpeedPort) + `),5);` +
+		`s.settimeout(5);` +
+		`s.sendall(b"GET /ping HTTP/1.0\r\n\r\n");` +
+		`l=s.makefile("rb").readline(128).strip().split();` +
+		`sys.exit(0 if len(l)>1 and l[0].startswith(b"HTTP/") and l[1]==b"200" else 1)'`
+	if _, err := run(spec, script); err != nil {
+		if isCmdMissing(err) {
+			return check("tcp", auditSkipped, "python3 unavailable in guest")
+		}
+		return check("tcp", auditFail, "no valid /ping response: %v", err)
+	}
+	return check("tcp", auditOK, "/ping via %s:%d", probeDomain, exit.SpeedPort)
 }
 
 // auditUDP challenges the exit-agent's probe service with a magic+nonce

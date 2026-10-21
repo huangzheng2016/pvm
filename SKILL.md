@@ -70,11 +70,11 @@ pvm audit dev1
 pvm exit test my-exit
 ```
 
-- The region profile automatically switches the VM's timezone/locale to the exit region (`en_US.UTF-8`, applied over SSH — skipped if the VM's SSH is down; rerun `pvm route` to retry). `pvm audit` is read-only: it reports route, UDP, ICMP, DNS, IPv6, timezone, and locale without starting/stopping the VM or blocking startup.
+- The region profile automatically switches the VM's timezone/locale to the exit region (`en_US.UTF-8`, applied over SSH — skipped if the VM's SSH is down; rerun `pvm route` to retry). `pvm audit` is read-only: it reports route, TCP, UDP, ICMP, DNS, IPv6, timezone, and locale without starting/stopping the VM or blocking startup.
 - Restore host egress: `pvm route dev1 --via direct`.
 - **Fail-closed**: when the exit tunnel is down, VMs bound to it lose all networking — this is intentional leak protection. Do not "fix" it by switching to direct; the VM recovers once the VPS service is back.
 - Switching `--via` stops the VM first, applies the new route, then starts it again if it was running. A VM that was already stopped is not started automatically.
-- The gateway checks route and nft state every 10s, repairs drift, and probes TCP, UDP, and ICMP through the selected exit. Two failed checks (~20s) rebuild the tunnel, during which bound VMs stay offline (expected).
+- The gateway reads actual policy rules and nft state every 10s, repairs missing or incorrect rules, and probes TCP, UDP, and ICMP through the selected exit. Route-only drift is repaired without rebuilding the tunnel. Two failed data-plane checks (~20s) rebuild the tunnel, during which bound VMs stay offline (expected).
 - Gateway peer keys persist in the gateway VM, so daemon/gateway restarts re-enroll as the same peer instead of leaking stale registrations. TCP exits use keepalives and bounded writes to recover from half-open connections.
 - Default-exit domains resolve only through the selected exit (on the VPS or through the WARP tunnel), return real IPv4 addresses, and use direct L3 tunnel forwarding. Only explicit domain proxy rules use fake-ip relays. `pvm exit test` uses the exit-agent's own TCP, UDP, and ICMP probes; WARP is handshake-only. No third-party STUN or probe service is required.
 - TCP, UDP, and ICMP follow the selected exit for both real-IP flows and explicit fake-ip split rules. Only explicit direct/internal rules use the direct path. Unsupported packets and flows with no live tunnel or resolver are dropped; userspace NAT supports TCP, UDP, and ICMP, not arbitrary IP protocols.

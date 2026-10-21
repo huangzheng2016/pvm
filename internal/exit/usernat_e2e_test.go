@@ -15,23 +15,13 @@ import (
 
 func startUserspaceServer(t *testing.T, transports string) *Server {
 	t.Helper()
-	srv, err := NewServer(ServerConfig{
+	return startTestServer(t, ServerConfig{
 		Listen:     "127.0.0.1:0",
 		Token:      "test-token",
 		StateDir:   t.TempDir(),
-		UDPPort:    freePort(t, "udp"),
-		TCPPort:    freePort(t, "tcp"),
 		Transports: transports,
 		NAT:        NATUserspace,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := srv.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(srv.Close)
-	return srv
 }
 
 // hostLANIPv4 returns a non-loopback IPv4 of the host; the userspace NAT

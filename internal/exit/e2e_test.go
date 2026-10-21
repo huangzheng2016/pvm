@@ -36,22 +36,13 @@ func inProcessServer(t *testing.T, transports string) (*Server, map[string]*nets
 		nets[name] = tn
 		return td, nil
 	}
-	srv, err := NewServer(ServerConfig{
+	srv := startTestServer(t, ServerConfig{
 		Listen:     "127.0.0.1:0",
 		Token:      "test-token",
 		StateDir:   t.TempDir(),
-		UDPPort:    freePort(t, "udp"),
-		TCPPort:    freePort(t, "tcp"),
 		Transports: transports,
 		TunFactory: factory,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := srv.Start(); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(srv.Close)
 	return srv, nets
 }
 
@@ -71,6 +62,29 @@ func freePort(t *testing.T, network string) int {
 	}
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port
+}
+
+func startTestServer(t *testing.T, cfg ServerConfig) *Server {
+	t.Helper()
+	for attempt := 0; attempt < 5; attempt++ {
+		cfg.UDPPort = freePort(t, "udp")
+		cfg.TCPPort = freePort(t, "tcp")
+		srv, err := NewServer(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := srv.Start(); err == nil {
+			t.Cleanup(srv.Close)
+			return srv
+		} else {
+			srv.Close()
+			if !strings.Contains(err.Error(), "address already in use") {
+				t.Fatal(err)
+			}
+		}
+	}
+	t.Fatal("could not bind test WireGuard ports after 5 attempts")
+	return nil
 }
 
 // enrollViaTOFU mimics the CLI: probe fingerprint, pin it, enroll, build an entry.

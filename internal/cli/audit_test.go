@@ -11,6 +11,7 @@ func TestPrintAuditFailExitsNonZero(t *testing.T) {
 	code := printAudit(&buf, []auditCheck{
 		{Name: "vm", Status: "ok", Detail: "running (pid 42, uptime 1m0s)"},
 		{Name: "route", Status: "ok", Detail: "via my-exit (per-vm)"},
+		{Name: "tcp", Status: "ok", Detail: "/ping via pvm.probe:18081"},
 		{Name: "udp", Status: "fail", Detail: "no valid echo: exit status 1"},
 		{Name: "icmp", Status: "ok", Detail: "echo reply via pvm.probe"},
 		{Name: "dns", Status: "ok", Detail: "pvm.probe -> 203.0.113.5 (real-ip)"},
@@ -22,12 +23,13 @@ func TestPrintAuditFailExitsNonZero(t *testing.T) {
 		t.Fatalf("exit code = %d, want 1 when any check fails", code)
 	}
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
-	if len(lines) != 8 {
-		t.Fatalf("got %d lines, want 8: %q", len(lines), buf.String())
+	if len(lines) != 9 {
+		t.Fatalf("got %d lines, want 9: %q", len(lines), buf.String())
 	}
 	want := []string{
 		"vm=ok: running (pid 42, uptime 1m0s)",
 		"route=ok: via my-exit (per-vm)",
+		"tcp=ok: /ping via pvm.probe:18081",
 		"udp=fail: no valid echo: exit status 1",
 		"icmp=ok: echo reply via pvm.probe",
 		"dns=ok: pvm.probe -> 203.0.113.5 (real-ip)",

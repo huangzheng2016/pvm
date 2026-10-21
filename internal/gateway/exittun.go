@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,14 +44,20 @@ type ExitDef struct {
 }
 
 const (
-	rulePrefBypass   = 50 // direct CIDRs / direct-domain IPs -> main table
-	rulePrefVMExit   = 101
-	fwMarkBase       = 0x99 // exit idx i uses mark fwMarkBase+i, table 100+i
-	ruleTableBase    = 100
-	exitPeerKeyDir   = "/etc/pvm/exit-keys"
-	exitProbeTimeout = 5 * time.Second
-	watchdogPeriod   = 10 * time.Second
-	watchdogMaxDown  = 2 // consecutive failed probes before re-enroll
+	rulePrefEndpoint       = 40  // exit endpoint host /32 -> main (anti-loop)
+	rulePrefClusterLocal   = 45  // cluster cidr -> main (replies, vm-to-vm)
+	rulePrefBypass         = 50  // direct CIDRs / direct-domain IPs -> main table
+	rulePrefCIDR           = 60  // proxied CIDRs -> exit table
+	rulePrefFwmark         = 100 // SO_MARK flows -> exit table
+	rulePrefVMExit         = 101
+	rulePrefVMDirect       = 102  // direct VM -> main (cluster-default override)
+	rulePrefClusterDefault = 103  // cluster cidr -> default exit table
+	fwMarkBase             = 0x99 // exit idx i uses mark fwMarkBase+i, table 100+i
+	ruleTableBase          = 100
+	exitPeerKeyDir         = "/etc/pvm/exit-keys"
+	exitProbeTimeout       = 5 * time.Second
+	watchdogPeriod         = 10 * time.Second
+	watchdogMaxDown        = 2 // consecutive failed probes before re-enroll
 )
 
 var exitProbeDial = func(ctx context.Context, network, address string, mark int) (net.Conn, error) {
@@ -287,11 +295,17 @@ func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, 
 		}
 		m.clusterLocal = ""
 		if clusterCIDR != "" {
-			if err := ipRuleCmd("add", "to", clusterCIDR, "lookup", "main", "pref", "45"); err == nil {
+			if err := ipRuleCmd("add", "to", clusterCIDR, "lookup", "main", "pref", strconv.Itoa(rulePrefClusterLocal)); err == nil {
 				m.clusterLocal = clusterCIDR
 			}
 		}
 	}
+
+	// Rules deleted or rewritten externally are invisible to the
+	// in-memory reconciles above (their maps still say "installed"), so
+	// drift only heals when the desired state itself changes. Compare the
+	// live rules with the desired set and repair on every Sync.
+	m.reconcileActualRulesLocked()
 }
 
 // AddBypassIP records a freshly resolved direct/internal-domain IP so
@@ -420,7 +434,7 @@ func (m *exitManager) reconcileRulesLocked(wantVM map[string]int, wantCIDR map[s
 	for cidr, idx := range wantCIDR {
 		if cur, ok := m.cidrRules[cidr]; !ok || cur != idx {
 			ipRuleCmd("del", "to", cidr, "lookup", strconv.Itoa(ruleTableBase+cur))
-			if err := ipRuleCmd("add", "to", cidr, "lookup", strconv.Itoa(ruleTableBase+idx), "pref", "60"); err == nil {
+			if err := ipRuleCmd("add", "to", cidr, "lookup", strconv.Itoa(ruleTableBase+idx), "pref", strconv.Itoa(rulePrefCIDR)); err == nil {
 				m.cidrRules[cidr] = idx
 			}
 		}
@@ -451,7 +465,7 @@ func (m *exitManager) reconcileDefaultLocked(wantDirect map[string]bool, wantClu
 		if !wantDirect[ip] && !m.vmDirect[ip] {
 			// Also clear stale main overrides written by older versions;
 			// the in-memory cache alone cannot discover them after a restart.
-			ipRuleCmd("del", "from", ip+"/32", "lookup", "main", "pref", "102")
+			ipRuleCmd("del", "from", ip+"/32", "lookup", "main", "pref", strconv.Itoa(rulePrefVMDirect))
 		}
 	}
 	for ip := range m.vmDirect {
@@ -463,7 +477,7 @@ func (m *exitManager) reconcileDefaultLocked(wantDirect map[string]bool, wantClu
 	}
 	for ip := range wantDirect {
 		if !m.vmDirect[ip] {
-			if err := ipRuleCmd("add", "from", ip+"/32", "lookup", "main", "pref", "102"); err == nil {
+			if err := ipRuleCmd("add", "from", ip+"/32", "lookup", "main", "pref", strconv.Itoa(rulePrefVMDirect)); err == nil {
 				m.vmDirect[ip] = true
 			}
 		}
@@ -475,11 +489,11 @@ func (m *exitManager) reconcileDefaultLocked(wantDirect map[string]bool, wantClu
 	if m.cluster != "" && (wantCluster == "" || m.cluster != wantCluster || m.clusterTable != wantTable) {
 		// delete by prefix: the old rule may point at a different table
 		// after exits re-sorted, and ip rule tolerates the no-match case.
-		ipRuleCmd("del", "from", m.cluster, "pref", "103")
+		ipRuleCmd("del", "from", m.cluster, "pref", strconv.Itoa(rulePrefClusterDefault))
 		m.cluster, m.clusterTable = "", ""
 	}
 	if wantCluster != "" && m.cluster == "" {
-		if err := ipRuleCmd("add", "from", wantCluster, "lookup", wantTable, "pref", "103"); err == nil {
+		if err := ipRuleCmd("add", "from", wantCluster, "lookup", wantTable, "pref", strconv.Itoa(rulePrefClusterDefault)); err == nil {
 			m.cluster, m.clusterTable = wantCluster, wantTable
 		}
 	}
@@ -651,14 +665,14 @@ persistent_keepalive_interval=25
 	}
 	mark := strconv.Itoa(fwMarkBase + t.idx)
 	ipRuleCmd("del", "fwmark", mark, "lookup", table) // dedupe, ignore error
-	if err := ipRuleCmd("add", "fwmark", mark, "lookup", table, "pref", "100"); err != nil {
+	if err := ipRuleCmd("add", "fwmark", mark, "lookup", table, "pref", strconv.Itoa(rulePrefFwmark)); err != nil {
 		dev.Close()
 		return fmt.Errorf("fwmark rule: %w", err)
 	}
 	// the outer endpoint packets must never enter the tunnel
 	if t.server != "" {
 		ipRuleCmd("del", "to", t.server+"/32", "lookup", "main")
-		if err := ipRuleCmd("add", "to", t.server+"/32", "lookup", "main", "pref", "40"); err != nil {
+		if err := ipRuleCmd("add", "to", t.server+"/32", "lookup", "main", "pref", strconv.Itoa(rulePrefEndpoint)); err != nil {
 			log.Printf("exit %s: endpoint host rule: %v", t.name, err)
 		}
 	}
@@ -704,11 +718,11 @@ func (m *exitManager) ensureTunnelRoute(t *exitTunnel) error {
 		return err
 	}
 	mark := strconv.Itoa(fwMarkBase + t.idx)
-	if err := ipRuleCmd("add", "fwmark", mark, "lookup", table, "pref", "100"); err != nil {
+	if err := ipRuleCmd("add", "fwmark", mark, "lookup", table, "pref", strconv.Itoa(rulePrefFwmark)); err != nil {
 		return err
 	}
 	if t.server != "" {
-		if err := ipRuleCmd("add", "to", t.server+"/32", "lookup", "main", "pref", "40"); err != nil {
+		if err := ipRuleCmd("add", "to", t.server+"/32", "lookup", "main", "pref", strconv.Itoa(rulePrefEndpoint)); err != nil {
 			log.Printf("exit %s: endpoint host rule: %v", t.name, err)
 		}
 	}
@@ -874,4 +888,184 @@ func ipRouteImpl(args ...string) error {
 		return fmt.Errorf("ip route %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// ipRuleShowEntry is one rule from `ip -json rule show`. Src is "all"
+// when the rule has no from-selector (the field may also be absent).
+type ipRuleShowEntry struct {
+	Priority int    `json:"priority"`
+	Src      string `json:"src"`
+	Dst      string `json:"dst"`
+	Fwmark   string `json:"fwmark"`
+	Table    string `json:"table"`
+}
+
+// ipRuleList is indirection for tests, same pattern as ipRuleCmd.
+var ipRuleList = ipRuleListImpl
+
+func ipRuleListImpl() ([]ipRuleShowEntry, error) {
+	out, err := exec.Command("ip", "-json", "rule", "show").CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("ip -json rule show: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	var entries []ipRuleShowEntry
+	if err := json.Unmarshal(out, &entries); err != nil {
+		return nil, fmt.Errorf("parse ip rule show: %w", err)
+	}
+	return entries, nil
+}
+
+// policyRule is one desired policy rule: the literal selector args used
+// with ipRuleCmd, its lookup table, and normalized match keys for
+// comparing against `ip -json rule show` output.
+type policyRule struct {
+	sel    []string
+	table  string
+	pref   int
+	src    string // "all" for to/fwmark rules
+	dst    string
+	fwmark string // canonical hex
+}
+
+func newPolicyRule(sel []string, table string, pref int) policyRule {
+	r := policyRule{sel: sel, table: table, pref: pref, src: "all"}
+	for i := 0; i+1 < len(sel); i += 2 {
+		switch sel[i] {
+		case "from":
+			r.src = normRuleCIDR(sel[i+1])
+		case "to":
+			r.dst = normRuleCIDR(sel[i+1])
+		case "fwmark":
+			r.fwmark = normRuleFwmark(sel[i+1])
+		}
+	}
+	return r
+}
+
+// normRuleCIDR canonicalizes an address/prefix as printed by iproute2:
+// host addresses print without their /32, prefixes keep their length.
+func normRuleCIDR(s string) string {
+	if p, err := netip.ParsePrefix(s); err == nil {
+		return p.String()
+	}
+	if a, err := netip.ParseAddr(s); err == nil {
+		return netip.PrefixFrom(a, a.BitLen()).String()
+	}
+	return s
+}
+
+// normRuleFwmark canonicalizes a mark as printed by iproute2 (hex) so it
+// compares equal to the decimal form used in rule commands.
+func normRuleFwmark(s string) string {
+	if v, err := strconv.ParseUint(s, 0, 32); err == nil {
+		return fmt.Sprintf("0x%x", v)
+	}
+	return s
+}
+
+func (r policyRule) ruleArgs(verb, table string) []string {
+	args := append([]string{verb}, r.sel...)
+	if table == "" {
+		return append(args, "pref", strconv.Itoa(r.pref))
+	}
+	return append(args, "lookup", table, "pref", strconv.Itoa(r.pref))
+}
+
+// matchesSelector reports whether e is the same rule selector at the same
+// preference, regardless of the table it points at.
+func (r policyRule) matchesSelector(e ipRuleShowEntry) bool {
+	if e.Priority != r.pref {
+		return false
+	}
+	src := normRuleCIDR(e.Src)
+	if src == "" {
+		src = "all"
+	}
+	return src == r.src && normRuleCIDR(e.Dst) == r.dst && normRuleFwmark(e.Fwmark) == r.fwmark
+}
+
+// desiredPolicyRulesLocked is the full set of policy rules the current
+// in-memory state says must exist: per-VM exits (101), direct-VM main
+// overrides (102), proxied CIDRs (60), bypass/direct destinations (50),
+// cluster-local (45), cluster default exit (103), and per-tunnel fwmark
+// (100) plus endpoint anti-loop (40) rules.
+func (m *exitManager) desiredPolicyRulesLocked() []policyRule {
+	var out []policyRule
+	for ip, idx := range m.vmRules {
+		out = append(out, newPolicyRule([]string{"from", ip + "/32"}, strconv.Itoa(ruleTableBase+idx), rulePrefVMExit))
+	}
+	for ip := range m.vmDirect {
+		out = append(out, newPolicyRule([]string{"from", ip + "/32"}, "main", rulePrefVMDirect))
+	}
+	for cidr, idx := range m.cidrRules {
+		out = append(out, newPolicyRule([]string{"to", cidr}, strconv.Itoa(ruleTableBase+idx), rulePrefCIDR))
+	}
+	for cidr := range m.bypass {
+		out = append(out, newPolicyRule([]string{"to", cidr}, "main", rulePrefBypass))
+	}
+	if m.clusterLocal != "" {
+		out = append(out, newPolicyRule([]string{"to", m.clusterLocal}, "main", rulePrefClusterLocal))
+	}
+	if m.cluster != "" {
+		out = append(out, newPolicyRule([]string{"from", m.cluster}, m.clusterTable, rulePrefClusterDefault))
+	}
+	for _, t := range m.tuns {
+		// Down tunnels carry no rules: cleanupDevice removed them and
+		// upOnce/ensureTunnelRoute reinstall them with the device.
+		if t.dev == nil {
+			continue
+		}
+		table := strconv.Itoa(ruleTableBase + t.idx)
+		out = append(out, newPolicyRule([]string{"fwmark", strconv.Itoa(fwMarkBase + t.idx)}, table, rulePrefFwmark))
+		if t.server != "" {
+			out = append(out, newPolicyRule([]string{"to", t.server + "/32"}, "main", rulePrefEndpoint))
+		}
+	}
+	return out
+}
+
+// reconcileActualRulesLocked heals rule drift the in-memory reconcile
+// cannot see: the desired maps say a rule was installed, but the kernel
+// lost it (external deletion, wrong table). It reads the live rule list
+// once per Sync, re-adds missing desired rules and replaces rules whose
+// selector+pref points at the wrong table. Rules it does not own are
+// never touched, and tunnels are never rebuilt for route-only drift.
+func (m *exitManager) reconcileActualRulesLocked() {
+	entries, err := ipRuleList()
+	if err != nil {
+		log.Printf("exit: rule drift check: %v", err)
+		return
+	}
+	for _, want := range m.desiredPolicyRulesLocked() {
+		correct := false
+		var wrongTables []string
+		for _, e := range entries {
+			if !want.matchesSelector(e) {
+				continue
+			}
+			if e.Table == want.table {
+				correct = true
+				continue
+			}
+			wrongTables = append(wrongTables, e.Table)
+		}
+		if !correct {
+			add := want.ruleArgs("add", want.table)
+			if err := ipRuleCmd(add...); err != nil {
+				log.Printf("exit: rule drift check: add rule %q: %v", strings.Join(add, " "), err)
+				continue
+			}
+			log.Printf("exit: rule drift check: restored missing rule %q", strings.Join(add, " "))
+		}
+		// Install the desired rule before removing the wrong table so a
+		// failed add cannot take the old route down with it.
+		for _, table := range wrongTables {
+			del := want.ruleArgs("del", table)
+			if err := ipRuleCmd(del...); err != nil {
+				log.Printf("exit: rule drift check: delete wrong-table rule %q: %v", strings.Join(del, " "), err)
+			} else {
+				log.Printf("exit: rule drift check: deleted wrong-table rule %q (want table %s)", strings.Join(del, " "), want.table)
+			}
+		}
+	}
 }

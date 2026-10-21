@@ -117,7 +117,7 @@ func TestAuditStoppedVM(t *testing.T) {
 		t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
 	}
 	list, checks := decodeAuditChecks(t, rr.Body.Bytes())
-	wantOrder := []string{"vm", "route", "udp", "icmp", "dns", "ipv6", "timezone", "locale"}
+	wantOrder := []string{"vm", "route", "tcp", "udp", "icmp", "dns", "ipv6", "timezone", "locale"}
 	if len(list) != len(wantOrder) {
 		t.Fatalf("got %d checks, want %d: %+v", len(list), len(wantOrder), list)
 	}
@@ -192,6 +192,7 @@ func TestAuditRunningDirect(t *testing.T) {
 	if c := requireAuditStatus(t, checks, "route", "ok"); c.Detail != "via direct" {
 		t.Fatalf("route detail = %q", c.Detail)
 	}
+	requireAuditStatus(t, checks, "tcp", "skipped")
 	requireAuditStatus(t, checks, "udp", "skipped")
 	requireAuditStatus(t, checks, "icmp", "skipped")
 	if c := requireAuditStatus(t, checks, "dns", "ok"); !strings.Contains(c.Detail, "198.18.0.7") {
@@ -228,7 +229,9 @@ func TestAuditRunningExit(t *testing.T) {
 		switch {
 		case strings.HasPrefix(cmd, "ping -c 1 -W 3 pvm.probe"):
 			return "64 bytes from 100.99.1.1: icmp_seq=1 ttl=64 time=0.5 ms\n", nil
-		case strings.HasPrefix(cmd, "python3 -c "):
+		case strings.Contains(cmd, "GET /ping"):
+			return "", nil
+		case strings.Contains(cmd, `b"PVMP"`):
 			return "", nil
 		case strings.HasPrefix(cmd, "getent hosts "):
 			return "203.0.113.5  pvm.probe\n", nil
@@ -249,22 +252,48 @@ func TestAuditRunningExit(t *testing.T) {
 		t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
 	}
 	_, checks := decodeAuditChecks(t, rr.Body.Bytes())
-	for _, name := range []string{"vm", "route", "udp", "icmp", "dns", "ipv6", "timezone", "locale"} {
+	for _, name := range []string{"vm", "route", "tcp", "udp", "icmp", "dns", "ipv6", "timezone", "locale"} {
 		requireAuditStatus(t, checks, name, "ok")
 	}
 	if c := checks["route"]; c.Detail != "via my-exit (per-vm)" {
 		t.Fatalf("route detail = %q", c.Detail)
+	}
+	if c := checks["tcp"]; c.Detail != "/ping via pvm.probe:18081" {
+		t.Fatalf("tcp detail = %q", c.Detail)
 	}
 	// Agent route: pvm.probe must resolve to the exit's real in-tunnel
 	// address, not the reserved fake-ip.
 	if c := checks["dns"]; !strings.Contains(c.Detail, "203.0.113.5") || !strings.Contains(c.Detail, "real-ip") {
 		t.Fatalf("dns detail = %q, want the real exit address", c.Detail)
 	}
+	// The TCP probe must request /ping from the exit-agent's in-tunnel HTTP
+	// service on pvm.probe:exit.SpeedPort and validate the 200 status line.
+	var tcpCmd string
+	for _, cmd := range guest.cmds {
+		if strings.Contains(cmd, "GET /ping") {
+			tcpCmd = cmd
+		}
+	}
+	if tcpCmd == "" {
+		t.Fatal("tcp probe command not issued")
+	}
+	if !strings.Contains(tcpCmd, `create_connection(("pvm.probe",`+strconv.Itoa(exit.SpeedPort)+`),5)`) {
+		t.Fatalf("tcp probe must target %s on exit.SpeedPort with a timeout: %q", "pvm.probe", tcpCmd)
+	}
+	if !strings.Contains(tcpCmd, `b"GET /ping HTTP/1.0\r\n\r\n"`) {
+		t.Fatalf("tcp probe must send a /ping request: %q", tcpCmd)
+	}
+	if !strings.Contains(tcpCmd, `s.settimeout(5)`) || !strings.Contains(tcpCmd, `readline(128)`) {
+		t.Fatalf("tcp probe must bound and read the full status line: %q", tcpCmd)
+	}
+	if !strings.Contains(tcpCmd, `l[0].startswith(b"HTTP/")`) || !strings.Contains(tcpCmd, `l[1]==b"200"`) {
+		t.Fatalf("tcp probe must validate the HTTP 200 status line: %q", tcpCmd)
+	}
 	// The UDP probe must speak the exit-agent's magic+nonce protocol to
 	// pvm.probe on exit.UDPProbePort.
 	var udpCmd string
 	for _, cmd := range guest.cmds {
-		if strings.HasPrefix(cmd, "python3 ") {
+		if strings.Contains(cmd, `b"PVMP"`) {
 			udpCmd = cmd
 		}
 	}
@@ -331,6 +360,7 @@ func TestAuditClusterDefaultExit(t *testing.T) {
 	if c := requireAuditStatus(t, checks, "route", "ok"); c.Detail != "via my-exit (cluster default)" {
 		t.Fatalf("route detail = %q", c.Detail)
 	}
+	requireAuditStatus(t, checks, "tcp", "ok")
 	requireAuditStatus(t, checks, "udp", "ok")
 	requireAuditStatus(t, checks, "icmp", "ok")
 	// cluster default exit is still an agent route: real-ip expected
@@ -373,7 +403,7 @@ func TestAuditWarpSkipsProbes(t *testing.T) {
 	}
 	_, checks := decodeAuditChecks(t, rr.Body.Bytes())
 	requireAuditStatus(t, checks, "route", "ok")
-	for _, name := range []string{"udp", "icmp"} {
+	for _, name := range []string{"tcp", "udp", "icmp"} {
 		c := requireAuditStatus(t, checks, name, "skipped")
 		if !strings.Contains(c.Detail, "warp") {
 			t.Fatalf("%s detail = %q", name, c.Detail)
@@ -428,7 +458,7 @@ func TestAuditProbeFailures(t *testing.T) {
 		t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
 	}
 	_, checks := decodeAuditChecks(t, rr.Body.Bytes())
-	for _, name := range []string{"udp", "icmp", "dns"} {
+	for _, name := range []string{"tcp", "udp", "icmp", "dns"} {
 		requireAuditStatus(t, checks, name, "fail")
 	}
 	for _, name := range []string{"ipv6", "timezone", "locale"} {
@@ -466,6 +496,7 @@ func TestAuditUnregisteredExit(t *testing.T) {
 	}
 	_, checks := decodeAuditChecks(t, rr.Body.Bytes())
 	requireAuditStatus(t, checks, "route", "warn")
+	requireAuditStatus(t, checks, "tcp", "skipped")
 	requireAuditStatus(t, checks, "udp", "skipped")
 	requireAuditStatus(t, checks, "icmp", "skipped")
 	requireAuditStatus(t, checks, "dns", "ok")
@@ -508,8 +539,57 @@ func TestAuditMissingToolsSkipped(t *testing.T) {
 	}
 	_, checks := decodeAuditChecks(t, rr.Body.Bytes())
 	// Missing tools are unsupported, not probe failures.
+	requireAuditStatus(t, checks, "tcp", "skipped")
 	requireAuditStatus(t, checks, "udp", "skipped")
 	requireAuditStatus(t, checks, "icmp", "skipped")
 	requireAuditStatus(t, checks, "dns", "skipped")
 	requireAuditStatus(t, checks, "ipv6", "ok")
+}
+
+// TestAuditTCPInvalidResponse fails only the HTTP probe script (no valid
+// /ping status line) while UDP/ICMP/DNS succeed, so tcp alone reports fail.
+func TestAuditTCPInvalidResponse(t *testing.T) {
+	spec := &vm.Spec{Name: "dev1", Role: "user", User: "dev", CPUs: 1, MemMB: 128, ClusterID: 1, IP: "100.99.1.10", MAC: "10:65:30:01:00:0a"}
+	s := newAuditTestServer(t, spec)
+	if _, err := s.Clusters.Ensure(cluster.DefaultClusterID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Clusters.SetVMExit(cluster.DefaultClusterID, "dev1", "my-exit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := exit.SaveEntry(filepath.Join(s.P.Home, "exits"), &exit.Entry{
+		Name: "my-exit", Server: "vps.example.com:18443", Transport: "udp",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	markAuditVMRunning(t, s, spec)
+	guest := &fakeGuestRunner{t: t, fn: func(cmd string) (string, error) {
+		switch {
+		case strings.Contains(cmd, "GET /ping"):
+			return "", errors.New("exit status 1")
+		case strings.Contains(cmd, `b"PVMP"`):
+			return "", nil
+		case strings.HasPrefix(cmd, "ping "):
+			return "", nil
+		case strings.HasPrefix(cmd, "getent hosts "):
+			return "203.0.113.5  pvm.probe\n", nil
+		case strings.HasPrefix(cmd, "sysctl -n "):
+			return "1\n", nil
+		default:
+			return "", fmt.Errorf("unexpected command %q", cmd)
+		}
+	}}
+
+	rr := httptest.NewRecorder()
+	s.auditVM(rr, auditRequest(), guest.run)
+	if rr.Code != 200 {
+		t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
+	}
+	_, checks := decodeAuditChecks(t, rr.Body.Bytes())
+	if c := requireAuditStatus(t, checks, "tcp", "fail"); !strings.Contains(c.Detail, "/ping") {
+		t.Fatalf("tcp detail = %q", c.Detail)
+	}
+	requireAuditStatus(t, checks, "udp", "ok")
+	requireAuditStatus(t, checks, "icmp", "ok")
+	requireAuditStatus(t, checks, "dns", "ok")
 }
