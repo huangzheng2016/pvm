@@ -304,3 +304,26 @@ func TestRuleDriftReplacesNonLookupRule(t *testing.T) {
 		t.Fatalf("non-lookup rule was not removed by exact selector+pref: %v", ruleCalls(log))
 	}
 }
+
+func TestRuleDriftMatchesSplitPrefixLengths(t *testing.T) {
+	log := stubIPRule(t)
+	m := ruleDriftManager()
+	actual := actualRulesFor(m)
+	for i := range actual {
+		if actual[i].Priority == 45 {
+			actual[i].Dst = "192.168.1.0"
+			n := 24
+			actual[i].DstLen = &n
+		}
+		if actual[i].Priority == rulePrefClusterDefault {
+			actual[i].Src = "192.168.1.0"
+			n := 24
+			actual[i].SrcLen = &n
+		}
+	}
+	stubIPRuleList(t, func() ([]ipRuleShowEntry, error) { return actual, nil })
+	m.reconcileActualRulesLocked()
+	if len(ruleCalls(log)) != 0 {
+		t.Fatalf("split prefix lengths caused a false drift repair: %v", ruleCalls(log))
+	}
+}

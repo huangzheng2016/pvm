@@ -895,7 +895,9 @@ func ipRouteImpl(args ...string) error {
 type ipRuleShowEntry struct {
 	Priority int    `json:"priority"`
 	Src      string `json:"src"`
+	SrcLen   *int   `json:"srclen"`
 	Dst      string `json:"dst"`
+	DstLen   *int   `json:"dstlen"`
 	Fwmark   string `json:"fwmark"`
 	Table    string `json:"table"`
 }
@@ -943,12 +945,19 @@ func newPolicyRule(sel []string, table string, pref int) policyRule {
 }
 
 // normRuleCIDR canonicalizes an address/prefix as printed by iproute2:
-// host addresses print without their /32, prefixes keep their length.
-func normRuleCIDR(s string) string {
+// host addresses print without their /32, prefixes may be split into an
+// address and a length field.
+func normRuleCIDR(s string, prefixLen ...*int) string {
 	if p, err := netip.ParsePrefix(s); err == nil {
 		return p.String()
 	}
 	if a, err := netip.ParseAddr(s); err == nil {
+		if len(prefixLen) > 0 && prefixLen[0] != nil {
+			n := *prefixLen[0]
+			if n >= 0 && n <= a.BitLen() {
+				return netip.PrefixFrom(a, n).String()
+			}
+		}
 		return netip.PrefixFrom(a, a.BitLen()).String()
 	}
 	return s
@@ -977,11 +986,11 @@ func (r policyRule) matchesSelector(e ipRuleShowEntry) bool {
 	if e.Priority != r.pref {
 		return false
 	}
-	src := normRuleCIDR(e.Src)
+	src := normRuleCIDR(e.Src, e.SrcLen)
 	if src == "" {
 		src = "all"
 	}
-	return src == r.src && normRuleCIDR(e.Dst) == r.dst && normRuleFwmark(e.Fwmark) == r.fwmark
+	return src == r.src && normRuleCIDR(e.Dst, e.DstLen) == r.dst && normRuleFwmark(e.Fwmark) == r.fwmark
 }
 
 // desiredPolicyRulesLocked is the full set of policy rules the current
