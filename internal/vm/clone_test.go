@@ -10,7 +10,7 @@ func TestCloneSpec(t *testing.T) {
 		GuestUID: 501, CPUs: 2, MemMB: 4096, DiskGB: 20,
 		BaseDisk: "/img/golden.qcow2", Golden: 3, ClusterID: 1,
 		IP: "192.168.1.10", MAC: "52:54:00:00:00:0a",
-		Mounts: []GuestMount{{Tag: "pvm0", Host: "/h", Guest: "/g"}},
+		Mounts: []GuestMount{{Tag: "pvm0", Host: "/h", Guest: "/g", Profile: MountProfileReadahead}},
 		TZ:     "America/Los_Angeles", Locale: "en_US.UTF-8",
 		GitEmail: "a@b.c", GitName: "n", SmbiosSpoof: true,
 		PrevTZ: "UTC", PrevLocale: "C.UTF-8",
@@ -35,7 +35,7 @@ func TestCloneSpec(t *testing.T) {
 	if dst.GitEmail != "a@b.c" || dst.GitName != "n" {
 		t.Errorf("git identity not inherited: %+v", dst)
 	}
-	if len(dst.Mounts) != 1 || dst.Mounts[0].Host != "/h" {
+	if len(dst.Mounts) != 1 || dst.Mounts[0].Host != "/h" || dst.Mounts[0].Profile != MountProfileReadahead {
 		t.Errorf("mounts not inherited: %+v", dst)
 	}
 	if dst.Golden != 3 || dst.BaseDisk != "/img/golden.qcow2" {

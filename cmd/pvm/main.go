@@ -20,7 +20,7 @@ vm:
   rm            stop and delete a vm (asks for confirmation; -y|--force to skip)
   resize        grow a stopped vm's disk (grow-only): pvm resize dev1 40
   compact       reclaim unused host disk space (vm must be stopped): pvm compact dev1
-  mount         dynamic host mounts: pvm mount dev1 /host:/guest | ls dev1 | rm dev1 /guest
+  mount         dynamic host mounts: pvm mount dev1 [--profile coherent|readahead] /host:/guest | ls dev1 | rm dev1 /guest
   ssh           ssh into a vm: pvm ssh [-t|-T] dev1 [cmd...]
   snapshot      ram snapshots: create <name> | ls [name] | rm <name>
                 (create needs a running vm; rm needs the vm stopped)

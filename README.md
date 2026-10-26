@@ -33,6 +33,20 @@ pvm desktop dev1
 pvm map dev1 8080:80
 ```
 
+### 9p mount profiles
+
+`/share` and extra mounts use the `coherent` profile by default (`cache=none,msize=262144`) for bidirectional host/guest visibility. This is the shared-source baseline, not multi-writer transaction consistency. `pvm mount ls dev1` shows each extra mount's profile.
+
+For a mount dominated by large sequential reads, explicitly select `readahead`:
+
+```bash
+pvm mount dev1 --profile readahead ~/work/data:/home/dev/data
+```
+
+This uses `cache=readahead` and requests `msize=1048576`; the guest and QEMU negotiate the actual msize, which may be smaller. It does not remove small-file create/stat or other metadata bottlenecks and is not a promise of faster pnpm, Vite, or TypeScript builds. Keep Node/TypeScript dependencies and build caches on the guest's local disk.
+
+If the host rewrites or replaces a file while an old guest file descriptor is open, `readahead` can return old contents even through a newly opened guest descriptor until the old one is closed. Use `coherent` when both sides actively read and write the same files. Only the two named profiles are accepted; arbitrary cache options are not. To change an extra mount's profile, close guest users of the mount and run `pvm mount rm` followed by `pvm mount` with the new profile. Upgrading pvm does not rewrite an existing guest's cloud-init or force a remount.
+
 Register a VPS exit and route the whole VM through it:
 
 ```bash

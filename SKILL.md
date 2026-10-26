@@ -30,15 +30,22 @@ pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, l
 
 ### Directory mounts (pvm mount and /share)
 
-- Every VM mounts the host's `~/.pvm/share` at `/share` (9p, **bidirectional read-write**, including subdirectories). Drop files there for quick exchange - zero configuration.
+- Every VM mounts the host's `~/.pvm/share` at `/share` (9p, **bidirectional read-write**, including subdirectories). Drop files there for quick exchange - zero configuration. `/share` always uses the `coherent` profile.
 - Manage extra mounts dynamically on a running VM; no reboot or recreate is needed:
   ```bash
   pvm mount dev1 ~/work/proj:/home/dev/proj
+  pvm mount dev1 --profile readahead ~/work/data:/home/dev/data
   pvm mount ls dev1
   pvm mount rm dev1 /home/dev/proj
   ```
-- `pvm mount` hot-plugs the 9p device, mounts it in the guest, and persists the configuration in the guest's fstab. `pvm mount rm` unmounts and detaches it without deleting host files. Add and remove require the VM to be running and SSH-ready; up to 13 extra mounts are supported. A VM started by an older pvm version needs one restart to reserve the dynamic slots.
+- `pvm mount` hot-plugs the 9p device, mounts it in the guest, and persists the configuration and profile in the guest's fstab and VM spec. `pvm mount rm` unmounts and detaches it without deleting host files. Add and remove require the VM to be running and SSH-ready; up to 13 extra mounts are supported. A VM started by an older pvm version needs one restart to reserve the dynamic slots. Clones inherit mount profiles, and `pvm mount ls` displays them.
 - Mounts are virtio-9p (security_model=none + access=any, guest uid aligned with host uid). Good for source trees and documents; not for high-IOPS database directories. Extra mounts are managed only by `pvm mount`, not at create time.
+- **Mount profiles**:
+  - `coherent` is the default for `/share`, new extra mounts, and old specs with no profile. It uses `cache=none,msize=262144` and preserves the bidirectional-visibility baseline for files actively read and written on both sides. It does not provide multi-writer transaction consistency.
+  - `readahead` uses `cache=readahead` and requests `msize=1048576`; QEMU and the guest negotiate the actual value, which can be smaller. It targets large sequential reads, not small-file create/stat or other metadata bottlenecks.
+  - With `readahead`, if the host rewrites or replaces a file while an old guest file descriptor remains open, even a newly opened guest descriptor can see old contents until the old descriptor is closed. Do not use it when this visibility delay is unacceptable.
+- Neither profile removes the metadata cost of source-tree builds. Do not claim a pnpm, Vite, or TypeScript build speedup without measuring it; keep Node/TypeScript dependencies and build caches on the guest's local disk.
+- Only `coherent` and `readahead` are accepted; `loose`, `fscache`, and arbitrary mount options are rejected. To switch an extra mount's profile, close guest users of the mount, then use the normal `pvm mount rm` and `pvm mount --profile ...` path. Upgrading pvm does not rewrite existing cloud-init, automatically migrate profiles, force an unmount, or restart the VM.
 - `--image debian:13` and `--distro debian --version 13` are equivalent; conflicting flags are rejected.
 - **`pvm image build` proxy passthrough**: golden builds honor the host's `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY` (loopback proxy addresses are rewritten to a VM-reachable one) and clean up thoroughly — no proxy config is baked into the image.
 

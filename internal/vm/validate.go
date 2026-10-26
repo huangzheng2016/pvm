@@ -14,6 +14,17 @@ var (
 	gitUnsafeRe = regexp.MustCompile("[$`\\\\\n\r]")
 )
 
+func NormalizeMountProfile(profile string) (string, error) {
+	switch profile {
+	case "", MountProfileCoherent:
+		return MountProfileCoherent, nil
+	case MountProfileReadahead:
+		return MountProfileReadahead, nil
+	default:
+		return "", fmt.Errorf("invalid mount profile %q: must be %s or %s", profile, MountProfileCoherent, MountProfileReadahead)
+	}
+}
+
 // ValidateSpec rejects spec/mount fields that would inject into guest
 // shell (runcmd, ssh argv) or break cloud-init.
 func ValidateSpec(spec *Spec, mounts []GuestMount) error {
@@ -23,6 +34,9 @@ func ValidateSpec(spec *Spec, mounts []GuestMount) error {
 	for _, m := range mounts {
 		if !guestPathRe.MatchString(m.Guest) || strings.Contains(m.Guest, "..") {
 			return fmt.Errorf("invalid guest mount path %q", m.Guest)
+		}
+		if _, err := NormalizeMountProfile(m.Profile); err != nil {
+			return err
 		}
 	}
 	if gitUnsafeRe.MatchString(spec.GitEmail) {
