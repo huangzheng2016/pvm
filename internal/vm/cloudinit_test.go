@@ -87,3 +87,57 @@ func TestUserDataNeverContainsHostGitconfig(t *testing.T) {
 		t.Error("explicitly requested git email should be written")
 	}
 }
+
+func TestGuestMountOptions(t *testing.T) {
+	tests := []struct {
+		profile string
+		want    string
+	}{
+		{"", "trans=virtio,version=9p2000.L,access=any,cache=none,msize=262144"},
+		{MountProfileCoherent, "trans=virtio,version=9p2000.L,access=any,cache=none,msize=262144"},
+		{MountProfileReadahead, "trans=virtio,version=9p2000.L,access=any,cache=readahead,msize=1048576"},
+	}
+	for _, tc := range tests {
+		got, err := GuestMountOptions(tc.profile)
+		if err != nil {
+			t.Errorf("GuestMountOptions(%q): %v", tc.profile, err)
+		} else if got != tc.want {
+			t.Errorf("GuestMountOptions(%q) = %q, want %q", tc.profile, got, tc.want)
+		}
+	}
+	for _, profile := range []string{"loose", "fscache", "cache=none,msize=4096", "readahead;id"} {
+		if _, err := GuestMountOptions(profile); err == nil {
+			t.Errorf("GuestMountOptions(%q) unexpectedly passed", profile)
+		}
+	}
+}
+
+func TestUserDataUsesMountProfiles(t *testing.T) {
+	spec := &Spec{Name: "dev1", User: "u", GuestUID: 501}
+	mounts := []GuestMount{
+		{Tag: "pvm0", Host: "/h", Guest: "/work"},
+		{Tag: "pvm1", Host: "/h", Guest: "/data", Profile: MountProfileReadahead},
+	}
+	ud, err := userData(spec, "ssh-ed25519 AAAA", mounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coherent, err := GuestMountOptions("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	readahead, err := GuestMountOptions(MountProfileReadahead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(ud)
+	if !strings.Contains(out, "pvmshare /share 9p "+coherent+",rw,_netdev,nofail") {
+		t.Errorf("default /share is not coherent: %s", out)
+	}
+	if got := strings.Count(out, coherent); got != 4 {
+		t.Errorf("coherent options occur %d times, want /share and legacy mount fstab+mount", got)
+	}
+	if got := strings.Count(out, readahead); got != 2 {
+		t.Errorf("readahead options occur %d times, want fstab+mount", got)
+	}
+}

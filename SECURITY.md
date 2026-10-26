@@ -131,7 +131,8 @@ pvm ssh dev1 'grep 9p /proc/mounts'   # expect pvmshare /share + declared pvm mo
 pvm ssh dev1 'ls ~/.ssh ~/.gitconfig 2>/dev/null'
 ```
 
-- Check: 9p mounts show only `pvmshare /share` and the targets declared by `pvm mount` - no mount maps host `~/.ssh`, `~/.gitconfig`, or other personal paths. The VM's own `~/.ssh` holds only VM-generated keys; `~/.gitconfig` exists only if it was set inside the VM.
+- Check: 9p mounts show only `pvmshare /share` and the targets declared by `pvm mount` - no mount maps host `~/.ssh`, `~/.gitconfig`, or other personal paths. The VM's own `~/.ssh` holds only VM-generated keys; `~/.gitconfig` exists only if it was set inside the VM. The `PROFILE` column in `pvm mount ls` identifies the cache behavior of each extra mount.
+- Profile risk: the default `coherent` profile preserves the `cache=none` bidirectional-visibility baseline, but it is not multi-writer transaction consistency; coordinate host and guest writes to the same file. With `readahead`, a host rewrite or replacement while an old guest file descriptor is open can leave even newly opened guest descriptors reading old contents until the old descriptor closes. Use `coherent` when that stale-read boundary is unacceptable.
 - Fix: remove the offending mount with `pvm mount rm dev1 <guest-path>`; delete any copied host files. pvm itself never propagates host `~/.ssh` or `~/.gitconfig`.
 
 ### 10. MAC OUI

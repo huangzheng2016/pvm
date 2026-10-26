@@ -7,10 +7,32 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	MountProfileCoherent  = "coherent"
+	MountProfileReadahead = "readahead"
+)
+
 type GuestMount struct {
-	Tag   string
-	Host  string
-	Guest string
+	Tag     string
+	Host    string
+	Guest   string
+	Profile string `json:"profile,omitempty"`
+}
+
+func GuestMountOptions(profile string) (string, error) {
+	profile, err := NormalizeMountProfile(profile)
+	if err != nil {
+		return "", err
+	}
+	options := "trans=virtio,version=9p2000.L,access=any"
+	switch profile {
+	case MountProfileCoherent:
+		return options + ",cache=none,msize=262144", nil
+	case MountProfileReadahead:
+		return options + ",cache=readahead,msize=1048576", nil
+	default:
+		panic("unreachable mount profile")
+	}
 }
 
 func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
@@ -30,18 +52,26 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 			return nil, err
 		}
 	}
+	shareOptions, err := GuestMountOptions(MountProfileCoherent)
+	if err != nil {
+		return nil, err
+	}
 	fstab := []string{
-		"pvmshare /share 9p trans=virtio,version=9p2000.L,msize=262144,access=any,rw,_netdev,nofail 0 0",
+		fmt.Sprintf("pvmshare /share 9p %s,rw,_netdev,nofail 0 0", shareOptions),
 	}
 	runcmd := []string{
 		"mkdir -p /share",
-		"mountpoint -q /share || mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,access=any pvmshare /share",
+		fmt.Sprintf("mountpoint -q /share || mount -t 9p -o %s pvmshare /share", shareOptions),
 	}
 	for _, m := range mounts {
-		fstab = append(fstab, fmt.Sprintf("%s %s 9p trans=virtio,version=9p2000.L,msize=262144,access=any,rw,_netdev,nofail 0 0", m.Tag, m.Guest))
+		options, err := GuestMountOptions(m.Profile)
+		if err != nil {
+			return nil, err
+		}
+		fstab = append(fstab, fmt.Sprintf("%s %s 9p %s,rw,_netdev,nofail 0 0", m.Tag, m.Guest, options))
 		runcmd = append(runcmd,
 			"mkdir -p "+m.Guest,
-			fmt.Sprintf("mountpoint -q %s || mount -t 9p -o trans=virtio,version=9p2000.L,msize=262144,access=any %s %s", m.Guest, m.Tag, m.Guest),
+			fmt.Sprintf("mountpoint -q %s || mount -t 9p -o %s %s %s", m.Guest, options, m.Tag, m.Guest),
 		)
 	}
 

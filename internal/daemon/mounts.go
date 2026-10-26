@@ -14,11 +14,10 @@ import (
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
-const guestMountOptions = "trans=virtio,version=9p2000.L,msize=262144,access=any"
-
 type mountRequest struct {
-	Host  string `json:"host"`
-	Guest string `json:"guest"`
+	Host    string `json:"host"`
+	Guest   string `json:"guest"`
+	Profile string `json:"profile"`
 }
 
 func (s *Server) handleMountList(w http.ResponseWriter, r *http.Request) {
@@ -27,16 +26,25 @@ func (s *Server) handleMountList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err)
 		return
 	}
-	mounts := spec.Mounts
+	mounts := append([]vm.GuestMount(nil), spec.Mounts...)
 	if mounts == nil {
 		mounts = []vm.GuestMount{}
+	}
+	for i := range mounts {
+		mounts[i].Profile, err = vm.NormalizeMountProfile(mounts[i].Profile)
+		if err != nil {
+			writeErr(w, 500, err)
+			return
+		}
 	}
 	writeJSON(w, 200, mounts)
 }
 
 func (s *Server) handleMountAdd(w http.ResponseWriter, r *http.Request) {
 	var req mountRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -48,7 +56,7 @@ func (s *Server) handleMountAdd(w http.ResponseWriter, r *http.Request) {
 	lock := qemu.LockVM(spec.Name)
 	lock.Lock()
 	defer lock.Unlock()
-	m, err := newGuestMount(spec, req.Host, req.Guest)
+	m, err := newGuestMount(spec, req.Host, req.Guest, req.Profile)
 	if err != nil {
 		writeErr(w, 400, err)
 		return
@@ -93,14 +101,18 @@ func (s *Server) handleMountRemove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"removed": guest})
 }
 
-func newGuestMount(spec *vm.Spec, host, guest string) (vm.GuestMount, error) {
+func newGuestMount(spec *vm.Spec, host, guest, profile string) (vm.GuestMount, error) {
 	if spec.Role == "gateway" {
 		return vm.GuestMount{}, fmt.Errorf("gateway mounts are managed by pvm")
 	}
 	if host == "" || guest == "" {
 		return vm.GuestMount{}, fmt.Errorf("host and guest paths are required")
 	}
-	host, err := filepath.Abs(host)
+	profile, err := vm.NormalizeMountProfile(profile)
+	if err != nil {
+		return vm.GuestMount{}, err
+	}
+	host, err = filepath.Abs(host)
 	if err != nil {
 		return vm.GuestMount{}, err
 	}
@@ -111,7 +123,7 @@ func newGuestMount(spec *vm.Spec, host, guest string) (vm.GuestMount, error) {
 	if guest == "/share" {
 		return vm.GuestMount{}, fmt.Errorf("/share is reserved for the default pvm share")
 	}
-	if err := vm.ValidateSpec(&vm.Spec{User: spec.User}, []vm.GuestMount{{Guest: guest}}); err != nil {
+	if err := vm.ValidateSpec(&vm.Spec{User: spec.User}, []vm.GuestMount{{Guest: guest, Profile: profile}}); err != nil {
 		return vm.GuestMount{}, err
 	}
 	used := make([]bool, qemu.MaxExtraMounts)
@@ -127,7 +139,7 @@ func newGuestMount(spec *vm.Spec, host, guest string) (vm.GuestMount, error) {
 	}
 	for i := range used {
 		if !used[i] {
-			return vm.GuestMount{Tag: fmt.Sprintf("pvm%d", i), Host: host, Guest: guest}, nil
+			return vm.GuestMount{Tag: fmt.Sprintf("pvm%d", i), Host: host, Guest: guest, Profile: profile}, nil
 		}
 	}
 	return vm.GuestMount{}, fmt.Errorf("too many mounts (max %d)", qemu.MaxExtraMounts)
@@ -152,6 +164,10 @@ func (s *Server) addMount(spec *vm.Spec, m vm.GuestMount) error {
 	if out, err := s.sshRun(spec, fmt.Sprintf("if mountpoint -q %s; then echo %s >&2; exit 1; fi", shellQuote(m.Guest), shellQuote("mountpoint is already in use: "+m.Guest))); err != nil {
 		return fmt.Errorf("check guest mountpoint: %v%s", err, indentOutput(out))
 	}
+	mountScript, err := guestMountAddScript(m)
+	if err != nil {
+		return err
+	}
 	if err := s.prepareMountSlots(&next); err != nil {
 		return err
 	}
@@ -164,7 +180,7 @@ func (s *Server) addMount(spec *vm.Spec, m vm.GuestMount) error {
 		return s.mountStateError(err, s.prepareMountSlots(spec))
 	}
 	deviceAdded := true
-	if out, err := s.sshRun(spec, guestMountAddScript(m)); err != nil {
+	if out, err := s.sshRun(spec, mountScript); err != nil {
 		rollback := s.rollbackAddedMount(spec, m, q, deviceAdded)
 		return s.mountStateError(fmt.Errorf("mount in guest: %v%s", err, indentOutput(out)), rollback)
 	}
@@ -318,13 +334,22 @@ func dynamicMountSlotReady(args []string, slot int) bool {
 		strings.Contains(joined, "id="+qemu.VirtFSRootPort(slot)+",")
 }
 
-func guestMountAddScript(m vm.GuestMount) string {
-	line := fmt.Sprintf("%s %s 9p %s,rw,_netdev,nofail 0 0", m.Tag, m.Guest, guestMountOptions)
+func guestMountAddScript(m vm.GuestMount) (string, error) {
+	options, err := vm.GuestMountOptions(m.Profile)
+	if err != nil {
+		return "", err
+	}
+	line := fmt.Sprintf("%s %s 9p %s,rw,_netdev,nofail 0 0", m.Tag, m.Guest, options)
+	// QMP returns before the guest necessarily enumerates the hotplugged tag.
 	return "set -e\n" +
+		"for attempt in 1 2 3 4 5; do\n" +
+		"  if grep -qsx " + shellQuote(m.Tag) + " /sys/bus/virtio/devices/virtio*/mount_tag 2>/dev/null; then break; fi\n" +
+		"  sleep 1\n" +
+		"done\n" +
 		"sudo sed -i " + shellQuote("/^"+m.Tag+" /d") + " /etc/fstab\n" +
 		"sudo mkdir -p " + shellQuote(m.Guest) + "\n" +
-		"sudo mount -t 9p -o " + shellQuote(guestMountOptions) + " " + shellQuote(m.Tag) + " " + shellQuote(m.Guest) + "\n" +
-		"printf '%s\\n' " + shellQuote(line) + " | sudo tee -a /etc/fstab >/dev/null"
+		"sudo mount -t 9p -o " + shellQuote(options) + " " + shellQuote(m.Tag) + " " + shellQuote(m.Guest) + "\n" +
+		"printf '%s\\n' " + shellQuote(line) + " | sudo tee -a /etc/fstab >/dev/null", nil
 }
 
 func guestMountRemoveScript(m vm.GuestMount) string {

@@ -24,6 +24,11 @@ func TestValidateSpec(t *testing.T) {
 
 	ok(base(), nil)
 	ok(base(), []GuestMount{{Tag: "m0", Host: "/h", Guest: "/mnt/data-1.2_x"}})
+	ok(base(), []GuestMount{{Tag: "m0", Host: "/h", Guest: "/mnt/data", Profile: MountProfileCoherent}})
+	ok(base(), []GuestMount{{Tag: "m0", Host: "/h", Guest: "/mnt/data", Profile: MountProfileReadahead}})
+	for _, profile := range []string{"loose", "fscache", "cache=loose", "readahead;id", "Coherent", " readahead"} {
+		bad(base(), []GuestMount{{Tag: "m0", Host: "/h", Guest: "/mnt/data", Profile: profile}}, "invalid mount profile")
+	}
 
 	s := base()
 	s.User = "root;id"
