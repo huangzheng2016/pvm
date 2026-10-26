@@ -66,7 +66,6 @@ func (s *Server) Run(sysfsRoot string) error {
 // execs on return.
 func (s *Server) Serve(rw io.ReadWriteCloser) error {
 	serveCtx, cancelExecs := context.WithCancel(context.Background())
-	defer cancelExecs()
 
 	w := newFrameWriter(rw)
 	var wmu sync.Mutex
@@ -78,7 +77,10 @@ func (s *Server) Serve(rw io.ReadWriteCloser) error {
 
 	r := bufio.NewReaderSize(rw, 64<<10)
 	var wg sync.WaitGroup
-	defer wg.Wait()
+	defer func() {
+		cancelExecs()
+		wg.Wait()
+	}()
 	for {
 		var f Frame
 		if err := readFrame(r, &f); err != nil {

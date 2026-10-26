@@ -92,6 +92,7 @@ type recvData struct {
 
 func (t *TCPBind) makeReceive() conn.ReceiveFunc {
 	closeChan := t.closeChan
+	recvChan := t.recvChan
 	return func(bufs [][]byte, sizes []int, eps []conn.Endpoint) (n int, err error) {
 		if len(bufs) == 0 {
 			return 0, nil
@@ -100,12 +101,12 @@ func (t *TCPBind) makeReceive() conn.ReceiveFunc {
 		select {
 		case <-closeChan:
 			return 0, net.ErrClosed
-		case data := <-t.recvChan:
+		case data := <-recvChan:
 			count = t.copyReceivedData(bufs, sizes, eps, count, data)
 		}
 		for count < len(bufs) {
 			select {
-			case data := <-t.recvChan:
+			case data := <-recvChan:
 				count = t.copyReceivedData(bufs, sizes, eps, count, data)
 			default:
 				return count, nil
@@ -128,7 +129,7 @@ func (t *TCPBind) copyReceivedData(bufs [][]byte, sizes []int, eps []conn.Endpoi
 	return count + 1
 }
 
-func (t *TCPBind) handleConn(entry *tcpConn, endpoint conn.Endpoint, closeChan chan struct{}) {
+func (t *TCPBind) handleConn(entry *tcpConn, endpoint conn.Endpoint, closeChan chan struct{}, recvChan chan *recvData) {
 	go func() {
 		defer func() {
 			t.deleteConn(endpoint.DstToString(), entry)
@@ -171,7 +172,7 @@ func (t *TCPBind) handleConn(entry *tcpConn, endpoint conn.Endpoint, closeChan c
 			case <-closeChan:
 				t.dataPool.Put(data)
 				return
-			case t.recvChan <- data:
+			case recvChan <- data:
 			}
 		}
 	}()
@@ -188,13 +189,15 @@ func (t *TCPBind) deleteConn(endpoint string, entry *tcpConn) {
 	}
 }
 
-func (t *TCPBind) accept(listener *net.TCPListener, closeChan chan struct{}) {
+func (t *TCPBind) accept(listener *net.TCPListener, closeChan chan struct{}, recvChan chan *recvData) {
 	backoff := 10 * time.Millisecond
 	for {
 		c, err := listener.AcceptTCP()
 		if err != nil {
-			if t.isClosed() {
+			select {
+			case <-closeChan:
 				return
+			default:
 			}
 			// EMFILE and friends are temporary; never let the accept loop
 			// die silently, the whole TCP transport depends on it.
@@ -214,16 +217,19 @@ func (t *TCPBind) accept(listener *net.TCPListener, closeChan chan struct{}) {
 		c.SetKeepAlivePeriod(tcpKeepAlivePeriod) //nolint:errcheck
 		endpoint := &conn.StdNetEndpoint{AddrPort: c.RemoteAddr().(*net.TCPAddr).AddrPort()}
 		entry := &tcpConn{conn: c}
-		if !t.storeConn(endpoint.DstToString(), entry) {
+		if !t.storeConn(endpoint.DstToString(), entry, closeChan) {
 			continue
 		}
-		t.handleConn(entry, endpoint, closeChan)
+		t.handleConn(entry, endpoint, closeChan, recvChan)
 	}
 }
 
 func (t *TCPBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.listener != nil {
+		return nil, 0, conn.ErrBindAlreadyOpen
+	}
 	t.recvChan = make(chan *recvData, 1024)
 	t.closeChan = make(chan struct{})
 	t.tcpConnMap = make(map[string]*tcpConn)
@@ -237,7 +243,7 @@ func (t *TCPBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	go t.accept(t.listener, t.closeChan)
+	go t.accept(t.listener, t.closeChan, t.recvChan)
 	fn := t.makeReceive()
 	actualPort := uint16(t.listener.Addr().(*net.TCPAddr).Port)
 	return []conn.ReceiveFunc{fn}, actualPort, nil
@@ -276,10 +282,10 @@ func (t *TCPBind) Close() error {
 	return err
 }
 
-func (t *TCPBind) storeConn(endpoint string, entry *tcpConn) bool {
+func (t *TCPBind) storeConn(endpoint string, entry *tcpConn, generation chan struct{}) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.closed {
+	if t.closed || t.closeChan != generation {
 		entry.conn.Close()
 		return false
 	}
@@ -310,6 +316,7 @@ func (t *TCPBind) getConn(endpoint conn.Endpoint) (*tcpConn, error) {
 	}
 	t.mu.Lock()
 	acceptOnly := t.acceptOnly
+	closeChan, recvChan := t.closeChan, t.recvChan
 	t.mu.Unlock()
 	if acceptOnly {
 		return nil, fmt.Errorf("tcp connection to %s is not established", key)
@@ -353,18 +360,15 @@ func (t *TCPBind) getConn(endpoint conn.Endpoint) (*tcpConn, error) {
 	rawTCP.SetKeepAlive(true)                     //nolint:errcheck
 	rawTCP.SetKeepAlivePeriod(tcpKeepAlivePeriod) //nolint:errcheck
 	entry := &tcpConn{conn: rawTCP}
-	if !t.storeConn(key, entry) {
+	if !t.storeConn(key, entry, closeChan) {
 		return nil, fmt.Errorf("too many tcp connections")
 	}
-	t.mu.Lock()
-	closeChan := t.closeChan
-	t.mu.Unlock()
 	if closeChan == nil {
 		t.deleteConn(key, entry)
 		entry.conn.Close()
 		return nil, net.ErrClosed
 	}
-	t.handleConn(entry, endpoint, closeChan)
+	t.handleConn(entry, endpoint, closeChan, recvChan)
 	return entry, nil
 }
 

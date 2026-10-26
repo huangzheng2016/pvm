@@ -106,7 +106,7 @@ This creates a new client key, enrolls it with the exit agent, writes the config
 ## Documentation
 
 - [SKILL.md](SKILL.md): Complete usage manual for agents and people; `pvm skill` prints the embedded copy.
-- [SECURITY.md](SECURITY.md): Network, device identity, and risk-control posture; `pvm security` prints the embedded copy.
+- [SECURITY.md](SECURITY.md): Host/guest trust boundaries, credentials, image provenance, and network verification; `pvm security` prints the embedded copy.
 - [AGENTS.md](AGENTS.md): Repository map, build and test workflow, and development rules.
 - `pvm upgrade` upgrades the installed binary, restarts a running daemon, and restores previously running user VMs. Use `--no-restart` to replace only the binary.
 
@@ -116,3 +116,5 @@ This creates a new client key, enrolls it with the exit agent, writes the config
 ./script/build.sh
 go test ./...
 ```
+
+Security boundaries: user VMs share a layer-2 network and a read-write `/share`; they are not isolated hostile tenants. Explicit direct/internal rules can bypass a default exit. See [SECURITY.md](SECURITY.md) for guarantees, limitations, and deployment checks.

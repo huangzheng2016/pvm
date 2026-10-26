@@ -3,6 +3,7 @@ package exit
 import (
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 
 	"golang.zx2c4.com/wireguard/tun"
@@ -105,17 +106,27 @@ func iptablesRemoveMarked(comment string, tunNames, cidrs []string) error {
 	return nil
 }
 
+var iptablesArgRE = regexp.MustCompile(`"(?:[^"\\]|\\.)*"|[^\s]+`)
+
 // parseMarkedDeletes turns iptables-save output into delete command argument
 // vectors for rules carrying the comment.
 func parseMarkedDeletes(saveOutput, comment string, tunNames, cidrs []string) [][]string {
-	ours := func(spec string) bool {
+	hasValue := func(fields []string, flag, value string) bool {
+		for i := 0; i+1 < len(fields); i++ {
+			if fields[i] == flag && fields[i+1] == value {
+				return true
+			}
+		}
+		return false
+	}
+	ours := func(fields []string) bool {
 		for _, n := range tunNames {
-			if strings.Contains(spec, "-i "+n) || strings.Contains(spec, "-o "+n) {
+			if hasValue(fields, "-i", n) || hasValue(fields, "-o", n) {
 				return true
 			}
 		}
 		for _, c := range cidrs {
-			if strings.Contains(spec, "-s "+c) {
+			if hasValue(fields, "-s", c) {
 				return true
 			}
 		}
@@ -133,13 +144,15 @@ func parseMarkedDeletes(saveOutput, comment string, tunNames, cidrs []string) []
 		if !ok {
 			continue
 		}
-		// iptables-save quotes comments ("pvm-exit"); strip quotes for
-		// matching and for the delete argument vector
-		spec = strings.ReplaceAll(spec, `"`, "")
-		if !strings.Contains(spec, "--comment "+comment) || !ours(spec) {
+		fields := iptablesArgRE.FindAllString(spec, -1)
+		for i, field := range fields {
+			if strings.HasPrefix(field, `"`) {
+				fields[i] = strings.Trim(field, `"`)
+			}
+		}
+		if !hasValue(fields, "--comment", comment) || !ours(fields) {
 			continue
 		}
-		fields := strings.Fields(spec)
 		if len(fields) == 0 {
 			continue
 		}

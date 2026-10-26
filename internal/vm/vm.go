@@ -2,6 +2,7 @@ package vm
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -93,16 +94,19 @@ func ListAll(p *paths.Paths) ([]*Spec, error) {
 		return nil, err
 	}
 	var out []*Spec
+	var errs []error
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
 		s, err := Load(p, e.Name())
-		if err == nil {
-			out = append(out, s)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("load vm %s: %w", e.Name(), err))
+			continue
 		}
+		out = append(out, s)
 	}
-	return out, nil
+	return out, errors.Join(errs...)
 }
 
 func (s *Spec) Save(p *paths.Paths) error {
@@ -233,16 +237,16 @@ func Delete(p *paths.Paths, name string) error {
 	return os.RemoveAll(p.VMDir(name))
 }
 
-func UsedSSHPorts(p *paths.Paths) map[int]bool {
+func UsedSSHPorts(p *paths.Paths) (map[int]bool, error) {
 	used := map[int]bool{}
 	specs, err := ListAll(p)
 	if err != nil {
-		return used
+		return nil, err
 	}
 	for _, s := range specs {
 		if s.SSHPort > 0 {
 			used[s.SSHPort] = true
 		}
 	}
-	return used
+	return used, nil
 }

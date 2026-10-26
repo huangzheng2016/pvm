@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	diskfs "github.com/diskfs/go-diskfs"
+	"github.com/huangzheng2016/pvm/internal/paths"
 )
 
 func TestSeedImage(t *testing.T) {
@@ -81,5 +82,31 @@ func TestAllocSSHPortSkipsUsed(t *testing.T) {
 	}
 	if got == occupied {
 		t.Errorf("returned host-bound port %d", got)
+	}
+}
+
+func TestListAllRejectsCorruptSpec(t *testing.T) {
+	p := paths.New(t.TempDir())
+	if err := os.MkdirAll(p.VMDir("dev1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(p.VMDir("dev1"), "vm.json"), []byte("invalid"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(p.VMDir("dev2"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&Spec{Name: "dev2"}).Save(p); err != nil {
+		t.Fatal(err)
+	}
+	specs, err := ListAll(p)
+	if err == nil {
+		t.Fatal("corrupt spec silently omitted")
+	}
+	if len(specs) != 1 || specs[0].Name != "dev2" {
+		t.Fatalf("valid specs lost: %+v", specs)
+	}
+	if _, err := UsedSSHPorts(p); err == nil {
+		t.Fatal("corrupt spec omitted during port allocation")
 	}
 }

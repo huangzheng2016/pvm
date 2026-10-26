@@ -38,13 +38,20 @@ func CloneDisk(p *paths.Paths, tc *qemu.Toolchain, src, dst *Spec) error {
 	if _, err := os.Stat(dir); err == nil {
 		return fmt.Errorf("vm %q already exists", dst.Name)
 	}
-	if _, err := os.Stat(src.Disk(p)); err != nil {
+	sourceDisk := src.Disk(p)
+	restore := qemu.SnapPaths(p.VMDir(src.Name)).Restore
+	if _, err := os.Stat(restore); err == nil {
+		sourceDisk = restore
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect source restore disk: %w", err)
+	}
+	if _, err := os.Stat(sourceDisk); err != nil {
 		return fmt.Errorf("source disk for %s not found: %w", src.Name, err)
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	out, err := exec.Command(tc.Img, "convert", "-O", "qcow2", src.Disk(p), dst.Disk(p)).CombinedOutput()
+	out, err := exec.Command(tc.Img, "convert", "-f", "qcow2", "-O", "qcow2", sourceDisk, dst.Disk(p)).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("qemu-img convert: %v\n%s", err, out)
 	}

@@ -138,3 +138,43 @@ func TestExecBadCommand(t *testing.T) {
 		t.Fatal("want spawn error")
 	}
 }
+
+func TestDisconnectCancelsRunningExec(t *testing.T) {
+	host, guest := net.Pipe()
+	defer host.Close()
+	defer guest.Close()
+	srv := NewServer()
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(guest) }()
+	if err := host.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := newFrameWriter(host).write(&Frame{
+		ID: "disconnect", Op: OpExec,
+		Cmd: []string{"sh", "-c", "echo ready; exec sleep 30"}, TimeoutS: 5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var f Frame
+	if err := readFrame(bufioReader(host), &f); err != nil {
+		t.Fatal(err)
+	}
+	if f.Stream != StreamStdout {
+		t.Fatalf("command did not start: %+v", f)
+	}
+	if err := host.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		// The command timeout still bounds cleanup if cancellation regresses.
+		<-done
+		t.Fatal("Serve did not cancel running exec after disconnect")
+	}
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if len(srv.execs) != 0 {
+		t.Fatalf("session retained %d execs", len(srv.execs))
+	}
+}

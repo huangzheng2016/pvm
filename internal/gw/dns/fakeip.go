@@ -60,10 +60,16 @@ func (p *Pool) Allocate(domain string) net.IP {
 		p.lru.MoveToFront(p.elems[ip])
 		return uint32ToIP(ip)
 	}
-	if len(p.dToI) >= p.max {
-		p.evictLocked()
+	var ip uint32
+	if len(p.iToD) == int(p.count)-2 {
+		// A full pool has no free address to scan for; reuse the LRU tail.
+		ip = p.evictLocked()
+	} else {
+		if len(p.dToI) >= p.max {
+			p.evictLocked()
+		}
+		ip = p.freeIPLocked()
 	}
-	ip := p.freeIPLocked()
 	p.dToI[domain] = ip
 	p.iToD[ip] = domain
 	p.elems[ip] = p.lru.PushFront(ip)

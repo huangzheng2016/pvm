@@ -2,6 +2,7 @@ package image
 
 import (
 	"fmt"
+	"github.com/huangzheng2016/pvm/internal/vm"
 	"strings"
 )
 
@@ -29,9 +30,15 @@ func renderProvision(distro, buildUser string, proxy ProxyConfig) (string, error
 	if buildUser == "" || buildUser == "root" {
 		return "", fmt.Errorf("invalid build user %q", buildUser)
 	}
+	if err := vm.ValidateSpec(&vm.Spec{User: buildUser}, nil); err != nil {
+		return "", err
+	}
+	if err := proxy.validate(); err != nil {
+		return "", err
+	}
 	var b strings.Builder
 	b.WriteString(`#!/bin/bash
-set -euxo pipefail
+set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 # wait for the base image's own cloud-init/apt to settle
@@ -117,8 +124,6 @@ docker builder prune -af >/dev/null 2>&1 || true
 docker image prune -f >/dev/null 2>&1 || true
 journalctl --vacuum-time=1s || true
 rm -rf /var/log/*.gz /var/log/*.[0-9] || true
-# early: hole punching keeps the host in disk io for minutes; drain before shutdown
-fstrim -av || true
 if command -v cloud-init >/dev/null; then cloud-init clean --logs --seed; fi
 rm -rf /var/lib/cloud/instances/* || true
 # per-clone uniqueness: host keys, machine-id, fstab share entry
@@ -136,6 +141,7 @@ sync
 		return b.String()
 	}() + `userdel -rf ` + buildUser + `
 getent passwd ` + buildUser + ` >/dev/null && { echo "build user ` + buildUser + ` still exists; refusing to seal the golden image" >&2; exit 1; } || true
+fstrim -av || true
 sync
 `)
 	return b.String(), nil

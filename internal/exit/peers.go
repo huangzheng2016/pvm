@@ -176,7 +176,11 @@ func (s *PeerStore) Allocate(pubkey, hostname, transport string) (Peer, bool, er
 		if !used[candidate] {
 			p := Peer{IP: candidate, PubKey: pubkey, Hostname: hostname, Transport: transport, CreatedAt: time.Now()}
 			s.Peers = append(s.Peers, p)
-			return p, true, s.saveLocked()
+			if err := s.saveLocked(); err != nil {
+				s.Peers = s.Peers[:len(s.Peers)-1]
+				return Peer{}, false, err
+			}
+			return p, true, nil
 		}
 	}
 	return Peer{}, false, fmt.Errorf("tunnel IP pool exhausted for %s", transport)
@@ -198,8 +202,13 @@ func (s *PeerStore) Remove(ip string) (Peer, bool, error) {
 	defer s.mu.Unlock()
 	for i, p := range s.Peers {
 		if p.IP == ip {
+			before := append([]Peer(nil), s.Peers...)
 			s.Peers = append(s.Peers[:i], s.Peers[i+1:]...)
-			return p, true, s.saveLocked()
+			if err := s.saveLocked(); err != nil {
+				s.Peers = before
+				return Peer{}, false, err
+			}
+			return p, true, nil
 		}
 	}
 	return Peer{}, false, nil

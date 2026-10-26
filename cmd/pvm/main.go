@@ -54,7 +54,7 @@ daemon:
 other:
   version       print version
   skill         print the embedded pvm skill doc (install into agent skills)
-  security      print the embedded security/risk-control guide
+  security      print the embedded security boundaries and verification guide
   upgrade       self-upgrade and restart the daemon: pvm upgrade [--check] [--to <tag>] [--no-restart] [-y]
 
 common choices:

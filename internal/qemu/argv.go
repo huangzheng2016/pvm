@@ -2,6 +2,7 @@ package qemu
 
 import (
 	"fmt"
+	"golang.org/x/sys/unix"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -88,8 +89,22 @@ type VMConfig struct {
 	Balloon     bool // virtio-balloon with free-page-reporting
 }
 
+func validateUnixSocketPath(name, path string) error {
+	if len(path) >= len(unix.RawSockaddrUnix{}.Path) {
+		return fmt.Errorf("%s Unix socket path is %d bytes (maximum %d); use a shorter PVM_HOME", name, len(path), len(unix.RawSockaddrUnix{}.Path)-1)
+	}
+	return nil
+}
+
+func keyval(s string) string { return strings.ReplaceAll(s, ",", ",,") }
+
 // BuildArgs constructs the full qemu argv (excluding the binary itself).
 func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
+	for _, socket := range []struct{ name, path string }{{"QMP", c.QMPSock}, {"serial", c.SerialSock}, {"agent", c.AgentSock}, {"network link", c.Network.LinkSock}} {
+		if err := validateUnixSocketPath(socket.name, socket.path); err != nil {
+			return nil, err
+		}
+	}
 	if c.CPUs <= 0 {
 		c.CPUs = 2
 	}
@@ -105,8 +120,8 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 		}
 		code := filepath.Join(t.FirmwareDir, "edk2-aarch64-code.fd")
 		args = append(args,
-			"-drive", "if=pflash,format=raw,readonly=on,file="+code,
-			"-drive", "if=pflash,format=raw,file="+c.VarsPath,
+			"-drive", "if=pflash,format=raw,readonly=on,file="+keyval(code),
+			"-drive", "if=pflash,format=raw,file="+keyval(c.VarsPath),
 		)
 	} else {
 		// SeaBIOS default; amd64 cloud images are hybrid and boot fine.
@@ -128,13 +143,13 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 		"-m", strconv.Itoa(c.MemMB),
 		"-smp", strconv.Itoa(c.CPUs),
 		"-display", "none",
-		"-chardev", fmt.Sprintf("socket,id=ser0,path=%s,server=on,wait=off,logfile=%s", c.SerialSock, c.ConsoleLog),
+		"-chardev", fmt.Sprintf("socket,id=ser0,path=%s,server=on,wait=off,logfile=%s", keyval(c.SerialSock), keyval(c.ConsoleLog)),
 		"-serial", "chardev:ser0",
-		"-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio,cache=writeback,discard=unmap,detect-zeroes=unmap", c.DiskPath),
-		"-drive", fmt.Sprintf("file=%s,format=raw,if=virtio,readonly=on", c.SeedPath),
+		"-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio,cache=writeback,discard=unmap,detect-zeroes=unmap", keyval(c.DiskPath)),
+		"-drive", fmt.Sprintf("file=%s,format=raw,if=virtio,readonly=on", keyval(c.SeedPath)),
 		"-object", "rng-random,id=rng0,filename=/dev/urandom",
 		"-device", "virtio-rng-pci,rng=rng0",
-		"-qmp", fmt.Sprintf("unix:%s,server=on,wait=off", c.QMPSock),
+		"-qmp", fmt.Sprintf("unix:%s,server=on,wait=off", keyval(c.QMPSock)),
 	)
 	if c.GPU {
 		args = append(args, "-device", "virtio-gpu-pci")
@@ -149,7 +164,7 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 	if c.AgentSock != "" {
 		args = append(args,
 			"-device", "virtio-serial-pci",
-			"-chardev", fmt.Sprintf("socket,id=pvmagent,path=%s,server=on,wait=off", c.AgentSock),
+			"-chardev", fmt.Sprintf("socket,id=pvmagent,path=%s,server=on,wait=off", keyval(c.AgentSock)),
 			"-device", "virtserialport,chardev=pvmagent,name=pvm.agent",
 		)
 	}
@@ -202,7 +217,7 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 		// retargets the backend symlink before hot-adding the front-end.
 		args = append(args,
 			"-device", fmt.Sprintf("pcie-root-port,id=%s,bus=pcie.0,addr=0x%x,chassis=%d", rp, 0x10+i, 128+i),
-			"-fsdev", fmt.Sprintf("local,id=%s,path=%s,security_model=none", id, m.HostPath),
+			"-fsdev", fmt.Sprintf("local,id=%s,path=%s,security_model=none", id, keyval(m.HostPath)),
 		)
 		if m.Tag != "" && !c.NoVirtFSDevices {
 			args = append(args,
@@ -225,8 +240,8 @@ func netArgs(n Network) []string {
 		// NIC hotplug range (0x8-0xf) and the 9p share ports (0x10+).
 		return []string{
 			"-device", "pcie-root-port,id=rp-link,bus=pcie.0,addr=0x1e.0,chassis=96",
-			"-netdev", fmt.Sprintf("stream,id=net0,server=off,addr.type=unix,addr.path=%s", n.LinkSock),
-			"-device", fmt.Sprintf("virtio-net-pci,id=nic0,netdev=net0,mac=%s,bus=rp-link", n.MAC),
+			"-netdev", fmt.Sprintf("stream,id=net0,server=off,addr.type=unix,addr.path=%s", keyval(n.LinkSock)),
+			"-device", fmt.Sprintf("virtio-net-pci,id=nic0,netdev=net0,mac=%s,bus=rp-link", keyval(n.MAC)),
 		}
 	default: // NetSlirp
 		fwd := fmt.Sprintf("hostfwd=tcp:127.0.0.1:%d-:22", n.SSHHostPort)

@@ -12,14 +12,14 @@ import (
 // host port while the gateway keeps one small pre-mapped pool.
 type relaySet struct {
 	mu   sync.Mutex
-	tcp  map[string]net.Listener
+	tcp  map[string]*tcpRelay
 	udp  map[string]*udpRelay
 	pool map[string]int
 	bind map[string]string
 }
 
 func newRelaySet() *relaySet {
-	return &relaySet{tcp: map[string]net.Listener{}, udp: map[string]*udpRelay{}, pool: map[string]int{}, bind: map[string]string{}}
+	return &relaySet{tcp: map[string]*tcpRelay{}, udp: map[string]*udpRelay{}, pool: map[string]int{}, bind: map[string]string{}}
 }
 
 func relayKey(proto string, port int) string { return fmt.Sprintf("%s/%d", proto, port) }
@@ -70,10 +70,11 @@ func (r *relaySet) ensure(proto string, hostPort, poolPort int, bind string) err
 	if err != nil {
 		return fmt.Errorf("relay listen %s:%d: %w", bind, hostPort, err)
 	}
-	r.tcp[key] = ln
+	rel := &tcpRelay{Listener: ln, conns: map[net.Conn]struct{}{}}
+	r.tcp[key] = rel
 	r.pool[key] = poolPort
 	r.bind[key] = bind
-	go acceptTCP(ln, poolPort)
+	go acceptTCP(rel, poolPort)
 	return nil
 }
 
@@ -93,22 +94,33 @@ func (r *relaySet) Remove(proto string, hostPort int) {
 	delete(r.bind, key)
 }
 
-func acceptTCP(ln net.Listener, poolPort int) {
+func acceptTCP(ln *tcpRelay, poolPort int) {
 	for {
 		src, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		go proxyTCP(src, poolPort)
+		if !ln.track(src) {
+			src.Close()
+			continue
+		}
+		go proxyTCP(ln, src, poolPort)
 	}
 }
 
-func proxyTCP(src net.Conn, poolPort int) {
+func proxyTCP(rel *tcpRelay, src net.Conn, poolPort int) {
+	defer rel.untrack(src)
 	dst, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", poolPort), 10*time.Second)
 	if err != nil {
 		src.Close()
 		return
 	}
+	if !rel.track(dst) {
+		src.Close()
+		dst.Close()
+		return
+	}
+	defer rel.untrack(dst)
 	// bidirectional copy preserving half-close semantics
 	go func() {
 		copyWithIdleTimeout(dst, src, relayIdleTimeout)
@@ -163,6 +175,12 @@ func (r *udpRelay) serve() {
 func (r *udpRelay) dispatch(src *net.UDPAddr, pkt []byte) {
 	key := src.String()
 	r.mu.Lock()
+	select {
+	case <-r.closed:
+		r.mu.Unlock()
+		return
+	default:
+	}
 	sess, ok := r.sessions[key]
 	if !ok {
 		dst, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: r.poolPort})
@@ -180,6 +198,14 @@ func (r *udpRelay) dispatch(src *net.UDPAddr, pkt []byte) {
 }
 
 func (r *udpRelay) pumpBack(src *net.UDPAddr, sess *udpSession) {
+	defer func() {
+		sess.dst.Close()
+		r.mu.Lock()
+		if r.sessions[src.String()] == sess {
+			delete(r.sessions, src.String())
+		}
+		r.mu.Unlock()
+	}()
 	buf := make([]byte, 65535)
 	for {
 		sess.dst.SetReadDeadline(time.Now().Add(2 * time.Minute))
@@ -220,5 +246,46 @@ func (r *udpRelay) close() {
 	r.once.Do(func() {
 		close(r.closed)
 		r.conn.Close()
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		for key, sess := range r.sessions {
+			sess.dst.Close()
+			delete(r.sessions, key)
+		}
 	})
+}
+
+// Closing a mapping must also revoke established connections before its pool port is reused.
+type tcpRelay struct {
+	net.Listener
+	mu     sync.Mutex
+	closed bool
+	conns  map[net.Conn]struct{}
+}
+
+func (r *tcpRelay) track(c net.Conn) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return false
+	}
+	r.conns[c] = struct{}{}
+	return true
+}
+
+func (r *tcpRelay) untrack(c net.Conn) {
+	r.mu.Lock()
+	delete(r.conns, c)
+	r.mu.Unlock()
+}
+
+func (r *tcpRelay) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.closed = true
+	err := r.Listener.Close()
+	for c := range r.conns {
+		c.Close()
+	}
+	return err
 }

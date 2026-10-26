@@ -44,11 +44,13 @@ PY
 fi
 
 export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig:${PKG_CONFIG_PATH:-}"
+ACCEL_ARGS=()
+if [ "$PVM_HOSTOS" = darwin ]; then ACCEL_ARGS+=(--enable-hvf); else ACCEL_ARGS+=(--enable-kvm); fi
 [ -d build ] || ./configure \
   --target-list="$TARGET" \
   --disable-gtk --disable-sdl --disable-cocoa --disable-docs \
   --disable-guest-agent --disable-user \
-  --enable-slirp --enable-capstone --enable-hvf \
+  --enable-slirp --enable-capstone "${ACCEL_ARGS[@]}" \
   --prefix="$PREFIX"
 cd build
 CPUS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu)

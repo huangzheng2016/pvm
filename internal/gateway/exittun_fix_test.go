@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -293,5 +294,36 @@ func TestDomainConnectAddrUsesEnrolledServerIP(t *testing.T) {
 	}
 	if _, ok := m.DomainConnectAddr("gone"); ok {
 		t.Fatal("unknown exit must fail closed")
+	}
+}
+
+func TestReconcileLearnedKeepsInternalResolverRules(t *testing.T) {
+	stubIPRule(t)
+	m := newExitManager()
+	eng, err := rules.NewEngine("", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.Add(rules.Rule{Type: rules.DomainSuffix, Pattern: "example.com", Action: rules.Internal, DNS: "203.0.113.53"}); err != nil {
+		t.Fatal(err)
+	}
+	m.AddBypassIP("example.com", "203.0.113.7")
+	m.ReconcileLearned(eng)
+	if !m.bypass["203.0.113.7/32"] {
+		t.Fatal("internal resolver answer lost its direct bypass")
+	}
+}
+
+func TestLearnedBypassCapDoesNotAllocateEmptyDomains(t *testing.T) {
+	stubIPRule(t)
+	m := newExitManager()
+	entries := map[string]time.Time{}
+	for i := range learnedBypassCap {
+		entries[fmt.Sprintf("203.0.113.%d/32", i)] = time.Now()
+	}
+	m.learned["example.com"] = entries
+	m.AddBypassIP("new.example.com", "203.0.113.7")
+	if len(m.learned) != 1 {
+		t.Fatal("full bypass table retained an empty domain")
 	}
 }

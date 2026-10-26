@@ -1,6 +1,11 @@
 package vm
 
 import (
+	"github.com/huangzheng2016/pvm/internal/paths"
+	"github.com/huangzheng2016/pvm/internal/qemu"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -58,5 +63,43 @@ func TestValidateName(t *testing.T) {
 		if err := ValidateName(bad); err == nil {
 			t.Errorf("ValidateName(%q) unexpectedly passed", bad)
 		}
+	}
+}
+
+func TestCloneDiskUsesActiveRestoreDisk(t *testing.T) {
+	img, err := exec.LookPath("qemu-img")
+	if err != nil {
+		t.Skip("qemu-img unavailable")
+	}
+	diskIO, err := exec.LookPath("qemu-io")
+	if err != nil {
+		t.Skip("qemu-io unavailable")
+	}
+	p := paths.New(t.TempDir())
+	src, dst := &Spec{Name: "dev1"}, &Spec{Name: "dev2"}
+	if err := os.MkdirAll(p.VMDir(src.Name), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	run := func(name string, args ...string) {
+		t.Helper()
+		if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v: %s", name, err, out)
+		}
+	}
+	run(img, "create", "-f", "qcow2", src.Disk(p), "16M")
+	snap := qemu.SnapPaths(p.VMDir(src.Name))
+	run(img, "convert", "-f", "qcow2", "-O", "qcow2", src.Disk(p), snap.Snap)
+	run(img, "create", "-f", "qcow2", "-b", snap.Snap, "-F", "qcow2", snap.Restore)
+	run(diskIO, "-f", "qcow2", "-c", "write -P 0x5a 0 4k", snap.Restore)
+	if err := os.WriteFile(src.Seed(p), []byte("seed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CloneDisk(p, &qemu.Toolchain{Img: img}, src, dst); err != nil {
+		t.Fatal(err)
+	}
+	run(diskIO, "-f", "qcow2", "-c", "read -P 0x5a 0 4k", dst.Disk(p))
+	run(img, "compare", "-f", "qcow2", "-F", "qcow2", snap.Restore, dst.Disk(p))
+	if _, err := os.Stat(filepath.Join(p.VMDir(dst.Name), "seed.img")); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -35,6 +35,9 @@ type userspaceBackend struct {
 	mu       sync.Mutex
 	pumps    []io.Closer
 	cancel   context.CancelFunc
+	ctx      context.Context
+	stopped  bool
+	tcpConns map[net.Conn]struct{}
 	wg       sync.WaitGroup
 	once     sync.Once
 
@@ -116,7 +119,9 @@ func newUserspaceBackend() *userspaceBackend {
 		// because the NICs run in spoofing mode (temporary addresses).
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocolCUBIC, udp.NewProtocol, icmp.NewProtocol4},
 	})
+	ctx, cancel := context.WithCancel(context.Background())
 	return &userspaceBackend{
+		ctx: ctx, cancel: cancel, tcpConns: map[net.Conn]struct{}{},
 		stack:    s,
 		sessions: newUDPSessionTable(2 * time.Minute),
 	}
@@ -239,6 +244,17 @@ func (u *userspaceBackend) setup(_ []string, _ []string) error {
 
 func (u *userspaceBackend) cleanup(_ []string, _ []string) error {
 	u.once.Do(func() {
+		u.mu.Lock()
+		u.stopped = true
+		u.cancel()
+		conns := make([]net.Conn, 0, len(u.tcpConns))
+		for c := range u.tcpConns {
+			conns = append(conns, c)
+		}
+		u.mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
 		for _, p := range u.pumps {
 			p.Close()
 		}
@@ -255,7 +271,43 @@ func (u *userspaceBackend) cleanup(_ []string, _ []string) error {
 	return nil
 }
 
+func (u *userspaceBackend) beginForward() bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.stopped {
+		return false
+	}
+	u.wg.Add(1)
+	return true
+}
+
+const tcpMaxSessions = 4096
+
+func (u *userspaceBackend) serveTCP(c net.Conn, serve func()) bool {
+	u.mu.Lock()
+	if u.stopped || len(u.tcpConns) >= tcpMaxSessions {
+		u.mu.Unlock()
+		c.Close()
+		return false
+	}
+	u.tcpConns[c] = struct{}{}
+	u.wg.Add(1)
+	u.mu.Unlock()
+	go func() {
+		defer u.wg.Done()
+		defer c.Close()
+		defer func() { u.mu.Lock(); delete(u.tcpConns, c); u.mu.Unlock() }()
+		serve()
+	}()
+	return true
+}
+
 func (u *userspaceBackend) handleTCP(req *tcp.ForwarderRequest) {
+	if !u.beginForward() {
+		req.Complete(true)
+		return
+	}
+	defer u.wg.Done()
 	id := req.ID()
 	dst := net.JoinHostPort(id.LocalAddress.String(), fmt.Sprintf("%d", id.LocalPort))
 	if h := u.interceptor(dst); h != nil {
@@ -266,10 +318,11 @@ func (u *userspaceBackend) handleTCP(req *tcp.ForwarderRequest) {
 			return
 		}
 		req.Complete(false)
-		go h(gonet.NewTCPConn(&wq, ep))
+		inConn := gonet.NewTCPConn(&wq, ep)
+		u.serveTCP(inConn, func() { h(inConn) })
 		return
 	}
-	outConn, err := (&net.Dialer{Timeout: 15 * time.Second}).Dial("tcp", dst)
+	outConn, err := (&net.Dialer{Timeout: 15 * time.Second}).DialContext(u.ctx, "tcp", dst)
 	if err != nil {
 		req.Complete(true) // RST
 		return
@@ -283,16 +336,23 @@ func (u *userspaceBackend) handleTCP(req *tcp.ForwarderRequest) {
 	}
 	req.Complete(false)
 	inConn := gonet.NewTCPConn(&wq, ep)
-	go proxyTCP(inConn, outConn)
+	if !u.serveTCP(outConn, func() { proxyTCP(inConn, outConn) }) {
+		inConn.Close()
+	}
 }
 
 func proxyTCP(a, b net.Conn) {
 	type closeWriter interface{ CloseWrite() error }
 	done := make(chan struct{}, 2)
 	cp := func(dst, src net.Conn) {
-		_, _ = io.Copy(dst, src)
-		if cw, ok := dst.(closeWriter); ok {
+		_, err := io.Copy(dst, src)
+		if err != nil {
+			a.Close()
+			b.Close()
+		} else if cw, ok := dst.(closeWriter); ok {
 			_ = cw.CloseWrite()
+		} else {
+			dst.Close()
 		}
 		done <- struct{}{}
 	}
@@ -373,6 +433,11 @@ func (t *udpSessionTable) len() int {
 func (t *udpSessionTable) putIfAbsent(flow udpFlow, s *udpSession) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	select {
+	case <-t.closed:
+		return false
+	default:
+	}
 	if _, exists := t.m[flow]; exists || len(t.m) >= udpMaxSessions {
 		return false
 	}
@@ -428,6 +493,10 @@ func (t *udpSessionTable) closeAll() {
 
 // handleUDP forwards a new UDP flow.
 func (u *userspaceBackend) handleUDP(req *udp.ForwarderRequest) {
+	if !u.beginForward() {
+		return
+	}
+	defer u.wg.Done()
 	id := req.ID()
 	flow := udpFlow{
 		srcIP:   id.RemoteAddress.String(),
@@ -583,6 +652,11 @@ func (t *icmpSessionTable) len() int {
 func (t *icmpSessionTable) putIfAbsent(flow icmpFlow, s *icmpSession) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	select {
+	case <-t.closed:
+		return false
+	default:
+	}
 	if _, exists := t.m[flow]; exists || len(t.m) >= icmpMaxSessions {
 		return false
 	}
@@ -799,10 +873,17 @@ func (u *userspaceBackend) icmpReplyLoop(sess *icmpSession) {
 			ReserveHeaderBytes: header.IPv4MaximumHeaderSize,
 			Payload:            buffer.MakeWithData(msg),
 		})
+		sess.mu.Lock()
+		if sess.closed {
+			sess.mu.Unlock()
+			pkt.DecRef()
+			return
+		}
 		werr := sess.route.WritePacket(stack.NetworkHeaderParams{
 			Protocol: header.ICMPv4ProtocolNumber,
 			TTL:      64,
 		}, pkt)
+		sess.mu.Unlock()
 		pkt.DecRef()
 		if werr != nil {
 			log.Printf("userspace-nat: icmp reply to %s: %s (dropping packet)", sess.flow.srcIP, werr)

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 )
@@ -27,7 +28,7 @@ func NewClient(server, token, fingerprint string) *Client {
 // fingerprint. Used for first-contact TOFU.
 func ProbeFingerprint(server string) (string, error) {
 	var fp string
-	conn, err := tls.Dial("tcp", server, &tls.Config{
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: clientHTTPTimeout}, "tcp", server, &tls.Config{
 		InsecureSkipVerify: true, //nolint:gosec
 		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 			var err error
@@ -92,7 +93,9 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.tlsClient().Do(req)
+	client := c.tlsClient()
+	defer client.CloseIdleConnections()
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

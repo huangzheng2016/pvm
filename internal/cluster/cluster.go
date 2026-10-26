@@ -121,7 +121,7 @@ func (s *Store) Ensure(id int) (*Cluster, error) {
 		VMs:      map[string]*VMNet{},
 	}
 	s.data.Clusters[id] = c
-	return c.deepCopy(), s.save()
+	return c.deepCopy(), s.saveCluster(id, nil)
 }
 
 // freePoolWindow finds a PoolSize-wide window of loopback ports that is
@@ -214,8 +214,10 @@ func (s *Store) AddVM(id int, name string) (*VMNet, error) {
 	if c == nil {
 		return nil, fmt.Errorf("cluster %d does not exist", id)
 	}
+	previous := c.deepCopy()
 	if v, ok := c.VMs[name]; ok {
-		return v, nil
+		out := *v
+		return &out, nil
 	}
 	used := map[int]bool{}
 	for _, v := range c.VMs {
@@ -240,7 +242,7 @@ func (s *Store) AddVM(id int, name string) (*VMNet, error) {
 	}
 	c.VMs[name] = vn
 	out := *vn
-	return &out, s.save()
+	return &out, s.saveCluster(id, previous)
 }
 
 func (s *Store) RemoveVM(id int, name string) error {
@@ -250,6 +252,7 @@ func (s *Store) RemoveVM(id int, name string) error {
 	if c == nil {
 		return nil
 	}
+	previous := c.deepCopy()
 	delete(c.VMs, name)
 	delete(c.VMExits, name)
 	var maps []*PortMap
@@ -259,7 +262,7 @@ func (s *Store) RemoveVM(id int, name string) error {
 		}
 	}
 	c.Maps = maps
-	return s.save()
+	return s.saveCluster(id, previous)
 }
 
 func (s *Store) AddMap(id int, vmName, vmIP string, hostPort, guestPort int, proto string) (*PortMap, error) {
@@ -269,6 +272,7 @@ func (s *Store) AddMap(id int, vmName, vmIP string, hostPort, guestPort int, pro
 	if c == nil {
 		return nil, fmt.Errorf("cluster %d does not exist", id)
 	}
+	previous := c.deepCopy()
 	if proto == "" {
 		proto = "tcp"
 	}
@@ -294,7 +298,7 @@ func (s *Store) AddMap(id int, vmName, vmIP string, hostPort, guestPort int, pro
 	m := &PortMap{VM: vmName, VMIP: vmIP, HostPort: hostPort, PoolPort: pool, GuestPort: guestPort, Proto: proto}
 	c.Maps = append(c.Maps, m)
 	out := *m
-	return &out, s.save()
+	return &out, s.saveCluster(id, previous)
 }
 
 func (s *Store) SetMaps(id int, maps []*PortMap) error {
@@ -304,12 +308,13 @@ func (s *Store) SetMaps(id int, maps []*PortMap) error {
 	if c == nil {
 		return fmt.Errorf("cluster %d does not exist", id)
 	}
+	previous := c.deepCopy()
 	c.Maps = make([]*PortMap, len(maps))
 	for i, m := range maps {
 		mm := *m
 		c.Maps[i] = &mm
 	}
-	return s.save()
+	return s.saveCluster(id, previous)
 }
 
 func (s *Store) RemoveMap(id int, hostPort int, proto string) (bool, error) {
@@ -319,6 +324,7 @@ func (s *Store) RemoveMap(id int, hostPort int, proto string) (bool, error) {
 	if c == nil {
 		return false, nil
 	}
+	previous := c.deepCopy()
 	removed := false
 	var maps []*PortMap
 	for _, m := range c.Maps {
@@ -329,5 +335,17 @@ func (s *Store) RemoveMap(id int, hostPort int, proto string) (bool, error) {
 		maps = append(maps, m)
 	}
 	c.Maps = maps
-	return removed, s.save()
+	return removed, s.saveCluster(id, previous)
+}
+
+func (s *Store) saveCluster(id int, previous *Cluster) error {
+	if err := s.save(); err != nil {
+		if previous == nil {
+			delete(s.data.Clusters, id)
+		} else {
+			s.data.Clusters[id] = previous
+		}
+		return err
+	}
+	return nil
 }

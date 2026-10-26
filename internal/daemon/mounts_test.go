@@ -1,8 +1,11 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -247,5 +250,176 @@ func TestEnsureMountSymlinkRefusesRegularFile(t *testing.T) {
 	data, err := os.ReadFile(path)
 	if err != nil || string(data) != "keep" {
 		t.Fatalf("regular file changed: %q, %v", data, err)
+	}
+}
+
+func TestPrepareMountSlotsPreflightsAllSlots(t *testing.T) {
+	s, spec, host := newMountTestServer(t)
+	if err := s.prepareMountSlots(spec); err != nil {
+		t.Fatal(err)
+	}
+	first := s.P.MountSlot(spec.Name, 1)
+	before, err := os.Readlink(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked := s.P.MountSlot(spec.Name, 2)
+	if err := os.Remove(blocked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blocked, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	spec.Mounts = []vm.GuestMount{{Tag: "pvm0", Host: host, Guest: "/mnt/data"}}
+	if err := s.prepareMountSlots(spec); err == nil {
+		t.Fatal("expected slot error")
+	}
+	if after, err := os.Readlink(first); err != nil || after != before {
+		t.Fatalf("earlier slot changed: %q %v", after, err)
+	}
+	if data, err := os.ReadFile(blocked); err != nil || string(data) != "keep" {
+		t.Fatalf("blocked file changed: %q %v", data, err)
+	}
+}
+
+func mountRollbackQMP(t *testing.T, reject bool) (*qemu.QMP, <-chan struct{}) {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "pvm-qmp-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "q.sock")
+	ln, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	deleted := make(chan struct{}, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		fmt.Fprintln(conn, `{"QMP":{"version":{"qemu":{"major":11}},"capabilities":[]}}`)
+		scanner := bufio.NewScanner(conn)
+		for scanner.Scan() {
+			var cmd struct {
+				Execute string `json:"execute"`
+			}
+			if json.Unmarshal(scanner.Bytes(), &cmd) != nil {
+				return
+			}
+			if cmd.Execute == "device_del" {
+				deleted <- struct{}{}
+				if reject {
+					fmt.Fprintln(conn, `{"error":{"class":"GenericError","desc":"device busy"}}`)
+				} else {
+					fmt.Fprintln(conn, `{"return":{}}`)
+					fmt.Fprintln(conn, `{"event":"DEVICE_DELETED","data":{"device":"fs1"}}`)
+				}
+			} else {
+				fmt.Fprintln(conn, `{"return":{}}`)
+			}
+		}
+	}()
+	q, err := qemu.DialQMP(socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { q.Close() })
+	return q, deleted
+}
+
+func TestMountRollbackRetainsActiveBackendAndRecoverySpec(t *testing.T) {
+	for _, failure := range []string{"guest", "device", "none"} {
+		t.Run(failure, func(t *testing.T) {
+			s, spec, host := newMountTestServer(t)
+			m := vm.GuestMount{Tag: "pvm0", Host: host, Guest: "/mnt/data", Profile: vm.MountProfileReadahead}
+			next := *spec
+			next.Mounts = []vm.GuestMount{m}
+			if err := s.prepareMountSlots(&next); err != nil {
+				t.Fatal(err)
+			}
+			q, deleted := mountRollbackQMP(t, failure == "device")
+			err := s.rollbackAddedMountWith(spec, m, q, true, func(*vm.Spec, string) (string, error) {
+				if failure == "guest" {
+					return "", fmt.Errorf("guest busy")
+				}
+				return "", nil
+			})
+			got, readErr := os.Readlink(s.P.MountSlot(spec.Name, 1))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			loaded, loadErr := vm.Load(s.P, spec.Name)
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			if failure != "none" {
+				if err == nil || !strings.Contains(err.Error(), "pvm mount rm dev1 /mnt/data") {
+					t.Fatalf("missing recovery: %v", err)
+				}
+				if got != host || len(loaded.Mounts) != 1 || loaded.Mounts[0] != m || len(spec.Mounts) != 1 {
+					t.Fatalf("active backend/state lost: %s %+v", got, loaded.Mounts)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got == host || len(loaded.Mounts) != 0 || len(spec.Mounts) != 0 {
+					t.Fatalf("successful rollback incomplete: %s %+v", got, loaded.Mounts)
+				}
+			}
+			if failure == "guest" {
+				select {
+				case <-deleted:
+					t.Fatal("attempted detach after failed unmount")
+				default:
+				}
+			} else {
+				select {
+				case <-deleted:
+				default:
+					t.Fatal("device not detached")
+				}
+			}
+		})
+	}
+}
+
+func TestFailedMountRecoverySaveKeepsSlotReservedInMemory(t *testing.T) {
+	s, spec, host := newMountTestServer(t)
+	m := vm.GuestMount{Tag: "pvm0", Host: host, Guest: "/mnt/data"}
+	next := *spec
+	next.Mounts = []vm.GuestMount{m}
+	if err := s.prepareMountSlots(&next); err != nil {
+		t.Fatal(err)
+	}
+	// A directory at the spec path forces AtomicWrite's final rename to fail.
+	specPath := spec.SpecPath(s.P)
+	if err := os.Remove(specPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(specPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	err := s.retainFailedMount(spec, m, fmt.Errorf("device busy"))
+	if err == nil || !strings.Contains(err.Error(), "stop the VM") {
+		t.Fatalf("missing recovery: %v", err)
+	}
+	if len(spec.Mounts) != 1 {
+		t.Fatal("active slot not reserved in memory")
+	}
+	another, err := newGuestMount(spec, host, "/mnt/other", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if another.Tag == m.Tag {
+		t.Fatal("failed recovery reused active backend")
+	}
+	if got, err := os.Readlink(s.P.MountSlot(spec.Name, 1)); err != nil || got != host {
+		t.Fatalf("active backend changed: %s %v", got, err)
 	}
 }

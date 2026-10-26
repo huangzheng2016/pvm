@@ -2,12 +2,16 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/exit"
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/tunnel"
 	"github.com/huangzheng2016/pvm/internal/vm"
 	"github.com/huangzheng2016/pvm/internal/warp"
@@ -59,6 +63,17 @@ func exitAddWARP(args []string) int {
 	}
 	if _, err := exit.LoadEntry(dir, name); err == nil {
 		return fatalf("exit %q already exists", name)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fatalf("load exit: %v", err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fatalf("prepare exit state: %v", err)
+	}
+	pendingPath := filepath.Join(dir, name+".warp-pending")
+	if _, err := os.Stat(pendingPath); err == nil {
+		return fatalf("WARP registration recovery is pending in %s; restore or revoke that device before retrying", pendingPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fatalf("check WARP recovery state: %v", err)
 	}
 	privateKey, err := tunnel.GenerateKey()
 	if err != nil {
@@ -74,9 +89,10 @@ func exitAddWARP(args []string) int {
 	client := warp.NewClient(warpAPIBase)
 	fmt.Println("registering a Cloudflare WARP device...")
 	registration, err := client.Register(ctx, publicKey)
-	if err != nil {
+	if err != nil && registration == nil {
 		return fatalf("register WARP: %v", err)
 	}
+	registrationErr := err
 	keep := false
 	defer func() {
 		if keep {
@@ -85,9 +101,25 @@ func exitAddWARP(args []string) int {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cleanupCancel()
 		if err := client.Delete(cleanupCtx, registration.ID, registration.Token); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: failed to roll back Cloudflare device %s: %v\n", registration.ID, err)
+			pending := struct {
+				PrivateKey   string             `json:"private_key"`
+				Registration *warp.Registration `json:"registration"`
+			}{privateKey, registration}
+			data, marshalErr := json.MarshalIndent(pending, "", "  ")
+			path := filepath.Join(dir, name+".warp-pending")
+			if marshalErr == nil {
+				marshalErr = fsutil.AtomicWrite(path, data, 0o600)
+			}
+			if marshalErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: WARP rollback failed: %v; recovery credentials could not be saved: %v\n", err, marshalErr)
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: WARP rollback failed: %v; recovery credentials saved to %s; restore or revoke this device before retrying\n", err, path)
+			}
 		}
 	}()
+	if registrationErr != nil {
+		return fatalf("register WARP: %v", registrationErr)
+	}
 	entry, err := warp.NewEntry(name, privateKey, registration)
 	if err != nil {
 		return fatalf("invalid WARP registration: %v", err)

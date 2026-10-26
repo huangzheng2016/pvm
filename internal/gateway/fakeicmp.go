@@ -229,7 +229,7 @@ func (p *fakeICMP) readLoop(ln icmpPacketConn) {
 		flow, start := p.reserve(key)
 		if flow != nil {
 			if err := p.writeUpstream(flow, payload); err != nil {
-				p.closeKey(key)
+				p.closeFlow(flow)
 			}
 			continue
 		}
@@ -315,7 +315,7 @@ func (p *fakeICMP) openFlow(key fakeICMPKey, src *net.IPAddr, dstIP net.IP, doma
 		return
 	}
 	if err := p.writeUpstream(flow, payload); err != nil {
-		p.closeKey(key)
+		p.closeFlow(flow)
 	}
 }
 
@@ -466,7 +466,7 @@ func (p *fakeICMP) pump(flow *fakeICMPFlow) {
 	for {
 		n, err := flow.up.Read(buf)
 		if err != nil {
-			p.closeKey(flow.key)
+			p.closeFlow(flow)
 			return
 		}
 		msg := icmpMessage(buf[:n])
@@ -486,26 +486,25 @@ func (p *fakeICMP) pump(flow *fakeICMPFlow) {
 		icmpSetChecksum(reply)
 		if flow.down != nil {
 			if _, err := flow.down.Write(reply); err != nil {
-				p.closeKey(flow.key)
+				p.closeFlow(flow)
 				return
 			}
 		} else if ln != nil {
 			if _, err := ln.WriteToIP(reply, flow.src); err != nil {
-				p.closeKey(flow.key)
+				p.closeFlow(flow)
 				return
 			}
 		}
 	}
 }
 
-func (p *fakeICMP) closeKey(key fakeICMPKey) {
+func (p *fakeICMP) closeFlow(flow *fakeICMPFlow) {
 	p.mu.Lock()
-	flow := p.flows[key]
-	delete(p.flows, key)
-	p.mu.Unlock()
-	if flow != nil {
-		flow.close()
+	if p.flows[flow.key] == flow {
+		delete(p.flows, flow.key)
 	}
+	p.mu.Unlock()
+	flow.close()
 }
 
 // reapIdle closes flows idle past fakeICMPIdleTimeout; their raw sockets
@@ -568,11 +567,22 @@ func (p *fakeICMP) Close() {
 // sessions to the same target never receive each other's replies. Called
 // with p.mu held.
 func (p *fakeICMP) allocUpID() int {
-	p.nextUpID++
-	if p.nextUpID > 0xffff {
-		p.nextUpID = 1
+	for {
+		p.nextUpID++
+		if p.nextUpID > 0xffff {
+			p.nextUpID = 1
+		}
+		used := false
+		for _, flow := range p.flows {
+			if flow.upID == int(p.nextUpID) {
+				used = true
+				break
+			}
+		}
+		if !used {
+			return int(p.nextUpID)
+		}
 	}
-	return int(p.nextUpID)
 }
 
 func icmpMessage(packet []byte) []byte {

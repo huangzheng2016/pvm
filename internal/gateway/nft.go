@@ -70,6 +70,10 @@ func RenderNFT(c *Config, uplink, br string, bypassIPs []string) string {
 	b.WriteString("  }\n")
 	b.WriteString("  chain output {\n")
 	b.WriteString("    type filter hook output priority 0; policy accept;\n")
+	// Marked relay and DNS sockets must never follow main-table routes
+	// when a tunnel disappears or a higher-priority bypass rule matches.
+	// Exit marks start at fwMarkBase; fake-IP local/reply marks are lower.
+	fmt.Fprintf(&b, "    oifname %q meta mark >= 0x%x drop\n", uplink, fwMarkBase)
 	// The fake-ip local route makes the kernel treat marked echo requests
 	// as addressed to itself, so it would answer them with a fake-source
 	// echo reply the VM reads as success. Only the relay's downstream

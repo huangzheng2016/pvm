@@ -129,3 +129,27 @@ func TestCheckNFTMultipleExits(t *testing.T) {
 		t.Fatal("missing tunnel in a multi-exit NAT rule was not detected")
 	}
 }
+
+func TestMarkedRelayCannotFallBackToUplink(t *testing.T) {
+	cfg := &Config{CIDR: "203.0.113.0/24", GwIP: "203.0.113.1"}
+	rendered := RenderNFT(cfg, "enp0s1", "br0", nil)
+	want := `oifname "enp0s1" meta mark >= 0x99 drop`
+	if !strings.Contains(rendered, want) {
+		t.Fatal("missing marked-output kill-switch with no configured exits")
+	}
+	orig := nftListTable
+	t.Cleanup(func() { nftListTable = orig })
+	stubIPRule(t)
+	stubIPRoute(t)
+	a := &Agent{upl: "enp0s1"}
+	nftListTable = func() (string, error) { return strings.Replace(rendered, want, "", 1), nil }
+	if err := a.checkNFT(cfg); err == nil {
+		t.Fatal("missing output kill-switch was not detected")
+	}
+	nftListTable = func() (string, error) {
+		return strings.Replace(rendered, "meta mark >= 0x99", "meta mark >= 0x00000099", 1), nil
+	}
+	if err := a.checkNFT(cfg); err != nil {
+		t.Fatal(err)
+	}
+}

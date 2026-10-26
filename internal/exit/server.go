@@ -11,11 +11,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/tunnel"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -80,27 +82,49 @@ type transportRT struct {
 }
 
 type Server struct {
-	cfg      ServerConfig
-	store    *PeerStore
-	priv     string // base64 wg private key (shared by both transports)
-	pub      string
-	sugTZ    string // suggested client timezone (enroll response)
-	nat      natBackend
-	dcAllow  []*net.IPNet
-	tr       map[string]*transportRT
-	http     *http.Server
-	ln       net.Listener
-	speed    []*http.Server
-	udpProbe []*net.UDPConn
-	closed   chan struct{}
-	once     sync.Once
+	cfg         ServerConfig
+	store       *PeerStore
+	priv        string // base64 wg private key (shared by both transports)
+	pub         string
+	sugTZ       string // suggested client timezone (enroll response)
+	nat         natBackend
+	dcAllow     []*net.IPNet
+	tr          map[string]*transportRT
+	http        *http.Server
+	ln          net.Listener
+	speed       []*http.Server
+	udpProbe    []*net.UDPConn
+	dcListeners []net.Listener
+	dc          *dcServer
+	closed      chan struct{}
+	once        sync.Once
+	peerMu      sync.Mutex
+	stateLock   *fsutil.Lock
 }
+
+var tunPrefixRE = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]{0,13}$`)
 
 func NewServer(cfg ServerConfig) (*Server, error) {
 	cfg.defaults()
+	if cfg.TunPrefix != "" && !tunPrefixRE.MatchString(cfg.TunPrefix) {
+		return nil, fmt.Errorf("invalid tun prefix %q (use 1..14 letters, digits or underscores, starting with a letter)", cfg.TunPrefix)
+	}
 	if cfg.Token == "" {
 		return nil, errors.New("--token is required")
 	}
+	if err := os.MkdirAll(cfg.StateDir, 0o700); err != nil {
+		return nil, err
+	}
+	stateLock, err := fsutil.TryLock(filepath.Join(cfg.StateDir, "exit.lock"))
+	if err != nil {
+		return nil, fmt.Errorf("exit state directory is already in use or cannot be locked: %w", err)
+	}
+	owned := false
+	defer func() {
+		if !owned {
+			stateLock.Unlock()
+		}
+	}()
 	natChoice := cfg.NAT
 	if cfg.TunFactory != nil {
 		// in-process tests use memory tuns + netstack
@@ -111,6 +135,11 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{cfg: cfg, tr: map[string]*transportRT{}, nat: nat, closed: make(chan struct{})}
+	defer func() {
+		if !owned {
+			s.Close()
+		}
+	}()
 	s.sugTZ = DetectSuggestedTZ(cfg.StateDir)
 	for _, c := range cfg.DomainAllow {
 		_, n, err := net.ParseCIDR(c)
@@ -134,12 +163,16 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	if s.pub, err = tunnel.PublicKey(s.priv); err != nil {
 		return nil, err
 	}
+	s.stateLock = stateLock
+	owned = true
 	return s, nil
 }
 
 func loadOrCreateWGKey(path string) (string, error) {
 	if b, err := os.ReadFile(path); err == nil {
 		return strings.TrimSpace(string(b)), nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
 	}
 	k, err := tunnel.GenerateKey()
 	if err != nil {
@@ -148,13 +181,16 @@ func loadOrCreateWGKey(path string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, []byte(k+"\n"), 0o600); err != nil {
+	if err := fsutil.AtomicWrite(path, []byte(k+"\n"), 0o600); err != nil {
 		return "", err
 	}
 	return k, nil
 }
 
 func (s *Server) Start() (string, error) {
+	if s.isClosed() {
+		return "", errors.New("exit server is closed")
+	}
 	cert, fp, err := EnsureCert(s.cfg.StateDir)
 	if err != nil {
 		return "", fmt.Errorf("cert: %w", err)
@@ -255,6 +291,7 @@ func (s *Server) Start() (string, error) {
 
 	// domain-connect listeners, one per tunnel NIC server address
 	dc := newDCServer(s.dcAllow)
+	s.dc = dc
 	for _, t := range s.tr {
 		dcAddr := net.JoinHostPort(t.serverIP, itoa(DomainConnectPort))
 		if s.nat.name() == NATUserspace {
@@ -269,6 +306,7 @@ func (s *Server) Start() (string, error) {
 			s.Close()
 			return "", fmt.Errorf("domain-connect %s: %w", dcAddr, err)
 		}
+		s.dcListeners = append(s.dcListeners, ln)
 		go dc.serve(ln)
 	}
 	log.Printf("domain-connect: listening on each tunnel NIC (port %d)", DomainConnectPort)
@@ -399,6 +437,12 @@ type enrollResponse struct {
 }
 
 func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
+	s.peerMu.Lock()
+	defer s.peerMu.Unlock()
+	if s.isClosed() {
+		http.Error(w, `{"error":"server closed"}`, http.StatusServiceUnavailable)
+		return
+	}
 	var req enrollRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&req); err != nil {
 		http.Error(w, `{"error":"bad json"}`, http.StatusBadRequest)
@@ -461,6 +505,12 @@ func itoa(i int) string {
 }
 
 func (s *Server) handleDeletePeer(w http.ResponseWriter, r *http.Request) {
+	s.peerMu.Lock()
+	defer s.peerMu.Unlock()
+	if s.isClosed() {
+		http.Error(w, `{"error":"server closed"}`, http.StatusServiceUnavailable)
+		return
+	}
 	ip := r.PathValue("ip")
 	peer, ok := s.store.Get(ip)
 	if !ok {
@@ -506,6 +556,8 @@ func (s *Server) ControlAddr() string {
 
 func (s *Server) Close() {
 	s.once.Do(func() {
+		s.peerMu.Lock()
+		defer s.peerMu.Unlock()
 		close(s.closed)
 		if s.http != nil {
 			_ = s.http.Close()
@@ -516,10 +568,16 @@ func (s *Server) Close() {
 		for _, ln := range s.udpProbe {
 			_ = ln.Close()
 		}
+		for _, ln := range s.dcListeners {
+			_ = ln.Close()
+		}
+		if s.dc != nil {
+			s.dc.close()
+		}
 		for _, t := range s.tr {
 			t.dev.Close()
 		}
-		if s.cfg.TunFactory == nil {
+		if s.cfg.TunFactory == nil || s.nat.name() == NATUserspace {
 			var ifs, cidrs []string
 			for _, t := range s.tr {
 				ifs = append(ifs, t.tunName)
@@ -527,7 +585,19 @@ func (s *Server) Close() {
 			}
 			_ = s.nat.cleanup(ifs, cidrs)
 		}
+		if s.stateLock != nil {
+			s.stateLock.Unlock()
+		}
 	})
+}
+
+func (s *Server) isClosed() bool {
+	select {
+	case <-s.closed:
+		return true
+	default:
+		return false
+	}
 }
 
 const (
@@ -552,24 +622,37 @@ func (s *Server) reapIdlePeers() {
 }
 
 func (s *Server) reapIdleOnce() {
+	s.peerMu.Lock()
+	defer s.peerMu.Unlock()
+	if s.isClosed() {
+		return
+	}
+	handshakes := map[string]map[string]time.Time{}
+	for name, t := range s.tr {
+		out, err := t.dev.IpcGet()
+		if err == nil {
+			handshakes[name] = parseIpcHandshakes(out)
+		}
+	}
 	for _, p := range s.store.List() {
 		t, ok := s.tr[p.Transport]
 		if !ok {
 			continue
 		}
-		hs, err := peerLastHandshake(t.dev, p.PubKey)
+		dump, ok := handshakes[p.Transport]
+		if !ok {
+			continue
+		}
+		pubHex, err := tunnel.Hex(p.PubKey)
 		if err != nil {
 			continue
 		}
+		hs := dump[pubHex]
 		idle := time.Since(hs)
 		if hs.IsZero() {
 			idle = time.Since(p.CreatedAt)
 		}
 		if idle < peerIdleMax {
-			continue
-		}
-		pubHex, err := tunnel.Hex(p.PubKey)
-		if err != nil {
 			continue
 		}
 		if err := t.dev.IpcSet(fmt.Sprintf("public_key=%s\nremove=true\n", pubHex)); err != nil {
@@ -582,39 +665,30 @@ func (s *Server) reapIdleOnce() {
 	}
 }
 
-// peerLastHandshake parses the device's IpcGet dump for one peer's
-// last_handshake_time_sec; zero time means never handshook / absent.
-func peerLastHandshake(dev *device.Device, pubkey string) (time.Time, error) {
-	out, err := dev.IpcGet()
-	if err != nil {
-		return time.Time{}, err
+// parseIpcHandshakes reads each device dump once, keeping idle-peer reaping linear
+// in the number of registrations instead of dumping all peers for every peer.
+func parseIpcHandshakes(out string) map[string]time.Time {
+	result := map[string]time.Time{}
+	cur := ""
+	for line := range strings.Lines(out) {
+		line = strings.TrimSpace(line)
+		if key, ok := strings.CutPrefix(line, "public_key="); ok {
+			cur = key
+			continue
+		}
+		if cur == "" {
+			continue
+		}
+		if value, ok := strings.CutPrefix(line, "last_handshake_time_sec="); ok {
+			sec, _ := strconv.ParseInt(value, 10, 64)
+			if sec > 0 {
+				result[cur] = time.Unix(sec, 0)
+			}
+		}
 	}
-	wantHex, err := tunnel.Hex(pubkey)
-	if err != nil {
-		return time.Time{}, err
-	}
-	return parseIpcLastHandshake(out, wantHex), nil
+	return result
 }
 
-// parseIpcLastHandshake finds last_handshake_time_sec for wantHex in an
-// IpcGet dump; zero when the peer is absent or never shook hands.
 func parseIpcLastHandshake(out, wantHex string) time.Time {
-	cur := ""
-	for _, line := range strings.Split(out, "\n") {
-		if k, ok := strings.CutPrefix(line, "public_key="); ok {
-			cur = k
-			continue
-		}
-		if cur != wantHex {
-			continue
-		}
-		if v, ok := strings.CutPrefix(line, "last_handshake_time_sec="); ok {
-			sec, _ := strconv.ParseInt(v, 10, 64)
-			if sec <= 0 {
-				return time.Time{}
-			}
-			return time.Unix(sec, 0)
-		}
-	}
-	return time.Time{}
+	return parseIpcHandshakes(out)[wantHex]
 }

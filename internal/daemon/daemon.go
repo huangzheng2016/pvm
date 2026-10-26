@@ -205,10 +205,17 @@ func (s *Server) jsonOK(v any) http.HandlerFunc {
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	specs, _ := vm.ListAll(s.P)
+	specs, err := vm.ListAll(s.P)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
 	running, tcgFallback := 0, 0
 	for _, sp := range specs {
-		if st, err := s.instance(sp).Running(); err == nil && st != nil {
+		if st, err := s.instance(sp).Running(); err != nil {
+			writeErr(w, 500, fmt.Errorf("inspect VM %s: %w", sp.Name, err))
+			return
+		} else if st != nil {
 			running++
 			if st.Accel != "" && st.Accel != s.Accel {
 				tcgFallback++
@@ -229,8 +236,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) collectInfos() []vmInfo {
-	specs, _ := vm.ListAll(s.P)
+func (s *Server) collectInfos() ([]vmInfo, error) {
+	specs, listErr := vm.ListAll(s.P)
 	infos := make([]vmInfo, 0, len(specs))
 	for _, sp := range specs {
 		info := vmInfo{Spec: sp}
@@ -242,18 +249,25 @@ func (s *Server) collectInfos() []vmInfo {
 				}
 			}
 		}
-		if st, err := s.instance(sp).Running(); err == nil && st != nil {
+		if st, err := s.instance(sp).Running(); err != nil {
+			listErr = errors.Join(listErr, fmt.Errorf("inspect VM %s: %w", sp.Name, err))
+		} else if st != nil {
 			info.Running = true
 			info.PID = st.PID
 			info.Uptime = time.Since(st.Started).Round(time.Second).String()
 		}
 		infos = append(infos, info)
 	}
-	return infos
+	return infos, listErr
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, s.collectInfos())
+	infos, err := s.collectInfos()
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, infos)
 }
 
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
@@ -262,15 +276,20 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err)
 		return
 	}
-	for _, info := range s.collectInfos() {
+	infos, err := s.collectInfos()
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	for _, info := range infos {
 		if info.Spec.Name == spec.Name {
 			info.Stages = s.stages(spec.Name)
-			info.Ready = s.vmReady(spec.Name)
+			info.Ready = info.Running && s.vmReady(spec.Name)
 			writeJSON(w, 200, info)
 			return
 		}
 	}
-	writeJSON(w, 200, vmInfo{Spec: spec, Stages: s.stages(spec.Name), Ready: s.vmReady(spec.Name)})
+	writeJSON(w, 200, vmInfo{Spec: spec, Stages: s.stages(spec.Name)})
 }
 
 func (s *Server) handleClusters(w http.ResponseWriter, r *http.Request) {
@@ -296,6 +315,10 @@ type createRequest struct {
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	var req createRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if err := vm.ValidateName(req.Name); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -543,6 +566,11 @@ func (s *Server) handleSnapshotCreate(w http.ResponseWriter, r *http.Request) {
 	lock.Lock()
 	defer lock.Unlock()
 
+	if err := qemu.CheckSnapshotCreate(s.P.VMDir(name)); err != nil {
+		writeErr(w, 409, err)
+		return
+	}
+
 	// 9p mounts hold guest fid state the fresh QEMU process cannot
 	// reconstruct; lazily unmount them before migration (best effort).
 	mounts := []string{"/share"}
@@ -558,6 +586,11 @@ func (s *Server) handleSnapshotCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := s.instance(spec).CreateSnapshot(s.P.VMDir(name), buildinfo.Version); err != nil {
+		if st, stateErr := s.instance(spec).Running(); stateErr == nil && st != nil {
+			if mountErr := s.sshGuest(spec, "for target in "+strings.Join(quoted, " ")+"; do mountpoint -q \"$target\" || sudo mount \"$target\" || exit; done"); mountErr != nil {
+				err = errors.Join(err, fmt.Errorf("restore guest mounts after failed snapshot: %w", mountErr))
+			}
+		}
 		writeErr(w, 500, err)
 		return
 	}
@@ -671,7 +704,11 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) StopAllVMs() {
-	stopInfosParallel(s.collectInfos(), 8, func(spec *vm.Spec) {
+	infos, err := s.collectInfos()
+	if err != nil {
+		log.Printf("VM enumeration incomplete during shutdown: %v", err)
+	}
+	stopInfosParallel(infos, 8, func(spec *vm.Spec) {
 		lock := qemu.LockVM(spec.Name)
 		lock.Lock()
 		defer lock.Unlock()

@@ -88,7 +88,7 @@ func (c *Client) Register(ctx context.Context, publicKey string) (*Registration,
 	if len(reg.Config.Peers) == 0 {
 		var device Registration
 		if err := c.do(ctx, http.MethodGet, "/"+apiVersion+"/reg/"+reg.ID, reg.Token, nil, &device); err != nil {
-			return nil, fmt.Errorf("get WARP device config: %w", err)
+			return &reg, fmt.Errorf("get WARP device config: %w", err)
 		}
 		device.ID, device.Token = reg.ID, reg.Token
 		if device.Account.License == "" {

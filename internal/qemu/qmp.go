@@ -3,13 +3,16 @@ package qemu
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
 type QMP struct {
+	mu     sync.Mutex
 	conn   net.Conn
 	r      *bufio.Reader
 	events []qmpEvent
@@ -34,6 +37,15 @@ type qmpGreeting struct {
 	} `json:"QMP"`
 }
 
+type qmpCommandError struct{ error }
+
+func (q *QMP) closeOnProtocolError(err error) {
+	var commandError qmpCommandError
+	if err != nil && !errors.As(err, &commandError) {
+		q.conn.Close()
+	}
+}
+
 type qmpResponse struct {
 	Return json.RawMessage `json:"return"`
 	Error  *struct {
@@ -43,6 +55,9 @@ type qmpResponse struct {
 }
 
 func DialQMP(sockPath string) (*QMP, error) {
+	if err := validateUnixSocketPath("QMP", sockPath); err != nil {
+		return nil, err
+	}
 	conn, err := net.DialTimeout("unix", sockPath, 5*time.Second)
 	if err != nil {
 		return nil, err
@@ -74,6 +89,17 @@ func (q *QMP) readJSON(v any) error {
 // Execute runs one command and returns the raw "return" payload. Async
 // events interleaved between responses are buffered for WaitEvent.
 func (q *QMP) Execute(cmd string, args map[string]any) (json.RawMessage, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.execute(cmd, args)
+}
+
+func (q *QMP) execute(cmd string, args map[string]any) (json.RawMessage, error) {
+	return q.executeUntil(cmd, args, time.Now().Add(60*time.Second))
+}
+
+func (q *QMP) executeUntil(cmd string, args map[string]any, deadline time.Time) (result json.RawMessage, retErr error) {
+	defer func() { q.closeOnProtocolError(retErr) }()
 	req := map[string]any{"execute": cmd}
 	if args != nil {
 		req["arguments"] = args
@@ -82,15 +108,19 @@ func (q *QMP) Execute(cmd string, args map[string]any) (json.RawMessage, error) 
 	if err != nil {
 		return nil, err
 	}
-	q.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	writeDeadline := time.Now().Add(5 * time.Second)
+	if deadline.Before(writeDeadline) {
+		writeDeadline = deadline
+	}
+	q.conn.SetWriteDeadline(writeDeadline)
 	if _, err := q.conn.Write(append(data, '\r', '\n')); err != nil {
 		return nil, err
 	}
+	q.conn.SetReadDeadline(deadline)
+	defer q.conn.SetReadDeadline(time.Time{})
 	for {
 		var resp qmpResponse
-		q.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		line, err := q.r.ReadBytes('\n')
-		q.conn.SetReadDeadline(time.Time{})
 		if err != nil {
 			return nil, err
 		}
@@ -111,7 +141,7 @@ func (q *QMP) Execute(cmd string, args map[string]any) (json.RawMessage, error) 
 			continue
 		}
 		if resp.Error != nil {
-			return nil, fmt.Errorf("qmp %s: %s: %s", cmd, resp.Error.Class, resp.Error.Desc)
+			return nil, qmpCommandError{fmt.Errorf("qmp %s: %s: %s", cmd, resp.Error.Class, resp.Error.Desc)}
 		}
 		return resp.Return, nil
 	}
@@ -119,7 +149,11 @@ func (q *QMP) Execute(cmd string, args map[string]any) (json.RawMessage, error) 
 
 // WaitEvent blocks until the named QMP event arrives (already-buffered
 // events count) or the timeout expires.
-func (q *QMP) WaitEvent(name string, d time.Duration) error {
+func (q *QMP) WaitEvent(name string, d time.Duration) (retErr error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	defer func() { q.closeOnProtocolError(retErr) }()
+	defer q.conn.SetReadDeadline(time.Time{})
 	deadline := time.Now().Add(d)
 	for {
 		for i, e := range q.events {
@@ -143,7 +177,9 @@ func (q *QMP) WaitEvent(name string, d time.Duration) error {
 				Device string `json:"device"`
 			} `json:"data"`
 		}
-		json.Unmarshal(line, &ev)
+		if err := json.Unmarshal(line, &ev); err != nil {
+			return err
+		}
 		if ev.Event != "" {
 			q.events = append(q.events, qmpEvent{name: ev.Event, device: ev.Data.Device})
 		}
@@ -177,16 +213,14 @@ func (q *QMP) Migrate(uri string) error {
 
 // DeviceDel hot-unplugs a device and waits for the DEVICE_DELETED event
 // (guest PCI hot-unplug completion).
-func (q *QMP) DeviceDel(id string, timeout time.Duration) error {
-	req, _ := json.Marshal(map[string]any{
-		"execute":   "device_del",
-		"arguments": map[string]any{"id": id},
-	})
-	q.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
-	if _, err := q.conn.Write(append(req, '\r', '\n')); err != nil {
+func (q *QMP) DeviceDel(id string, timeout time.Duration) (retErr error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	defer func() { q.closeOnProtocolError(retErr) }()
+	deadline := time.Now().Add(timeout)
+	if _, err := q.executeUntil("device_del", map[string]any{"id": id}, deadline); err != nil {
 		return err
 	}
-	deadline := time.Now().Add(timeout)
 	defer q.conn.SetReadDeadline(time.Time{}) // don't leak the deadline into later commands
 	for {
 		// Drain buffered events first: DEVICE_DELETED may already have
@@ -206,17 +240,13 @@ func (q *QMP) DeviceDel(id string, timeout time.Duration) error {
 			Data  struct {
 				Device string `json:"device"`
 			} `json:"data"`
-			Resp qmpResponse
 		}
 		line, err := q.r.ReadBytes('\n')
 		if err != nil {
 			return fmt.Errorf("device_del %s: %w", id, err)
 		}
 		if err := json.Unmarshal(line, &msg); err != nil {
-			continue
-		}
-		if msg.Resp.Error != nil {
-			return fmt.Errorf("device_del %s: %s: %s", id, msg.Resp.Error.Class, msg.Resp.Error.Desc)
+			return err
 		}
 		if msg.Event == "DEVICE_DELETED" && msg.Data.Device == id {
 			return nil
@@ -271,6 +301,9 @@ func (q *QMP) NetdevAddStreamConnect(id, sockPath string) error {
 }
 
 func (q *QMP) netdevAddStream(id, sockPath string, server bool) error {
+	if err := validateUnixSocketPath("network link", sockPath); err != nil {
+		return err
+	}
 	_, err := q.Execute("netdev_add", map[string]any{
 		"type":   "stream",
 		"id":     id,

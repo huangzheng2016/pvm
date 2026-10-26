@@ -186,10 +186,18 @@ func (p *fakeProxy) handle(src *net.TCPConn) {
 	}
 }
 
-func (p *fakeProxy) track(tc *trackedConn) {
+func (p *fakeProxy) track(tc *trackedConn) bool {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || p.policy == nil {
+		return false
+	}
+	dec := p.policy.DecideFlow(tc.domain, nil, tc.vm)
+	if dec.Route != tc.route || dec.Exit != tc.exit || (tc.route == gwpolicy.Proxy && p.markFor(tc.exit) < 0) {
+		return false
+	}
 	p.conns[tc] = struct{}{}
-	p.mu.Unlock()
+	return true
 }
 
 func (p *fakeProxy) untrack(tc *trackedConn) {
@@ -217,7 +225,9 @@ func (p *fakeProxy) dialDirect(src *net.TCPConn, domain string, port int, vmName
 	}
 	defer up.Close()
 	tc := &trackedConn{vm: vmName, domain: domain, route: gwpolicy.Direct, src: src, up: up}
-	p.track(tc)
+	if !p.track(tc) {
+		return
+	}
 	defer p.untrack(tc)
 	relay(src, up)
 }
@@ -272,7 +282,9 @@ func (p *fakeProxy) dialProxy(src *net.TCPConn, domain string, port int, exitNam
 func (p *fakeProxy) relayProxy(src *net.TCPConn, up net.Conn, domain, exitName, vmName string) {
 	defer up.Close()
 	tc := &trackedConn{vm: vmName, domain: domain, route: gwpolicy.Proxy, exit: exitName, src: src, up: up}
-	p.track(tc)
+	if !p.track(tc) {
+		return
+	}
 	defer p.untrack(tc)
 	relay(src, up)
 }
@@ -328,6 +340,10 @@ func (p *fakeProxy) Close() {
 	p.mu.Lock()
 	p.closed = true
 	ln := p.ln
+	for tc := range p.conns {
+		tc.src.Close()
+		tc.up.Close()
+	}
 	p.mu.Unlock()
 	if ln != nil {
 		ln.Close()

@@ -65,7 +65,10 @@ func (in *Instance) Running() (*RunState, error) {
 		}
 		return nil, fmt.Errorf("vm state %s: %w", in.StatePath, err)
 	}
-	if st.Ident == nil || !st.Ident.Alive() {
+	if st.PID <= 0 || st.Ident == nil || st.Ident.PID != st.PID || st.Ident.Comm == "" || st.Ident.Started == "" {
+		return nil, fmt.Errorf("vm state %s: invalid process identity", in.StatePath)
+	}
+	if !st.Ident.Alive() {
 		return nil, nil
 	}
 	return st, nil
@@ -205,7 +208,17 @@ func (in *Instance) Stop() error {
 // killVerified re-checks the recorded identity immediately before
 // signalling, so a recycled PID is never signalled by mistake.
 func killVerified(st *RunState, sig syscall.Signal) error {
-	if !st.Ident.Alive() {
+	if st.Ident == nil || st.PID <= 0 || st.PID != st.Ident.PID {
+		return fmt.Errorf("refusing to signal invalid process identity")
+	}
+	cur, err := IdentityOf(st.PID)
+	if errors.Is(err, errNoProc) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot verify process %d before signalling: %w", st.PID, err)
+	}
+	if startedWithoutState(cur.Started) != startedWithoutState(st.Ident.Started) || cur.Comm != st.Ident.Comm {
 		return nil
 	}
 	if err := syscall.Kill(st.PID, sig); err != nil && !errors.Is(err, syscall.ESRCH) {

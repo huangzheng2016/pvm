@@ -105,6 +105,9 @@ func probeExchange(ctx context.Context, timeout time.Duration, what string,
 		deadline = d
 	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("%s: %w", what, err)
+		}
 		if err := write(); err != nil {
 			return fmt.Errorf("%s: %w", what, err)
 		}
@@ -143,6 +146,8 @@ func (t *Tunnel) ProbeUDP(ctx context.Context, serverIP netip.Addr) error {
 		return fmt.Errorf("udp probe: listen: %w", err)
 	}
 	defer pc.Close()
+	stop := context.AfterFunc(ctx, func() { pc.Close() })
+	defer stop()
 	req := make([]byte, udpProbeMsgSize)
 	copy(req, udpProbeMagic[:])
 	if _, err := rand.Read(req[len(udpProbeMagic):]); err != nil {
@@ -221,6 +226,8 @@ func (t *Tunnel) ProbeICMP(ctx context.Context, serverIP netip.Addr) error {
 		return fmt.Errorf("icmp probe: dial: %w", err)
 	}
 	defer pc.Close()
+	stop := context.AfterFunc(ctx, func() { pc.Close() })
+	defer stop()
 	nonce := make([]byte, 8)
 	if _, err := rand.Read(nonce); err != nil {
 		return fmt.Errorf("icmp probe: nonce: %w", err)

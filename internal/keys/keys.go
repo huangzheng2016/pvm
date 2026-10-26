@@ -20,6 +20,11 @@ func Ensure(keyPath string) (pubAuthorized string, err error) {
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
 		return "", err
 	}
+	lock, err := fsutil.TryLock(keyPath + ".lock")
+	if err != nil {
+		return "", fmt.Errorf("ssh key is in use; retry: %w", err)
+	}
+	defer lock.Unlock()
 	privPEM, privErr := os.ReadFile(keyPath)
 	pub, pubErr := os.ReadFile(keyPath + ".pub")
 	if privErr != nil && !os.IsNotExist(privErr) {
@@ -44,6 +49,10 @@ func Ensure(keyPath string) (pubAuthorized string, err error) {
 			return "", fmt.Errorf("write public key: %w", err)
 		}
 		return pubLine, nil
+	}
+
+	if pubErr == nil {
+		return "", fmt.Errorf("ssh private key is missing but public key exists; restore the private key instead of replacing the identity")
 	}
 
 	pubKey, priv, err := ed25519.GenerateKey(rand.Reader)

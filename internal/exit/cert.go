@@ -10,26 +10,33 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"fmt"
-	"log"
 	"math/big"
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 )
 
 func EnsureCert(dir string) (tls.Certificate, string, error) {
 	certPath := filepath.Join(dir, "server-cert.pem")
 	keyPath := filepath.Join(dir, "server-key.pem")
-	if _, err := os.Stat(certPath); err == nil {
+	_, certErr := os.Stat(certPath)
+	_, keyErr := os.Stat(keyPath)
+	if certErr == nil || keyErr == nil {
 		cert, err := tls.LoadX509KeyPair(certPath, keyPath)
-		if err == nil {
-			return cert, fingerprintDER(cert.Certificate[0]), nil
-		} else {
-			// rotating the cert invalidates every pinned client; never do
-			// it silently.
-			log.Printf("warning: existing cert/key unusable (%v); regenerating — pinned clients will need re-pinning", err)
+		if err != nil {
+			return tls.Certificate{}, "", fmt.Errorf("existing TLS identity unusable; restore server-cert.pem and server-key.pem: %w", err)
 		}
+		return cert, fingerprintDER(cert.Certificate[0]), nil
+	}
+	if !errors.Is(certErr, os.ErrNotExist) {
+		return tls.Certificate{}, "", certErr
+	}
+	if !errors.Is(keyErr, os.ErrNotExist) {
+		return tls.Certificate{}, "", keyErr
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -52,22 +59,16 @@ func EnsureCert(dir string) (tls.Certificate, string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return tls.Certificate{}, "", err
 	}
-	certOut, _ := os.OpenFile(certPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
-		certOut.Close()
-		return tls.Certificate{}, "", err
-	}
-	certOut.Close()
 	keyDER, err := x509.MarshalECPrivateKey(key)
 	if err != nil {
 		return tls.Certificate{}, "", err
 	}
-	keyOut, _ := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}); err != nil {
-		keyOut.Close()
+	if err := fsutil.AtomicWrite(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
 		return tls.Certificate{}, "", err
 	}
-	keyOut.Close()
+	if err := fsutil.AtomicWrite(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		return tls.Certificate{}, "", err
+	}
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		return tls.Certificate{}, "", err

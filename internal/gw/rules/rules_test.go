@@ -1,7 +1,9 @@
 package rules
 
 import (
+	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -151,5 +153,57 @@ func TestNormalization(t *testing.T) {
 	mustAdd(t, e, Rule{Type: DomainSuffix, Pattern: ".Example.COM.", Action: Direct})
 	if _, ok := e.Match("WWW.EXAMPLE.COM.", nil); !ok {
 		t.Fatal("case/trailing-dot normalization broken")
+	}
+}
+
+func TestFailedPersistenceKeepsActiveRules(t *testing.T) {
+	e := newTestEngine(t)
+	r := Rule{Type: DomainSuffix, Pattern: "example.com", Action: Direct}
+	mustAdd(t, e, r)
+	// An existing directory cannot be replaced by the rules file.
+	e.path = t.TempDir()
+	if err := e.Add(Rule{Type: DomainSuffix, Pattern: "example.com", Action: Proxy, Exit: "my-exit"}); err == nil {
+		t.Fatal("expected write failure")
+	}
+	if d, _ := e.Match("example.com", nil); d.Action != Direct {
+		t.Fatal("failed replacement changed live routing")
+	}
+	if err := e.Add(Rule{Type: DomainSuffix, Pattern: "new.example.com", Action: Direct}); err == nil {
+		t.Fatal("expected write failure")
+	}
+	if len(e.List()) != 1 {
+		t.Fatal("failed add changed live rules")
+	}
+	if ok, err := e.Remove(0); err == nil || ok {
+		t.Fatal("expected failed removal")
+	}
+	if len(e.List()) != 1 {
+		t.Fatal("failed removal changed live rules")
+	}
+}
+
+func TestRejectInvalidRulesOnAddAndLoad(t *testing.T) {
+	for _, r := range []Rule{
+		{Type: "unknown", Pattern: "example.com", Action: Direct},
+		{Type: DomainSuffix, Pattern: "example.com", Action: "unknown"},
+		{Type: DomainSuffix, Pattern: " . ", Action: Direct},
+		{Type: DomainPrefix, Pattern: "", Action: Direct},
+		{Type: DomainKeyword, Pattern: "", Action: Direct},
+	} {
+		e := newTestEngine(t)
+		if err := e.Add(r); err == nil {
+			t.Fatalf("Add accepted invalid rule: %+v", r)
+		}
+		data, err := json.Marshal([]Rule{r})
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "rules.json")
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := NewEngine(path, nil); err == nil {
+			t.Fatalf("Load accepted invalid rule: %+v", r)
+		}
 	}
 }

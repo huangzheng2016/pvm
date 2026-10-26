@@ -75,6 +75,10 @@ func (a *Agent) checkNFT(c *Config) error {
 	echoReplyDrop := `ip saddr 198.18.0.0/16 ip daddr ` + c.CIDR + ` icmp type echo-reply`
 	required := [][]string{
 		{
+			fmt.Sprintf(`oifname %q meta mark >= 0x%x drop`, upl, fwMarkBase),
+			fmt.Sprintf(`oifname %q meta mark >= 0x%08x drop`, upl, fwMarkBase),
+		},
+		{
 			tproxy + fmt.Sprintf(" meta mark set 0x%x", fakeIPMark),
 			tproxy + fmt.Sprintf(" meta mark set 0x%08x", fakeIPMark),
 		},

@@ -155,7 +155,11 @@ func (s *Server) repairClientLink(cl *cluster.Cluster, spec *vm.Spec) error {
 }
 
 func (s *Server) createGatewayVM(cl *cluster.Cluster) (*vm.Spec, error) {
-	port, err := vm.AllocSSHPort(vm.UsedSSHPorts(s.P), vm.SSHPortBase)
+	usedPorts, err := vm.UsedSSHPorts(s.P)
+	if err != nil {
+		return nil, err
+	}
+	port, err := vm.AllocSSHPort(usedPorts, vm.SSHPortBase)
 	if err != nil {
 		return nil, err
 	}
@@ -386,6 +390,10 @@ func (s *Server) pushGatewayConfigRetry(clusterID int) error {
 // same ProxyCommand path `pvm ssh` uses.
 func (s *Server) sshBaseArgs(spec *vm.Spec) ([]string, string, error) {
 	args := []string{
+		"-F", "/dev/null",
+		"-o", "IdentitiesOnly=yes",
+		"-o", "IdentityAgent=none",
+		"-o", "ForwardAgent=no",
 		"-i", s.P.SSHKey(),
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
@@ -405,8 +413,8 @@ func (s *Server) sshBaseArgs(spec *vm.Spec) ([]string, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	args = append(args, "-o", fmt.Sprintf("ProxyCommand=ssh -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -W %%h:%%p -p %d %s@127.0.0.1",
-		s.P.SSHKey(), gw.SSHPort, gw.User))
+	args = append(args, "-o", fmt.Sprintf("ProxyCommand=ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -W %%h:%%p -p %d %s@127.0.0.1",
+		shellQuote(s.P.SSHKey()), gw.SSHPort, gw.User))
 	return args, fmt.Sprintf("%s@%s", spec.User, spec.IP), nil
 }
 

@@ -52,9 +52,6 @@ func rewriteProxyURL(raw string) string {
 	switch strings.ToLower(u.Hostname()) {
 	case "127.0.0.1", "localhost", "::1":
 		host := "10.0.2.2"
-		if strings.HasPrefix(u.Host, "[") {
-			host = "[" + host + "]"
-		}
 		if u.Port() != "" {
 			host += ":" + u.Port()
 		}
@@ -68,7 +65,7 @@ func shellQuote(s string) string {
 }
 
 func systemdEnv(s string) string {
-	return strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(s)
+	return strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "%", "%%").Replace(s)
 }
 
 func (p ProxyConfig) writeProvisionEnv(b *strings.Builder) {
@@ -76,7 +73,7 @@ func (p ProxyConfig) writeProvisionEnv(b *strings.Builder) {
 	if !p.enabled() {
 		return
 	}
-	b.WriteString("cat > /tmp/pvm-build-proxy.env <<'EOF'\n")
+	b.WriteString("pvm_build_umask=$(umask)\numask 077\ncat > /run/pvm-build-proxy.env <<'EOF'\n")
 	for _, item := range [][2]string{
 		{"HTTP_PROXY", p.HTTPProxy},
 		{"HTTPS_PROXY", p.HTTPSProxy},
@@ -89,7 +86,7 @@ func (p ProxyConfig) writeProvisionEnv(b *strings.Builder) {
 	} {
 		fmt.Fprintf(b, "export %s=%s\n", item[0], shellQuote(item[1]))
 	}
-	b.WriteString("EOF\nsource /tmp/pvm-build-proxy.env\n")
+	b.WriteString("EOF\nsource /run/pvm-build-proxy.env\n")
 	b.WriteString("mkdir -p /etc/systemd/system/docker.service.d\n")
 	b.WriteString("cat > /etc/systemd/system/docker.service.d/pvm-proxy.conf <<'EOF'\n")
 	b.WriteString("[Service]\n")
@@ -97,13 +94,22 @@ func (p ProxyConfig) writeProvisionEnv(b *strings.Builder) {
 		systemdEnv(p.HTTPProxy), systemdEnv(p.HTTPSProxy), systemdEnv(p.AllProxy), systemdEnv(p.NoProxy))
 	fmt.Fprintf(b, "Environment=\"http_proxy=%s\" \"https_proxy=%s\" \"all_proxy=%s\" \"no_proxy=%s\"\n",
 		systemdEnv(p.HTTPProxy), systemdEnv(p.HTTPSProxy), systemdEnv(p.AllProxy), systemdEnv(p.NoProxy))
-	b.WriteString("EOF\n")
+	b.WriteString("EOF\numask \"$pvm_build_umask\"\nunset pvm_build_umask\n")
 }
 
 func (p ProxyConfig) writeCleanup(b *strings.Builder) {
 	if !p.enabled() {
 		return
 	}
-	b.WriteString("rm -f /tmp/pvm-build-proxy.env /etc/systemd/system/docker.service.d/pvm-proxy.conf\n")
+	b.WriteString("rm -f /run/pvm-build-proxy.env /etc/systemd/system/docker.service.d/pvm-proxy.conf\n")
 	b.WriteString("systemctl daemon-reload || true\n")
+}
+
+func (p ProxyConfig) validate() error {
+	for _, value := range []string{p.HTTPProxy, p.HTTPSProxy, p.AllProxy, p.NoProxy} {
+		if strings.ContainsAny(value, "\r\n\x00") {
+			return fmt.Errorf("build proxy values must not contain line breaks or NUL")
+		}
+	}
+	return nil
 }

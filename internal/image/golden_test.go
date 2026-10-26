@@ -122,9 +122,9 @@ func TestRenderProvisionProxyLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"http://10.0.2.2:8080", "http://user:pass@10.0.2.2:8081", "socks5://[10.0.2.2]:1080",
-		"/tmp/pvm-build-proxy.env", "/etc/systemd/system/docker.service.d/pvm-proxy.conf",
-		"rm -f /tmp/pvm-build-proxy.env /etc/systemd/system/docker.service.d/pvm-proxy.conf",
+		"http://10.0.2.2:8080", "http://user:pass@10.0.2.2:8081", "socks5://10.0.2.2:1080",
+		"/run/pvm-build-proxy.env", "/etc/systemd/system/docker.service.d/pvm-proxy.conf",
+		"rm -f /run/pvm-build-proxy.env /etc/systemd/system/docker.service.d/pvm-proxy.conf",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("proxy provision missing %q", want)

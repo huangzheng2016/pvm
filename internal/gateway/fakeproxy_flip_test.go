@@ -55,6 +55,8 @@ func TestSetPolicyResetsFlippedConnections(t *testing.T) {
 func TestSetExitHooksResetsDeadTunnelConnections(t *testing.T) {
 	eng := newFlipTestPolicy(t)
 	p := newFakeProxy(eng, "10.0.2.3", nil)
+	eng.SetVMExit("dev1", "my-exit")
+	p.SetExitHooks(func(string) int { return 153 }, nil, nil)
 
 	src, up := net.Pipe()
 	defer src.Close()
@@ -80,6 +82,7 @@ func TestSetPolicyKeepsUnchangedConnections(t *testing.T) {
 	eng := newFlipTestPolicy(t)
 	eng.SetVMExit("dev1", "my-exit")
 	p := newFakeProxy(eng, "10.0.2.3", nil)
+	p.SetExitHooks(func(string) int { return 153 }, nil, nil)
 
 	src, up := net.Pipe()
 	defer src.Close()
@@ -97,6 +100,9 @@ func assertClosed(t *testing.T, c net.Conn, msg string) {
 	if err == nil {
 		t.Fatal(msg)
 	}
+	if ne, ok := err.(net.Error); ok && ne.Timeout() {
+		t.Fatalf("%s (connection stayed open until deadline)", msg)
+	}
 }
 
 func assertOpen(t *testing.T, c net.Conn, msg string) {
@@ -105,5 +111,33 @@ func assertOpen(t *testing.T, c net.Conn, msg string) {
 	_, err := c.Read(make([]byte, 1))
 	if ne, ok := err.(net.Error); !ok || !ne.Timeout() {
 		t.Fatalf("%s (got err=%v, want timeout)", msg, err)
+	}
+}
+
+func TestTrackRejectsPolicyChangedDuringDial(t *testing.T) {
+	eng := newFlipTestPolicy(t)
+	p := newFakeProxy(eng, "10.0.2.3", nil)
+	eng.SetVMExit("dev1", "my-exit")
+	src, up := net.Pipe()
+	defer src.Close()
+	defer up.Close()
+	if p.track(&trackedConn{vm: "dev1", domain: "example.com", route: policy.Direct, src: src, up: up}) {
+		t.Fatal("adopted direct connection after route changed to proxy")
+	}
+}
+
+func TestProxyCloseClosesTrackedFlows(t *testing.T) {
+	eng := newFlipTestPolicy(t)
+	p := newFakeProxy(eng, "10.0.2.3", nil)
+	src, up := net.Pipe()
+	defer src.Close()
+	defer up.Close()
+	if !p.track(&trackedConn{vm: "dev1", domain: "example.com", route: policy.Direct, src: src, up: up}) {
+		t.Fatal("track failed")
+	}
+	p.Close()
+	assertClosed(t, src, "Close left live relay open")
+	if p.track(&trackedConn{vm: "dev1", domain: "example.com", route: policy.Direct, src: src, up: up}) {
+		t.Fatal("Close allowed new flow")
 	}
 }

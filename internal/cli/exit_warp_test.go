@@ -98,3 +98,56 @@ func TestWARPExitLifecycle(t *testing.T) {
 		t.Fatal("local exit still exists")
 	}
 }
+
+func TestWARPConfigFailurePreservesRecoveryWhenRollbackFails(t *testing.T) {
+	posts, deletes := 0, 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			posts++
+			w.Write([]byte(`{"id":"device-1","token":"YOUR_TOKEN"}`))
+		case http.MethodGet:
+			http.Error(w, "configuration temporarily unavailable", http.StatusServiceUnavailable)
+		case http.MethodDelete:
+			deletes++
+			http.Error(w, "deletion temporarily unavailable", http.StatusServiceUnavailable)
+		}
+	}))
+	defer ts.Close()
+	before := warpAPIBase
+	warpAPIBase = ts.URL
+	t.Cleanup(func() { warpAPIBase = before })
+	home := t.TempDir()
+	t.Setenv("PVM_HOME", home)
+	if code := exitAddWARP([]string{"my-exit"}); code == 0 {
+		t.Fatal("incomplete registration succeeded")
+	}
+	path := filepath.Join(home, "exits", "my-exit.warp-pending")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending struct {
+		PrivateKey   string                     `json:"private_key"`
+		Registration struct{ ID, Token string } `json:"registration"`
+	}
+	if err := json.Unmarshal(data, &pending); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tunnel.PublicKey(pending.PrivateKey); err != nil {
+		t.Fatal("private key not recoverable")
+	}
+	if pending.Registration.ID != "device-1" || pending.Registration.Token != "YOUR_TOKEN" {
+		t.Fatal("device credentials not recoverable")
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatal("recovery credentials not private")
+	}
+	if code := exitAddWARP([]string{"my-exit"}); code == 0 {
+		t.Fatal("pending registration allowed duplicate")
+	}
+	if posts != 1 || deletes != 1 {
+		t.Fatalf("registration/rollback counts = %d/%d", posts, deletes)
+	}
+}

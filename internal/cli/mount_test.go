@@ -2,6 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
+	"github.com/huangzheng2016/pvm/internal/paths"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -76,5 +83,49 @@ func TestWriteMountTable(t *testing.T) {
 	}
 	if err := writeMountTable(&out, []mountView{{Profile: "loose"}}); err == nil {
 		t.Fatal("invalid stored profile must be visible as an error")
+	}
+}
+
+func TestMountSendsHostPathResolvedInClientDirectory(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "pvm-mount-cli-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	t.Setenv("PVM_HOME", filepath.Join(dir, "state"))
+	p := paths.New(os.Getenv("PVM_HOME"))
+	if err := p.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", p.DaemonSock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	received := make(chan string, 1)
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			fmt.Fprint(w, `{"ready":true}`)
+			return
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		received <- body["host"]
+		_ = json.NewEncoder(w).Encode(mountView{Host: body["host"], Guest: body["guest"]})
+	})}
+	defer server.Close()
+	go server.Serve(ln)
+	cwd := filepath.Join(dir, "client")
+	if err := os.Mkdir(cwd, 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwd)
+	if code := CmdMount([]string{"dev1", "./project:/mnt/data"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if host := <-received; host != filepath.Join(cwd, "project") {
+		t.Fatalf("request host = %q", host)
 	}
 }

@@ -119,9 +119,9 @@ func selfExe() (string, error) {
 }
 
 // CreateSnapshot captures RAM + disk state of a running VM and leaves it
-// stopped. The flow is transactional: any failure after the guest is
-// paused resumes it.
-func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
+// stopped. Failures before QEMU exits resume the guest; later failures
+// retain its current disk for a cold restart.
+func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) (retErr error) {
 	in.mu.Lock()
 	defer in.mu.Unlock()
 
@@ -133,6 +133,9 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 		return fmt.Errorf("vm %s is not running", in.Cfg.Name)
 	}
 	sp := SnapPaths(vmDir)
+	if err := CheckSnapshotCreate(vmDir); err != nil {
+		return err
+	}
 
 	q, err := DialQMP(in.Cfg.QMPSock)
 	if err != nil {
@@ -145,15 +148,29 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 
 	// From here the guest may be paused: resume on any failure.
 	completed := false
-	sharesRemoved := false
+	removedTags := []string{}
+	migrationStarted := false
+	processStopped := false
 	defer func() {
-		if !completed {
-			q.Cont()
-			if sharesRemoved {
-				// Best-effort: put the 9p front-ends back or every later
-				// snapshot fails with "Device 'fs0' not found" and the
-				// shares stay gone until reboot.
-				in.reattachShares(q)
+		if completed {
+			return
+		}
+		if processStopped {
+			retErr = fmt.Errorf("snapshot failed after VM stopped; current disk retained for restart: %w", retErr)
+			return
+		}
+		if migrationStarted {
+			if _, err := q.Execute("migrate_cancel", nil); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("cancel migration: %w", err))
+			}
+		}
+		if err := q.Cont(); err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("resume after failed snapshot: %w", err))
+		}
+		for _, tag := range removedTags {
+			slot, _ := VirtFSSlot(tag)
+			if err := q.DeviceAddVirtFS(slot, tag); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("reattach share %s after failed snapshot: %w", tag, err))
 			}
 		}
 	}()
@@ -173,8 +190,12 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 		if err := q.DeviceDel(VirtFSID(slot), 15*time.Second); err != nil {
 			return err
 		}
+		tag := "pvmshare"
+		if slot > 0 {
+			tag = fmt.Sprintf("pvm%d", slot-1)
+		}
+		removedTags = append(removedTags, tag)
 	}
-	sharesRemoved = true
 
 	if err := q.Stop(); err != nil {
 		return fmt.Errorf("qmp stop: %w", err)
@@ -192,21 +213,24 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 	if err := q.Migrate(uri); err != nil {
 		return fmt.Errorf("qmp migrate: %w", err)
 	}
+	migrationStarted = true
 	if err := waitMigrate(q, in.Cfg.MemMB); err != nil {
 		return err
 	}
 
 	// RAM is fully saved; the old process must go away (its replacement
 	// boots from the snapshot).
-	q.Quit()
+	if err := q.Quit(); err != nil {
+		return fmt.Errorf("quit after migration: %w", err)
+	}
 	waitDead(st.Ident, 10*time.Second)
 	if st.Ident.Alive() {
 		return fmt.Errorf("qemu still alive after migrate+quit")
 	}
 
-	// New snap base is converted beside the old one and atomically
-	// renamed over it; only then is the stale restore overlay dropped
-	// (its backing was the old snap).
+	processStopped = true
+
+	// Capture the stopped disk before publishing the snapshot manifest.
 	snapTmp := sp.Snap + ".tmp"
 	os.Remove(snapTmp)
 	out, err := exec.Command(in.Toolchain.Img, "convert", "-f", "qcow2", "-O", "qcow2", in.Cfg.DiskPath, snapTmp).CombinedOutput()
@@ -234,13 +258,6 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) error {
 	}
 	if err := m.save(vmDir); err != nil {
 		return err
-	}
-	// The stale restore overlay is dropped only after the manifest is on
-	// disk: its content is fully captured in sp.Snap (qemu has quit), and
-	// a crash before this point must not lose the only reference to the
-	// VM's current data.
-	if in.Cfg.DiskPath == sp.Restore {
-		os.Remove(sp.Restore)
 	}
 	completed = true
 	return nil
@@ -306,7 +323,11 @@ func (in *Instance) PrepareRestore(vmDir string) (*SnapshotManifest, error) {
 	// keep it as .bak instead of silently discarding that work.
 	if _, err := os.Stat(sp.Restore); err == nil {
 		bak := sp.Restore + ".bak"
-		os.Remove(bak)
+		if _, err := os.Lstat(bak); err == nil {
+			return nil, fmt.Errorf("restore backup already exists; inspect and move %s aside before retrying, or cold-start the VM from its current restore disk", bak)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("inspect restore backup: %w", err)
+		}
 		if err := os.Rename(sp.Restore, bak); err != nil {
 			return nil, fmt.Errorf("preserve restore overlay: %w", err)
 		}
@@ -394,6 +415,13 @@ func (in *Instance) reattachShares(q *QMP) error {
 // the VM is stopped.
 func RemoveSnapshot(vmDir string) error {
 	sp := SnapPaths(vmDir)
+	for _, path := range []string{sp.Restore, sp.Restore + ".bak"} {
+		if _, err := os.Lstat(path); err == nil {
+			return fmt.Errorf("cannot remove snapshot: restore overlay or backup holds VM data; clone the VM or preserve and flatten the restore disk before removing its backing snapshot")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
 	for _, f := range []string{sp.RAM, sp.Snap, sp.Restore, sp.Manifest} {
 		if err := os.Remove(f); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
@@ -414,4 +442,19 @@ func ActiveDisk(vmDir, def string) string {
 		return SnapPaths(vmDir).Restore
 	}
 	return def
+}
+
+func CheckSnapshotCreate(vmDir string) error {
+	sp := SnapPaths(vmDir)
+	for _, path := range []string{sp.Restore, sp.Manifest, sp.RAM, sp.Snap} {
+		if _, err := os.Lstat(path); err == nil {
+			if path == sp.Restore {
+				return fmt.Errorf("cannot snapshot an active restore overlay; clone the VM into a new VM before creating another snapshot")
+			}
+			return fmt.Errorf("snapshot artifacts already exist; remove the existing snapshot explicitly before creating another")
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect snapshot artifacts: %w", err)
+		}
+	}
+	return nil
 }

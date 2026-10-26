@@ -20,11 +20,36 @@ type mapView struct {
 }
 
 func CmdMap(args []string) int {
+	const usage = "<vm> <hostPort>:<guestPort> [--udp] | ls | rm <port> [--udp]"
+	fs := newFlagSet("map", usage)
+	udp := fs.Bool("udp", false, "map UDP instead of TCP")
+	var flags, positionals []string
+	parseFlags := true
+	for _, arg := range args {
+		if parseFlags && arg == "--" {
+			parseFlags = false
+		} else if parseFlags && strings.HasPrefix(arg, "-") && arg != "-" {
+			flags = append(flags, arg)
+		} else {
+			positionals = append(positionals, arg)
+		}
+	}
+	if err := fs.Parse(append(append(flags, "--"), positionals...)); err != nil {
+		return 1
+	}
+	args = fs.Args()
+	if len(args) == 0 || (args[0] == "ls" && (len(args) != 1 || *udp)) || (args[0] != "ls" && len(args) != 2) {
+		return fatalf("usage: pvm map %s", usage)
+	}
+	proto := "tcp"
+	if *udp {
+		proto = "udp"
+	}
 	p, err := mustPaths()
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	if len(args) >= 1 && args[0] == "ls" {
+	if args[0] == "ls" {
 		c, err := daemon.Ensure(p)
 		if err != nil {
 			return fatalf("%v", err)
@@ -41,11 +66,7 @@ func CmdMap(args []string) int {
 		tw.Flush()
 		return 0
 	}
-	if len(args) >= 2 && args[0] == "rm" {
-		proto := "tcp"
-		if hasFlag(args[2:], "--udp") {
-			proto = "udp"
-		}
+	if args[0] == "rm" {
 		c, err := daemon.Ensure(p)
 		if err != nil {
 			return fatalf("%v", err)
@@ -56,41 +77,25 @@ func CmdMap(args []string) int {
 		fmt.Printf("removed map %s/%s\n", args[1], proto)
 		return 0
 	}
-	if len(args) >= 2 {
-		vmName := args[0]
-		hostS, guestS, ok := strings.Cut(args[1], ":")
-		if !ok {
-			return fatalf("usage: pvm map <vm> <hostPort>:<guestPort> [--udp] | ls | rm <port>")
-		}
-		host, err1 := strconv.Atoi(hostS)
-		guest, err2 := strconv.Atoi(guestS)
-		if err1 != nil || err2 != nil {
-			return fatalf("ports must be numbers: %q", args[1])
-		}
-		proto := "tcp"
-		if hasFlag(args[2:], "--udp") {
-			proto = "udp"
-		}
-		c, err := daemon.Ensure(p)
-		if err != nil {
-			return fatalf("%v", err)
-		}
-		body := map[string]any{"vm": vmName, "host_port": host, "guest_port": guest, "proto": proto}
-		var out mapView
-		if err := c.Post("/v1/maps", body, &out); err != nil {
-			return fatalf("map: %v", err)
-		}
-		fmt.Printf("mapped 127.0.0.1:%d/%s -> %s(%s):%d\n", out.HostPort, out.Proto, out.VM, out.VMIP, out.GuestPort)
-		return 0
+	vmName := args[0]
+	hostS, guestS, ok := strings.Cut(args[1], ":")
+	if !ok {
+		return fatalf("usage: pvm map %s", usage)
 	}
-	return fatalf("usage: pvm map <vm> <hostPort>:<guestPort> [--udp] | ls | rm <port> [--udp]")
-}
-
-func hasFlag(args []string, want string) bool {
-	for _, a := range args {
-		if a == want {
-			return true
-		}
+	host, err1 := strconv.Atoi(hostS)
+	guest, err2 := strconv.Atoi(guestS)
+	if err1 != nil || err2 != nil {
+		return fatalf("ports must be numbers: %q", args[1])
 	}
-	return false
+	c, err := daemon.Ensure(p)
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	body := map[string]any{"vm": vmName, "host_port": host, "guest_port": guest, "proto": proto}
+	var out mapView
+	if err := c.Post("/v1/maps", body, &out); err != nil {
+		return fatalf("map: %v", err)
+	}
+	fmt.Printf("mapped 127.0.0.1:%d/%s -> %s(%s):%d\n", out.HostPort, out.Proto, out.VM, out.VMIP, out.GuestPort)
+	return 0
 }

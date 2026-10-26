@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"net/netip"
 	"strconv"
 	"strings"
@@ -105,8 +106,7 @@ func (t *Tunnel) WaitHandshake(ctx context.Context, serverTunnelIP string) error
 			return nil
 		}
 		if time.Now().After(deadline) {
-			out, _ := t.Dev.IpcGet()
-			return fmt.Errorf("wireguard handshake timeout; client ipc:\n%s", out)
+			return fmt.Errorf("wireguard handshake timeout")
 		}
 		select {
 		case <-ctx.Done():
@@ -138,28 +138,20 @@ func (t *Tunnel) httpGet(ctx context.Context, ip netip.Addr, port uint16, host, 
 		return "", err
 	}
 	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
 	if _, err := fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: pvm-exit-test\r\nConnection: close\r\n\r\n", path, host); err != nil {
 		return "", err
 	}
-	br := bufio.NewReader(conn)
-	status, err := br.ReadString('\n')
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
 		return "", err
 	}
-	if !strings.Contains(status, " 200") {
-		return "", fmt.Errorf("http status: %s", strings.TrimSpace(status))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("http status: %s", resp.Status)
 	}
-	// skip headers
-	for {
-		line, err := br.ReadString('\n')
-		if err != nil {
-			return "", err
-		}
-		if line == "\r\n" {
-			break
-		}
-	}
-	b, err := io.ReadAll(io.LimitReader(br, 4096))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	return string(b), err
 }
 
@@ -174,28 +166,21 @@ func (t *Tunnel) download(ctx context.Context, ip netip.Addr, port uint16, path 
 		return 0, 0, err
 	}
 	defer conn.Close()
+	stop := context.AfterFunc(ctx, func() { conn.Close() })
+	defer stop()
 	host := ip.String()
 	if _, err := fmt.Fprintf(conn, "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: pvm-speedtest\r\nConnection: close\r\n\r\n", path, host); err != nil {
 		return 0, 0, err
 	}
-	br := bufio.NewReader(conn)
-	status, err := br.ReadString('\n')
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 	if err != nil {
 		return 0, 0, err
 	}
-	if !strings.Contains(status, " 200") {
-		return 0, 0, fmt.Errorf("http status: %s", strings.TrimSpace(status))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return 0, 0, fmt.Errorf("http status: %s", resp.Status)
 	}
-	for {
-		line, err := br.ReadString('\n')
-		if err != nil {
-			return 0, 0, err
-		}
-		if line == "\r\n" {
-			break
-		}
-	}
-	n, err := io.Copy(io.Discard, br)
+	n, err := io.Copy(io.Discard, resp.Body)
 	return n, time.Since(start), err
 }
 

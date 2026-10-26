@@ -1,13 +1,14 @@
 package qemu
 
 import (
-	"runtime"
 	"bufio"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -112,5 +113,97 @@ func TestDeviceDelBuffersUnrelatedEvents(t *testing.T) {
 	// only echoes a bare return for the command itself.
 	if err := q.DeviceDel("fs9", 5*time.Second); err != nil {
 		t.Fatalf("DeviceDel fs9 should match the buffered DEVICE_DELETED: %v", err)
+	}
+}
+
+func TestDeviceDelReportsCommandError(t *testing.T) {
+	sock, ln := fakeQMP(t, func(w *bufio.Writer, id string) {
+		fmt.Fprintln(w, `{"error":{"class":"DeviceNotFound","desc":"Device missing"}}`)
+	})
+	defer ln.Close()
+	q, err := DialQMP(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	start := time.Now()
+	if err := q.DeviceDel("fs0", time.Second); err == nil || !strings.Contains(err.Error(), "DeviceNotFound") {
+		t.Fatalf("DeviceDel error = %v", err)
+	}
+	if time.Since(start) > 500*time.Millisecond {
+		t.Fatal("command error delayed until event timeout")
+	}
+}
+
+func TestDeviceDelConsumesReplyAfterEvent(t *testing.T) {
+	sock, ln := fakeQMP(t, func(w *bufio.Writer, id string) {
+		fmt.Fprintln(w, `{"event":"DEVICE_DELETED","data":{"device":"`+id+`"}}`)
+		fmt.Fprintln(w, `{"return":{}}`)
+	})
+	defer ln.Close()
+	q, err := DialQMP(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	if err := q.DeviceDel("fs0", time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := q.Status(); err != nil || status != "running" {
+		t.Fatalf("next command reply corrupted: status=%q err=%v", status, err)
+	}
+}
+
+func TestQMPConcurrentCommands(t *testing.T) {
+	sock, ln := fakeQMP(t, func(w *bufio.Writer, id string) {})
+	defer ln.Close()
+	q, err := DialQMP(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if status, err := q.Status(); err != nil || status != "running" {
+				t.Errorf("Status() = %q, %v", status, err)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+func TestDeviceDelTimeoutIncludesCommandReply(t *testing.T) {
+	sock, ln := fakeQMP(t, func(w *bufio.Writer, id string) {})
+	defer ln.Close()
+	q, err := DialQMP(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	start := time.Now()
+	if err := q.DeviceDel("fs0", 30*time.Millisecond); err == nil {
+		t.Fatal("expected command timeout")
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("device_del ignored timeout while waiting for command reply")
+	}
+}
+
+func TestQMPTimeoutClosesConnection(t *testing.T) {
+	sock, ln := fakeQMP(t, func(w *bufio.Writer, id string) {})
+	defer ln.Close()
+	q, err := DialQMP(sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer q.Close()
+	if err := q.DeviceDel("fs0", 10*time.Millisecond); err == nil {
+		t.Fatal("expected timeout")
+	}
+	if _, err := q.Status(); err == nil {
+		t.Fatal("timed out connection reused")
 	}
 }

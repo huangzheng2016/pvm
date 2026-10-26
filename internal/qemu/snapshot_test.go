@@ -1,12 +1,17 @@
 package qemu
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,13 +144,13 @@ func TestZstdPipeRoundtrip(t *testing.T) {
 func TestRemoveSnapshot(t *testing.T) {
 	dir := t.TempDir()
 	sp := SnapPaths(dir)
-	for _, f := range []string{sp.RAM, sp.Snap, sp.Restore, sp.Manifest} {
+	for _, f := range []string{sp.RAM, sp.Snap, sp.Manifest} {
 		os.WriteFile(f, []byte("x"), 0o600)
 	}
 	if err := RemoveSnapshot(dir); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{sp.RAM, sp.Snap, sp.Restore, sp.Manifest} {
+	for _, f := range []string{sp.RAM, sp.Snap, sp.Manifest} {
 		if _, err := os.Stat(f); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("%s should be gone", f)
 		}
@@ -190,5 +195,169 @@ func TestDetectBundledTrustsHVF(t *testing.T) {
 	tc.Bundled = false
 	if got := Detect(tc, "darwin"); got != AccelTCG {
 		t.Fatalf("system qemu with dead binary: want tcg fallback, got %s", got)
+	}
+}
+
+func TestRemoveSnapshotPreservesActiveDisk(t *testing.T) {
+	dir := t.TempDir()
+	sp := SnapPaths(dir)
+	for _, path := range []string{sp.RAM, sp.Snap, sp.Restore, sp.Manifest} {
+		if err := os.WriteFile(path, []byte("VM data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RemoveSnapshot(dir); err == nil {
+		t.Fatal("must refuse removal of active restore disk")
+	}
+	for _, path := range []string{sp.RAM, sp.Snap, sp.Restore, sp.Manifest} {
+		if data, err := os.ReadFile(path); err != nil || string(data) != "VM data" {
+			t.Fatalf("snapshot artifact lost: %v", err)
+		}
+	}
+}
+
+func TestSnapshotReattachesSharesAfterPartialDetach(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "psnap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	sock := filepath.Join(dir, "q.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	commands := make(chan map[string]any, 20)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		fmt.Fprintln(conn, `{"QMP":{}}`)
+		r := bufio.NewReader(conn)
+		for {
+			line, err := r.ReadBytes('\n')
+			if err != nil {
+				return
+			}
+			var cmd map[string]any
+			if json.Unmarshal(line, &cmd) != nil {
+				return
+			}
+			commands <- cmd
+			switch cmd["execute"] {
+			case "query-status":
+				fmt.Fprintln(conn, `{"return":{"status":"running"}}`)
+			case "device_del":
+				id := cmd["arguments"].(map[string]any)["id"].(string)
+				if id == "fs0" {
+					fmt.Fprintln(conn, `{"return":{}}`)
+					fmt.Fprintln(conn, `{"event":"DEVICE_DELETED","data":{"device":"fs0"}}`)
+				} else {
+					fmt.Fprintln(conn, `{"error":{"class":"DeviceNotFound","desc":"missing share"}}`)
+				}
+			default:
+				fmt.Fprintln(conn, `{"return":{}}`)
+			}
+		}
+	}()
+	id, err := IdentityOf(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := json.Marshal(RunState{PID: id.PID, Ident: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "run.json")
+	if err := os.WriteFile(statePath, state, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := &Instance{StatePath: statePath, Cfg: VMConfig{QMPSock: sock, ExtraMounts: []Mount{{Tag: "pvm0"}}}}
+	if err := in.CreateSnapshot(dir, "test"); err == nil {
+		t.Fatal("expected partial detach failure")
+	}
+	<-done
+	close(commands)
+	reattached := []string{}
+	resumed := false
+	for cmd := range commands {
+		if cmd["execute"] == "cont" {
+			resumed = true
+		}
+		if cmd["execute"] == "device_add" {
+			reattached = append(reattached, cmd["arguments"].(map[string]any)["id"].(string))
+		}
+	}
+	if !resumed {
+		t.Fatal("failed snapshot did not resume guest")
+	}
+	if len(reattached) != 1 || reattached[0] != "fs0" {
+		t.Fatalf("reattached devices = %v, want only fs0", reattached)
+	}
+}
+
+func TestPrepareRestorePreservesExistingBackup(t *testing.T) {
+	dir := t.TempDir()
+	sp := SnapPaths(dir)
+	tc := &Toolchain{Version: [3]int{11, 1, 2}, Bundled: true}
+	cfg := VMConfig{CPUs: 2, MemMB: 2048, Accel: AccelTCG}
+	m := &SnapshotManifest{Arch: native.Arch, CPUs: 2, MemMB: 2048, Accel: AccelTCG, QEMUVersion: tc.versionString()}
+	if err := m.save(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{sp.RAM, sp.Snap, sp.Restore} {
+		if err := os.WriteFile(path, []byte("current"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bak := sp.Restore + ".bak"
+	if err := os.WriteFile(bak, []byte("saved writes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := &Instance{Cfg: cfg, Toolchain: tc}
+	if _, err := in.PrepareRestore(dir); err == nil {
+		t.Fatal("must refuse overwriting existing backup")
+	}
+	if data, err := os.ReadFile(bak); err != nil || string(data) != "saved writes" {
+		t.Fatalf("backup lost: %q, %v", data, err)
+	}
+	if data, err := os.ReadFile(sp.Restore); err != nil || string(data) != "current" {
+		t.Fatalf("current restore lost: %q, %v", data, err)
+	}
+}
+
+func TestSnapshotRefusesExistingArtifacts(t *testing.T) {
+	for _, artifact := range []string{"state.snapshot.zst", "disk.snap.qcow2", "disk.restore.qcow2", "snapshot.json"} {
+		t.Run(artifact, func(t *testing.T) {
+			dir := t.TempDir()
+			id, err := IdentityOf(os.Getpid())
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(RunState{PID: id.PID, Ident: id})
+			if err != nil {
+				t.Fatal(err)
+			}
+			state := filepath.Join(dir, "run.json")
+			if err := os.WriteFile(state, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, artifact)
+			if err := os.WriteFile(path, []byte("saved state"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			in := &Instance{StatePath: state}
+			if err := in.CreateSnapshot(dir, "test"); err == nil || !strings.Contains(err.Error(), "snapshot") {
+				t.Fatalf("existing snapshot accepted: %v", err)
+			}
+			if got, err := os.ReadFile(path); err != nil || string(got) != "saved state" {
+				t.Fatalf("saved state changed: %q, %v", got, err)
+			}
+		})
 	}
 }

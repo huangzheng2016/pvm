@@ -238,3 +238,9 @@ func equalBytes(a, b []byte) bool {
 	}
 	return true
 }
+
+func (s *DHCPServer) Close() {
+	if s.conn != nil {
+		s.conn.Close()
+	}
+}

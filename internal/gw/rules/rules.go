@@ -7,6 +7,7 @@ package rules
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"strings"
@@ -106,6 +107,19 @@ func normalizeDomain(d string) string {
 
 func compile(r Rule) (entry, error) {
 	en := entry{Rule: r}
+	switch r.Type {
+	case DomainSuffix, DomainPrefix, DomainKeyword, CIDR:
+	default:
+		return en, fmt.Errorf("invalid rule type %q", r.Type)
+	}
+	switch r.Action {
+	case Direct, Proxy, Internal:
+	default:
+		return en, fmt.Errorf("invalid rule action %q", r.Action)
+	}
+	if normalizeDomain(r.Pattern) == "" {
+		return en, fmt.Errorf("rule pattern must not be empty")
+	}
 	if r.Type == CIDR {
 		_, n, err := net.ParseCIDR(r.Pattern)
 		if err != nil {
@@ -191,11 +205,19 @@ func (e *Engine) Add(r Rule) error {
 	for i, ex := range e.entries {
 		if ex.Type == en.Type && ex.Pattern == en.Pattern {
 			e.entries[i] = en
-			return e.saveLocked()
+			if err := e.saveLocked(); err != nil {
+				e.entries[i] = ex
+				return err
+			}
+			return nil
 		}
 	}
 	e.entries = append(e.entries, en)
-	return e.saveLocked()
+	if err := e.saveLocked(); err != nil {
+		e.entries = e.entries[:len(e.entries)-1]
+		return err
+	}
+	return nil
 }
 
 func (e *Engine) Remove(index int) (bool, error) {
@@ -204,8 +226,13 @@ func (e *Engine) Remove(index int) (bool, error) {
 	if index < 0 || index >= len(e.entries) {
 		return false, nil
 	}
-	e.entries = append(e.entries[:index], e.entries[index+1:]...)
-	return true, e.saveLocked()
+	before := e.entries
+	e.entries = append(append([]entry(nil), before[:index]...), before[index+1:]...)
+	if err := e.saveLocked(); err != nil {
+		e.entries = before
+		return false, err
+	}
+	return true, nil
 }
 
 func (e *Engine) saveLocked() error {

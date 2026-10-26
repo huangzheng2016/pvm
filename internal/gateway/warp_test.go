@@ -35,3 +35,32 @@ func TestResolveEndpoint(t *testing.T) {
 		t.Fatal("IPv6-only endpoint must be rejected by the IPv4 gateway")
 	}
 }
+
+func TestTunnelStatePublicationConcurrentLookups(t *testing.T) {
+	m := newExitManager()
+	tt := &exitTunnel{idx: 0, def: ExitDef{DNS: "203.0.113.53"}}
+	m.tuns["my-exit"] = tt
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 1000 {
+			tt.mu.Lock()
+			tt.dev = &device.Device{}
+			tt.server = "203.0.113.7"
+			tt.serverTunIP = "203.0.113.1"
+			tt.mu.Unlock()
+			tt.mu.Lock()
+			tt.dev = nil
+			tt.mu.Unlock()
+		}
+	}()
+	for range 1000 {
+		m.MarkForExit("my-exit")
+		m.DomainConnectAddr("my-exit")
+		m.TunnelDNSAddr("my-exit")
+		m.mu.Lock()
+		m.desiredPolicyRulesLocked()
+		m.mu.Unlock()
+	}
+	<-done
+}

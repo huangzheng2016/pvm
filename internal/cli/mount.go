@@ -115,6 +115,11 @@ func CmdMount(args []string) int {
 				host = filepath.Join(home, strings.TrimPrefix(host, "~/"))
 			}
 		}
+		host, err = filepath.Abs(host)
+		if err != nil {
+			return fatalf("mount host path: %v", err)
+		}
+
 		c, err := daemon.Ensure(p)
 		if err != nil {
 			return fatalf("%v", err)

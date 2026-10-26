@@ -33,3 +33,15 @@ func TestRunningDistinguishesCorruptState(t *testing.T) {
 		t.Fatalf("state file must be preserved for diagnosis: %v", statErr)
 	}
 }
+
+func TestRunningRejectsInvalidIdentity(t *testing.T) {
+	in := &Instance{StatePath: filepath.Join(t.TempDir(), "run.json")}
+	for _, state := range []string{`{}`, `{"pid":123}`, `{"pid":123,"ident":{"pid":124,"comm":"qemu","started":"Oct 26 12:00:00 2026"}}`} {
+		if err := os.WriteFile(in.StatePath, []byte(state), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := in.Running(); err == nil {
+			t.Fatalf("invalid identity accepted: %s", state)
+		}
+	}
+}

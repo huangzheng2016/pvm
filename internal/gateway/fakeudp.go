@@ -216,7 +216,7 @@ func (p *fakeUDP) readLoop(ln *net.UDPConn) {
 		flow, start := p.reserve(key)
 		if flow != nil {
 			if _, err := flow.up.Write(payload); err != nil {
-				p.closeKey(key)
+				p.closeFlow(flow)
 			}
 			continue
 		}
@@ -272,19 +272,18 @@ func (p *fakeUDP) openFlow(key fakeUDPKey, src, dst *net.UDPAddr, domain string,
 	}
 	p.mu.Lock()
 	delete(p.pending, key)
-	adopt := false
+	var flow *fakeUDPFlow
 	if !p.closed && p.policy != nil {
 		dec := p.policy.DecideFlow(domain, dst.IP, vmName)
 		if dec.Route == route && dec.Exit == exitName && (route != gwpolicy.Proxy || p.markFor(exitName) >= 0) {
-			flow := &fakeUDPFlow{key: key, src: src, dst: dst, domain: domain, vm: vmName, route: route, exit: exitName, up: up, down: down, lastActive: time.Now()}
+			flow = &fakeUDPFlow{key: key, src: src, dst: dst, domain: domain, vm: vmName, route: route, exit: exitName, up: up, down: down, lastActive: time.Now()}
 			p.flows[key] = flow
 			p.wg.Add(1)
 			go p.pump(flow)
-			adopt = true
 		}
 	}
 	p.mu.Unlock()
-	if !adopt {
+	if flow == nil {
 		up.Close()
 		if down != nil {
 			down.Close()
@@ -292,7 +291,7 @@ func (p *fakeUDP) openFlow(key fakeUDPKey, src, dst *net.UDPAddr, domain string,
 		return
 	}
 	if _, err := up.Write(payload); err != nil {
-		p.closeKey(key)
+		p.closeFlow(flow)
 	}
 }
 
@@ -410,7 +409,7 @@ func (p *fakeUDP) pump(flow *fakeUDPFlow) {
 	for {
 		n, err := flow.up.Read(buf)
 		if err != nil {
-			p.closeKey(flow.key)
+			p.closeFlow(flow)
 			return
 		}
 		p.mu.Lock()
@@ -423,12 +422,12 @@ func (p *fakeUDP) pump(flow *fakeUDPFlow) {
 		p.mu.Unlock()
 		if flow.down != nil {
 			if err := writeUDPReply(flow.down, flow.dst, flow.src, buf[:n]); err != nil {
-				p.closeKey(flow.key)
+				p.closeFlow(flow)
 				return
 			}
 		} else if ln != nil {
 			if _, err := ln.WriteToUDP(buf[:n], flow.src); err != nil {
-				p.closeKey(flow.key)
+				p.closeFlow(flow)
 				return
 			}
 		}
@@ -470,14 +469,13 @@ func udpChecksum(src, dst net.IP, packet []byte) uint16 {
 	return checksum
 }
 
-func (p *fakeUDP) closeKey(key fakeUDPKey) {
+func (p *fakeUDP) closeFlow(flow *fakeUDPFlow) {
 	p.mu.Lock()
-	flow := p.flows[key]
-	delete(p.flows, key)
-	p.mu.Unlock()
-	if flow != nil {
-		flow.close()
+	if p.flows[flow.key] == flow {
+		delete(p.flows, flow.key)
 	}
+	p.mu.Unlock()
+	flow.close()
 }
 
 func (p *fakeUDP) reaper() {

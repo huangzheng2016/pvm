@@ -231,20 +231,33 @@ func (s *Server) removeMount(spec *vm.Spec, m vm.GuestMount) error {
 }
 
 func (s *Server) rollbackAddedMount(spec *vm.Spec, m vm.GuestMount, q *qemu.QMP, deviceAdded bool) error {
-	var errs []error
+	return s.rollbackAddedMountWith(spec, m, q, deviceAdded, s.sshRun)
+}
+
+func (s *Server) rollbackAddedMountWith(spec *vm.Spec, m vm.GuestMount, q *qemu.QMP, deviceAdded bool, run func(*vm.Spec, string) (string, error)) error {
 	if deviceAdded {
-		if out, err := s.sshRun(spec, guestMountRemoveScript(m)); err != nil {
-			errs = append(errs, fmt.Errorf("guest rollback: %v%s", err, indentOutput(out)))
+		if out, err := run(spec, guestMountRemoveScript(m)); err != nil {
+			return s.retainFailedMount(spec, m, fmt.Errorf("guest rollback: %v%s", err, indentOutput(out)))
 		}
 		slot, _ := qemu.VirtFSSlot(m.Tag)
 		if err := q.DeviceDel(qemu.VirtFSID(slot), 15*time.Second); err != nil && !deviceNotFound(err) {
-			errs = append(errs, fmt.Errorf("device rollback: %w", err))
+			return s.retainFailedMount(spec, m, fmt.Errorf("device rollback: %w", err))
 		}
 	}
 	if err := s.prepareMountSlots(spec); err != nil {
-		errs = append(errs, fmt.Errorf("backend rollback: %w", err))
+		return s.retainFailedMount(spec, m, fmt.Errorf("backend rollback: %w", err))
 	}
-	return errors.Join(errs...)
+	return nil
+}
+
+func (s *Server) retainFailedMount(spec *vm.Spec, m vm.GuestMount, cause error) error {
+	next := *spec
+	next.Mounts = append(append([]vm.GuestMount(nil), spec.Mounts...), m)
+	spec.Mounts = next.Mounts
+	if err := next.Save(s.P); err != nil {
+		return fmt.Errorf("%w; mount backend retained but recovery configuration could not be saved: %v; stop the VM before retrying", cause, err)
+	}
+	return fmt.Errorf("%w; mount configuration and backend retained; retry `pvm mount rm %s %s`", cause, spec.Name, m.Guest)
 }
 
 func (s *Server) mountStateError(err, rollback error) error {
@@ -281,15 +294,59 @@ func (s *Server) prepareMountSlots(spec *vm.Spec) error {
 		}
 		targets[slot] = m.Host
 	}
+	type update struct {
+		path, target, previous string
+		existed                bool
+	}
+	var updates []update
 	for slot := 1; slot <= qemu.MaxExtraMounts; slot++ {
 		target := targets[slot]
 		if target == "" {
 			target = empty
 		}
-		if err := ensureMountSymlink(s.P.MountSlot(spec.Name, slot), target); err != nil {
+		change := update{path: s.P.MountSlot(spec.Name, slot), target: target}
+		fi, err := os.Lstat(change.path)
+		if err == nil {
+			if fi.Mode()&os.ModeSymlink == 0 {
+				return fmt.Errorf("mount slot %s is not a daemon-managed symlink", change.path)
+			}
+			change.previous, err = os.Readlink(change.path)
+			if err != nil {
+				return err
+			}
+			change.existed = true
+			if change.previous == target {
+				continue
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
+		updates = append(updates, change)
 	}
+	for i, change := range updates {
+		if err := ensureMountSymlink(change.path, change.target); err != nil {
+			errs := []error{err}
+			for j := i - 1; j >= 0; j-- {
+				previous := updates[j]
+				current, readErr := os.Readlink(previous.path)
+				if readErr != nil || current != previous.target {
+					errs = append(errs, fmt.Errorf("cannot restore changed mount slot %s", previous.path))
+					continue
+				}
+				var restoreErr error
+				if previous.existed {
+					restoreErr = ensureMountSymlink(previous.path, previous.previous)
+				} else {
+					restoreErr = os.Remove(previous.path)
+				}
+				if restoreErr != nil {
+					errs = append(errs, fmt.Errorf("restore mount slot: %w", restoreErr))
+				}
+			}
+			return errors.Join(errs...)
+		}
+	}
+
 	return nil
 }
 

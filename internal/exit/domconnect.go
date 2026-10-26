@@ -146,6 +146,8 @@ type dcServer struct {
 
 	mu     sync.Mutex
 	active map[string]int // peer IP -> active relay count
+	conns  map[net.Conn]struct{}
+	closed bool
 }
 
 func newDCServer(allow []*net.IPNet) *dcServer {
@@ -176,8 +178,42 @@ func (d *dcServer) enter(peer string) bool {
 func (d *dcServer) leave(peer string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.active[peer] > 0 {
+	if d.active[peer] <= 1 {
+		delete(d.active, peer)
+	} else {
 		d.active[peer]--
+	}
+}
+
+func (d *dcServer) track(conn net.Conn) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return false
+	}
+	if d.conns == nil {
+		d.conns = map[net.Conn]struct{}{}
+	}
+	d.conns[conn] = struct{}{}
+	return true
+}
+
+func (d *dcServer) untrack(conn net.Conn) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	delete(d.conns, conn)
+}
+
+func (d *dcServer) close() {
+	d.mu.Lock()
+	d.closed = true
+	conns := make([]net.Conn, 0, len(d.conns))
+	for c := range d.conns {
+		conns = append(conns, c)
+	}
+	d.mu.Unlock()
+	for _, c := range conns {
+		_ = c.Close()
 	}
 }
 
@@ -298,6 +334,10 @@ func (d *dcServer) pickResolveIP(ips []net.IP) (net.IP, error) {
 
 func (d *dcServer) handle(conn net.Conn) {
 	defer conn.Close()
+	if !d.track(conn) {
+		return
+	}
+	defer d.untrack(conn)
 	peer := "unknown"
 	if a, ok := conn.RemoteAddr().(*net.TCPAddr); ok {
 		peer = a.IP.String()
@@ -371,6 +411,10 @@ func (d *dcServer) handle(conn net.Conn) {
 		return
 	}
 	defer up.Close()
+	if !d.track(up) {
+		return
+	}
+	defer d.untrack(up)
 	reply(0, "")
 	log.Printf("domain-connect: %s:%d relay established for %s", domain, port, peer)
 	proxyTCP(
@@ -396,4 +440,11 @@ func (c *idleTimeoutConn) Read(p []byte) (int, error) {
 func (c *idleTimeoutConn) Write(p []byte) (int, error) {
 	c.bump()
 	return c.Conn.Write(p)
+}
+
+func (c *idleTimeoutConn) CloseWrite() error {
+	if cw, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return c.Conn.Close()
 }

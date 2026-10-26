@@ -13,6 +13,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/native"
 )
 
@@ -65,7 +66,7 @@ func Unpack(dir string) error {
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err
 		}
-		if err := os.WriteFile(dst, payload, os.FileMode(e.Mode)); err != nil {
+		if err := fsutil.AtomicWrite(dst, payload, os.FileMode(e.Mode)); err != nil {
 			return err
 		}
 	}

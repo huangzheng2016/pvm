@@ -2,8 +2,15 @@ package qemu
 
 import (
 	"errors"
+	"golang.org/x/sys/unix"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/huangzheng2016/pvm/internal/native"
 )
@@ -239,5 +246,118 @@ func TestBuildArgsSmbiosSpoof(t *testing.T) {
 	}
 	if strings.Contains(joined(args), "-smbios") {
 		t.Error("smbios must stay at QEMU defaults unless spoofing is requested")
+	}
+}
+
+func TestBuildArgsCommaPathsWithQEMU(t *testing.T) {
+	system, err := exec.LookPath("qemu-system-" + QemuArch())
+	if err != nil {
+		t.Skip("native QEMU unavailable")
+	}
+	img, err := exec.LookPath("qemu-img")
+	if err != nil {
+		t.Skip("qemu-img unavailable")
+	}
+	tc, err := lookup(system, img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if native.Arch == "arm64" && tc.FirmwareDir == "" {
+		t.Skip("UEFI firmware unavailable")
+	}
+	dir, err := os.MkdirTemp("/tmp", "pvm,qemu")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	disk := filepath.Join(dir, "disk.qcow2")
+	if out, err := exec.Command(img, "create", "-f", "qcow2", disk, "16M").CombinedOutput(); err != nil {
+		t.Fatalf("create disk: %v: %s", err, out)
+	}
+	seed, vars := filepath.Join(dir, "seed.img"), filepath.Join(dir, "vars.fd")
+	for path, size := range map[string]int64{seed: 1 << 20, vars: 64 << 20} {
+		f, err := os.Create(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f.Truncate(size); err != nil {
+			f.Close()
+			t.Fatal(err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, port, _ := net.SplitHostPort(l.Addr().String())
+	l.Close()
+	sshPort, _ := strconv.Atoi(port)
+	cfg := &VMConfig{CPUs: 1, MemMB: 128, DiskPath: disk, SeedPath: seed, VarsPath: vars, QMPSock: filepath.Join(dir, "q.sock"), SerialSock: filepath.Join(dir, "s.sock"), AgentSock: filepath.Join(dir, "a.sock"), ConsoleLog: filepath.Join(dir, "console.log"), ShareDir: dir, Accel: AccelTCG, Network: Network{Mode: NetSlirp, SSHHostPort: sshPort}}
+	args, err := BuildArgs(tc, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args = append(args, "-S")
+	logPath := filepath.Join(dir, "qemu.log")
+	log, err := os.Create(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer log.Close()
+	cmd := exec.Command(system, args...)
+	cmd.Stdout, cmd.Stderr = log, log
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { cmd.Process.Kill(); cmd.Wait() }()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(cfg.QMPSock); err == nil {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	q, err := DialQMP(cfg.QMPSock)
+	if err != nil {
+		data, _ := os.ReadFile(logPath)
+		t.Fatalf("QMP with comma paths: %v: %s", err, data)
+	}
+	defer q.Close()
+	if status, err := q.Status(); err != nil || status != "prelaunch" {
+		t.Fatalf("QEMU status=%q err=%v", status, err)
+	}
+	if err := q.Quit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBuildArgsRejectsLongUnixSockets(t *testing.T) {
+	for _, field := range []string{"qmp", "serial", "agent", "link"} {
+		for _, unicode := range []bool{false, true} {
+			cfg := testCfg(AccelHVF)
+			path := strings.Repeat("a", len(unix.RawSockaddrUnix{}.Path))
+			if unicode {
+				path = strings.Repeat("界", len(unix.RawSockaddrUnix{}.Path)/3+1)
+			}
+			switch field {
+			case "qmp":
+				cfg.QMPSock = path
+			case "serial":
+				cfg.SerialSock = path
+			case "agent":
+				cfg.AgentSock = path
+			case "link":
+				cfg.Network.LinkSock = path
+			}
+			if _, err := BuildArgs(&Toolchain{FirmwareDir: "/fw"}, cfg); err == nil || !strings.Contains(err.Error(), "shorter PVM_HOME") {
+				t.Fatalf("%s unicode=%v: %v", field, unicode, err)
+			}
+		}
+	}
+	if err := validateUnixSocketPath("QMP", strings.Repeat("a", len(unix.RawSockaddrUnix{}.Path)-1)); err != nil {
+		t.Fatal(err)
 	}
 }

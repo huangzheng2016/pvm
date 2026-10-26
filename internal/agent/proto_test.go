@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/base64"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 )
@@ -62,5 +64,39 @@ func TestDataB64Payload(t *testing.T) {
 	dec, err := base64.StdEncoding.DecodeString(out.DataB64)
 	if err != nil || !bytes.Equal(dec, raw) {
 		t.Fatalf("payload mismatch: %v %q", err, dec)
+	}
+}
+
+func TestReadFrameRejectsOversizedInputBeforeEOF(t *testing.T) {
+	for _, suffix := range []string{"", "\n"} {
+		t.Run(fmt.Sprintf("newline=%t", suffix != ""), func(t *testing.T) {
+			input := strings.NewReader(strings.Repeat("x", 2*MaxFrameBytes) + suffix)
+			r := bufio.NewReaderSize(input, 64<<10)
+			var f Frame
+			if err := readFrame(r, &f); err == nil || !strings.Contains(err.Error(), "frame too large") {
+				t.Fatalf("want size error, got %v", err)
+			}
+			if read := 2*MaxFrameBytes + len(suffix) - input.Len(); read > MaxFrameBytes+r.Size() {
+				t.Fatalf("read %d bytes before rejecting oversized frame", read)
+			}
+		})
+	}
+}
+
+func TestReadFrameSizeBoundary(t *testing.T) {
+	for _, terminated := range []bool{false, true} {
+		suffix := ""
+		if terminated {
+			suffix = "\n"
+		}
+		frame := `{"id":"a","data_b64":"` + strings.Repeat("x", MaxFrameBytes-len(`{"id":"a","data_b64":""}`)-len(suffix)) + `"}` + suffix
+		var f Frame
+		r := bufio.NewReaderSize(strings.NewReader(frame), 64<<10)
+		if err := readFrame(r, &f); err != nil {
+			t.Fatalf("terminated=%t: %v", terminated, err)
+		}
+		if err := readFrame(r, &f); err != io.EOF {
+			t.Fatalf("want EOF, got %v", err)
+		}
 	}
 }

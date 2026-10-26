@@ -3,6 +3,7 @@ package image
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 	"github.com/huangzheng2016/pvm/internal/vm"
@@ -40,6 +42,10 @@ type sshRunner struct {
 
 func (r *sshRunner) args(extra ...string) []string {
 	base := []string{
+		"-F", "/dev/null",
+		"-o", "IdentitiesOnly=yes",
+		"-o", "IdentityAgent=none",
+		"-o", "ForwardAgent=no",
 		"-i", r.key,
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
@@ -66,13 +72,22 @@ func (r *sshRunner) output(args ...string) (string, error) {
 	return strings.TrimSpace(string(b)), err
 }
 
-func Bake(o *BakeOptions) (*GoldenEntry, error) {
+func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 	if o.Out == nil {
 		o.Out = io.Discard
 	}
 	ref, err := Resolve(o.Spec)
 	if err != nil {
 		return nil, err
+	}
+	if err := o.Proxy.validate(); err != nil {
+		return nil, err
+	}
+	if o.BuildCPUs < 0 || o.BuildCPUs > 64 || o.BuildMem < 0 || o.BuildMem > 1048576 || o.BuildDisk < 0 || o.BuildDisk > 4096 {
+		return nil, fmt.Errorf("invalid build resources: cpus 1..64, mem 128..1048576 MiB, disk 1..4096 GiB (0 uses defaults)")
+	}
+	if o.BuildMem > 0 && o.BuildMem < 128 {
+		return nil, fmt.Errorf("build memory must be at least 128 MiB")
 	}
 	base := filepath.Join(o.P.Images, ref.FileName())
 	if _, err := os.Stat(base); err != nil {
@@ -82,18 +97,16 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 	// vm names reject dots, so the build-vm stem flattens them away.
 	nameStem := strings.ReplaceAll(stem, ".", "")
 
-	// Idempotency: drop stale build VMs from interrupted runs.
-	if specs, err := vm.ListAll(o.P); err == nil {
-		for _, s := range specs {
-			if strings.HasPrefix(s.Name, "bake-"+nameStem+"-") {
-				fmt.Fprintf(o.Out, "cleaning stale build vm %s\n", s.Name)
-				inst := qemu.Instance{Cfg: s.QEMUConfig(o.P, o.Accel, "", 0, 0),
-					StatePath: filepath.Join(o.P.VMDir(s.Name), "run.json"), Toolchain: o.TC}
-				inst.Stop()
-				vm.Delete(o.P, s.Name)
-			}
-		}
+	lock, err := fsutil.TryLock(filepath.Join(o.P.Images, ".bake.lock"))
+	if err != nil {
+		return nil, fmt.Errorf("another image build may be running: %w", err)
 	}
+	defer lock.Unlock()
+	baseLock, err := fsutil.TryLock(base + ".lock")
+	if err != nil {
+		return nil, fmt.Errorf("base image is in use by another download or build; retry: %w", err)
+	}
+	defer baseLock.Unlock()
 
 	cpus, mem, disk := o.BuildCPUs, o.BuildMem, o.BuildDisk
 	if cpus == 0 {
@@ -105,11 +118,15 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 	if disk == 0 {
 		disk = 25
 	}
-	port, err := vm.AllocSSHPort(vm.UsedSSHPorts(o.P), vm.SSHPortBase)
+	usedPorts, err := vm.UsedSSHPorts(o.P)
 	if err != nil {
 		return nil, err
 	}
-	name := fmt.Sprintf("bake-%s-%d", nameStem, time.Now().Unix())
+	port, err := vm.AllocSSHPort(usedPorts, vm.SSHPortBase)
+	if err != nil {
+		return nil, err
+	}
+	name := fmt.Sprintf("bake-%s-%s", nameStem, strconv.FormatInt(time.Now().UnixNano(), 36))
 	spec := &vm.Spec{
 		Name: name, Image: o.Spec, User: "baker",
 		GuestUID: os.Getuid(),
@@ -120,25 +137,29 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 	if err := vm.Create(o.P, o.TC, spec, o.SSHPub); err != nil {
 		return nil, err
 	}
-	defer func() {
-		if !o.KeepVM {
-			vm.Delete(o.P, name)
-		}
-	}()
-
 	inst := &qemu.Instance{
 		Cfg:       spec.QEMUConfig(o.P, o.Accel, "", 0, 0),
 		StatePath: filepath.Join(o.P.VMDir(name), "run.json"),
 		Toolchain: o.TC,
 	}
+	defer func() {
+		st, err := inst.Running()
+		if err == nil && st != nil {
+			err = inst.Stop()
+		}
+		if err != nil {
+			retErr = errors.Join(retErr, fmt.Errorf("build vm %s retained because shutdown could not be verified: %w", name, err))
+			return
+		}
+		if !o.KeepVM {
+			if err := vm.Delete(o.P, name); err != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("remove build vm %s: %w", name, err))
+			}
+		}
+	}()
 	if err := inst.Start(); err != nil {
 		return nil, fmt.Errorf("start build vm: %w", err)
 	}
-	defer func() {
-		if st, err := inst.Running(); err == nil && st != nil {
-			inst.Stop()
-		}
-	}()
 
 	r := &sshRunner{key: o.SSHKey, port: port, user: spec.User}
 	fmt.Fprintf(o.Out, "waiting for ssh (cloud-init first boot)...\n")
@@ -163,9 +184,14 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 	// to exit under disk io load (discard=unmap, writeback flush): wait for
 	// the natural exit with a long ceiling and only escalate at the end.
 	fmt.Fprintf(o.Out, "shutting down build vm (QMP powerdown)...\n")
-	if q, err := qemu.DialQMP(inst.Cfg.QMPSock); err == nil {
-		q.Powerdown()
-		q.Close()
+	q, err := qemu.DialQMP(inst.Cfg.QMPSock)
+	if err != nil {
+		return nil, fmt.Errorf("build vm shutdown: %w", err)
+	}
+	err = q.Powerdown()
+	q.Close()
+	if err != nil {
+		return nil, fmt.Errorf("build vm powerdown: %w", err)
 	}
 	deadline := time.Now().Add(8 * time.Minute)
 	shutStart := time.Now()
@@ -183,7 +209,7 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 			if err := inst.Stop(); err != nil {
 				return nil, fmt.Errorf("stop build vm: %w", err)
 			}
-			break
+			return nil, fmt.Errorf("build vm did not shut down cleanly; refusing to publish golden image")
 		}
 		if elapsed := int(time.Since(shutStart).Seconds()); elapsed-lastBeat >= 15 {
 			fmt.Fprintf(o.Out, "  waiting for build vm to exit (%ds; guests flushing large disks can take minutes)\n", elapsed)
@@ -203,6 +229,16 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 	version := 1
 	if ms := cat.match(ref.Distro, ref.Version); len(ms) > 0 {
 		version = ms[0].Version + 1
+	}
+	for {
+		_, err := os.Lstat(filepath.Join(GoldenDir(o.P.Images), goldenFileName(ref.Distro, ref.Version, version)))
+		if os.IsNotExist(err) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		version++
 	}
 	entry := GoldenEntry{
 		Version: version, Distro: ref.Distro, ImageVersion: ref.Version,
@@ -224,12 +260,7 @@ func Bake(o *BakeOptions) (*GoldenEntry, error) {
 		os.Remove(tmp)
 		return nil, fmt.Errorf("qemu-img convert: %v\n%s", err, tailString(convErr.String(), 2048))
 	}
-	if err := os.Rename(tmp, dst); err != nil {
-		os.Remove(tmp)
-		return nil, err
-	}
-	cat.Entries = append(cat.Entries, entry)
-	if err := cat.save(o.P.Images); err != nil {
+	if err := publishGolden(o.P.Images, tmp, dst, cat, entry); err != nil {
 		return nil, err
 	}
 	fmt.Fprintf(o.Out, "golden image ready: %s v%d\n", o.Spec, version)
@@ -273,4 +304,20 @@ func tailString(s string, n int) string {
 		return s[len(s)-n:]
 	}
 	return s
+}
+
+func publishGolden(imagesDir, tmp, dst string, cat *goldenCatalog, entry GoldenEntry) error {
+	if err := os.Link(tmp, dst); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("publish golden image without overwriting existing versions: %w", err)
+	}
+	os.Remove(tmp)
+	cat.Entries = append(cat.Entries, entry)
+	if err := cat.save(imagesDir); err != nil {
+		if removeErr := os.Remove(dst); removeErr != nil {
+			return errors.Join(err, fmt.Errorf("catalog save failed and unpublished golden %s remains; preserve or move it before retrying: %w", entry.File, removeErr))
+		}
+		return fmt.Errorf("golden publication rolled back after catalog save failed: %w", err)
+	}
+	return nil
 }

@@ -97,18 +97,45 @@ func (a *Agent) Run() error {
 		lastCfg       []byte
 		lastReconcile time.Time
 	)
+	defer func() {
+		if dhcpSrv != nil {
+			dhcpSrv.Close()
+		}
+		if fdns != nil {
+			fdns.Close()
+		}
+		if fproxy != nil {
+			fproxy.Close()
+		}
+		if fudp != nil {
+			fudp.Close()
+		}
+		if ficmp != nil {
+			ficmp.Close()
+		}
+		a.exits.CloseAll()
+	}()
 	for {
+		select {
+		case <-a.stop:
+			return nil
+		default:
+		}
 		raw, err := os.ReadFile(a.configPath)
 		if err != nil {
 			log.Printf("config: %v (retrying)", err)
-			time.Sleep(3 * time.Second)
+			if a.waitStopped(3 * time.Second) {
+				return nil
+			}
 			continue
 		}
 		if string(raw) != string(lastCfg) {
 			var c Config
 			if err := json.Unmarshal(raw, &c); err != nil {
 				log.Printf("config invalid: %v", err)
-				time.Sleep(3 * time.Second)
+				if a.waitStopped(3 * time.Second) {
+					return nil
+				}
 				continue
 			}
 			a.mu.Lock()
@@ -149,18 +176,30 @@ func (a *Agent) Run() error {
 				} else {
 					fdns = f
 					fdns.RunDumpLoop("/run/pvm/fakeip.json", 3*time.Second)
-					fproxy = newFakeProxy(nil, c.DNSUpstream, a.vmNameByIP)
-					if err := fproxy.Start(c.GwIP, fakeProxyPort); err != nil {
-						fail("fake proxy listen", err)
-					}
-					fudp = newFakeUDP(nil, c.DNSUpstream, a.vmNameByIP)
-					if err := fudp.Start(c.GwIP, fakeUDPPort); err != nil {
-						fail("fake udp listen", err)
-					}
-					ficmp = newFakeICMP(nil, c.DNSUpstream, a.vmNameByIP)
-					if err := ficmp.Start(c.GwIP); err != nil {
-						fail("fake icmp listen", err)
-					}
+				}
+			}
+			if fdns != nil && fproxy == nil {
+				p := newFakeProxy(nil, c.DNSUpstream, a.vmNameByIP)
+				if err := p.Start(c.GwIP, fakeProxyPort); err != nil {
+					fail("fake proxy listen", err)
+				} else {
+					fproxy = p
+				}
+			}
+			if fdns != nil && fudp == nil {
+				p := newFakeUDP(nil, c.DNSUpstream, a.vmNameByIP)
+				if err := p.Start(c.GwIP, fakeUDPPort); err != nil {
+					fail("fake udp listen", err)
+				} else {
+					fudp = p
+				}
+			}
+			if fdns != nil && ficmp == nil {
+				p := newFakeICMP(nil, c.DNSUpstream, a.vmNameByIP)
+				if err := p.Start(c.GwIP); err != nil {
+					fail("fake icmp listen", err)
+				} else {
+					ficmp = p
 				}
 			}
 			if fdns != nil {
@@ -179,14 +218,14 @@ func (a *Agent) Run() error {
 				if fproxy != nil {
 					fproxy.SetPolicy(pol)
 					fproxy.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
-					if fudp != nil {
-						fudp.SetPolicy(pol)
-						fudp.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
-					}
-					if ficmp != nil {
-						ficmp.SetPolicy(pol)
-						ficmp.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
-					}
+				}
+				if fudp != nil {
+					fudp.SetPolicy(pol)
+					fudp.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
+				}
+				if ficmp != nil {
+					ficmp.SetPolicy(pol)
+					ficmp.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
 				}
 			}
 			a.syncExits(&c)
@@ -269,4 +308,15 @@ func (a *Agent) macIPMap() map[string]VMEntry {
 		}
 	}
 	return out
+}
+
+func (a *Agent) waitStopped(delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-a.stop:
+		return true
+	case <-timer.C:
+		return false
+	}
 }

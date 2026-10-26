@@ -37,7 +37,9 @@ func speedHandler() http.Handler {
 	mux.HandleFunc("GET /ping", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		fmt.Fprintf(w, `{"ok":true,"ts":%d}`, time.Now().UnixNano())
+		body := fmt.Sprintf(`{"ok":true,"ts":%d}`, time.Now().UnixNano())
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		_, _ = io.WriteString(w, body)
 	})
 	return mux
 }
@@ -57,7 +59,11 @@ func serveSpeedConn(c net.Conn) {
 	if err != nil {
 		return
 	}
-	speedHandler().ServeHTTP(&connResponseWriter{conn: c, header: http.Header{}}, req)
+	w := &connResponseWriter{conn: c, header: http.Header{}}
+	speedHandler().ServeHTTP(w, req)
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
 }
 
 type connResponseWriter struct {
@@ -73,9 +79,6 @@ func (w *connResponseWriter) WriteHeader(code int) {
 		return
 	}
 	w.wroteHeader = true
-	if w.header.Get("Content-Length") == "" {
-		w.header.Set("Content-Length", "0")
-	}
 	w.header.Set("Connection", "close")
 	fmt.Fprintf(w.conn, "HTTP/1.1 %d %s\r\n", code, http.StatusText(code))
 	_ = w.header.Write(w.conn)

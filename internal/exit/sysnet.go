@@ -17,7 +17,10 @@ const nftTable = "pvm_exit"
 func nftTableFor(tunNames []string) string {
 	prefix := "pvmexit"
 	if len(tunNames) > 0 {
-		prefix = strings.TrimRight(tunNames[0], "0123456789")
+		prefix = tunNames[0]
+		if strings.HasSuffix(prefix, "0") || strings.HasSuffix(prefix, "1") {
+			prefix = prefix[:len(prefix)-1]
+		}
 	}
 	if prefix == "pvmexit" {
 		return nftTable

@@ -6,11 +6,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"hash"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +30,8 @@ type Ref struct {
 	SumKind string // sha256 | sha512
 }
 
+var ubuntuVersionRE = regexp.MustCompile(`^[0-9]{2}\.[0-9]{2}$`)
+
 func Resolve(spec string) (*Ref, error) {
 	distro, version, ok := strings.Cut(spec, ":")
 	if !ok {
@@ -36,6 +40,9 @@ func Resolve(spec string) (*Ref, error) {
 	qarch := native.Arch
 	switch distro {
 	case "ubuntu":
+		if !ubuntuVersionRE.MatchString(version) {
+			return nil, fmt.Errorf("invalid ubuntu version %q (expected e.g. 24.04)", version)
+		}
 		base := fmt.Sprintf("https://cloud-images.ubuntu.com/releases/%s/release", version)
 		file := fmt.Sprintf("ubuntu-%s-server-cloudimg-%s.img", version, qarch)
 		return &Ref{Distro: distro, Version: version, Arch: native.Arch,
@@ -141,6 +148,11 @@ func (s *stallReadCloser) watch() {
 // verification. Returns the final path. A verified cached file is reused
 // unless force is set.
 func Fetch(r *Ref, dir string, progress io.Writer, force ...bool) (string, error) {
+	lock, err := fsutil.TryLock(filepath.Join(dir, r.FileName()+".lock"))
+	if err != nil {
+		return "", fmt.Errorf("image is in use by another download or build; retry: %w", err)
+	}
+	defer lock.Unlock()
 	return fetch(r, dir, progress, true, force...)
 }
 
@@ -210,7 +222,10 @@ func fetch(r *Ref, dir string, progress io.Writer, retry bool, force ...bool) (s
 			return "", err
 		}
 	} else {
-		f.Truncate(0)
+		if err := f.Truncate(0); err != nil {
+			f.Close()
+			return "", err
+		}
 	}
 
 	total := resp.ContentLength + have
@@ -281,9 +296,15 @@ func verifyChecksum(r *Ref, file string) error {
 	if resp.StatusCode >= 400 {
 		return fmt.Errorf("fetch sums %s: %s", r.SumsURL, resp.Status)
 	}
-	sums, err := io.ReadAll(resp.Body)
+	body := withStallTimeout(resp.Body, 60*time.Second)
+	defer body.Close()
+	const maxSumsBytes = 8 << 20
+	sums, err := io.ReadAll(io.LimitReader(body, maxSumsBytes+1))
 	if err != nil {
 		return err
+	}
+	if len(sums) > maxSumsBytes {
+		return fmt.Errorf("checksum list exceeds %d bytes", maxSumsBytes)
 	}
 	var want string
 	for line := range strings.Lines(string(sums)) {

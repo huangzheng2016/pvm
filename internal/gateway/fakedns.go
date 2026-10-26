@@ -267,12 +267,13 @@ func (f *fakeDNS) RunDumpLoop(path string, interval time.Duration) {
 
 func (f *fakeDNS) Close() {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if f.closed {
+		f.mu.Unlock()
 		return
 	}
 	f.closed = true
 	close(f.done)
+	f.mu.Unlock()
 	f.srv.Shutdown()
 }
 

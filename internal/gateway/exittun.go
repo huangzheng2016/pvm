@@ -119,6 +119,7 @@ func loadOrCreatePeerKey(dir, name string) (string, error) {
 
 // exitTunnel is one live WireGuard client device to an exit-node.
 type exitTunnel struct {
+	mu     sync.RWMutex
 	name   string
 	def    ExitDef
 	idx    int
@@ -271,8 +272,11 @@ func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, 
 		wantBypass[c] = true
 	}
 	for _, t := range m.tuns {
-		if t.server != "" {
-			wantBypass[t.server+"/32"] = true
+		t.mu.RLock()
+		server := t.server
+		t.mu.RUnlock()
+		if server != "" {
+			wantBypass[server+"/32"] = true
 		}
 	}
 	// runtime-learned bypass IPs survive config syncs; dropping them
@@ -318,11 +322,7 @@ func (m *exitManager) AddBypassIP(domain, ip string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now()
-	ips, ok := m.learned[domain]
-	if !ok {
-		ips = map[string]time.Time{}
-		m.learned[domain] = ips
-	}
+	ips := m.learned[domain]
 	cidr := ip + "/32"
 	if _, dup := ips[cidr]; dup {
 		ips[cidr] = now
@@ -339,6 +339,10 @@ func (m *exitManager) AddBypassIP(domain, ip string) {
 		return
 	}
 	if err := ipRuleCmd("add", "to", cidr, "lookup", "main", "pref", strconv.Itoa(rulePrefBypass)); err == nil {
+		if ips == nil {
+			ips = map[string]time.Time{}
+			m.learned[domain] = ips
+		}
 		ips[cidr] = now
 		m.bypass[cidr] = true
 		if m.onBypass != nil {
@@ -372,7 +376,7 @@ func (m *exitManager) ReconcileLearned(eng *rules.Engine) {
 	defer m.mu.Unlock()
 	for domain := range m.learned {
 		d, ok := eng.Match(domain, nil)
-		if ok && (d.Action == rules.Direct || d.Internal) {
+		if ok && (d.Action == rules.Direct || d.Action == rules.Internal || d.Internal) {
 			continue
 		}
 		for cidr := range m.learned[domain] {
@@ -618,7 +622,7 @@ func (m *exitManager) upOnce(t *exitTunnel) error {
 	if err != nil {
 		return fmt.Errorf("resolve endpoint: %w", err)
 	}
-	resp.endpoint, t.server = resolved, server
+	resp.endpoint = resolved
 	ifName := tunnelIfName(t.idx)
 	td, err := tun.CreateTUN(ifName, mtu)
 	if err != nil {
@@ -653,9 +657,6 @@ persistent_keepalive_interval=25
 		dev.Close()
 		return err
 	}
-	t.dev, t.td, t.tunIP = dev, td, resp.tunnelIP
-	t.serverTunIP = resp.serverIP
-
 	// policy routing: default via this tunnel in its own table; marked
 	// flows (fakeproxy proxy dials) select the table by fwmark.
 	table := strconv.Itoa(ruleTableBase + t.idx)
@@ -670,12 +671,16 @@ persistent_keepalive_interval=25
 		return fmt.Errorf("fwmark rule: %w", err)
 	}
 	// the outer endpoint packets must never enter the tunnel
-	if t.server != "" {
-		ipRuleCmd("del", "to", t.server+"/32", "lookup", "main")
-		if err := ipRuleCmd("add", "to", t.server+"/32", "lookup", "main", "pref", strconv.Itoa(rulePrefEndpoint)); err != nil {
+	if server != "" {
+		ipRuleCmd("del", "to", server+"/32", "lookup", "main")
+		if err := ipRuleCmd("add", "to", server+"/32", "lookup", "main", "pref", strconv.Itoa(rulePrefEndpoint)); err != nil {
 			log.Printf("exit %s: endpoint host rule: %v", t.name, err)
 		}
 	}
+	t.mu.Lock()
+	t.dev, t.td, t.tunIP = dev, td, resp.tunnelIP
+	t.serverTunIP, t.server = resp.serverIP, server
+	t.mu.Unlock()
 	log.Printf("exit %s: tunnel up on %s (%s, tunnel ip %s, mtu %d)", t.name, ifName, t.def.Transport, resp.tunnelIP, mtu)
 	return nil
 }
@@ -820,6 +825,10 @@ func (m *exitManager) probeICMP(t *exitTunnel) error {
 }
 
 func (m *exitManager) cleanupDevice(t *exitTunnel) {
+	t.mu.Lock()
+	dev := t.dev
+	t.dev, t.td = nil, nil
+	t.mu.Unlock()
 	mark := strconv.Itoa(fwMarkBase + t.idx)
 	table := strconv.Itoa(ruleTableBase + t.idx)
 	ipRuleCmd("del", "fwmark", mark, "lookup", table)
@@ -828,10 +837,8 @@ func (m *exitManager) cleanupDevice(t *exitTunnel) {
 	if t.server != "" {
 		ipRuleCmd("del", "to", t.server+"/32", "lookup", "main")
 	}
-	if t.dev != nil {
-		t.dev.Close()
-		t.dev = nil
-		t.td = nil
+	if dev != nil {
+		dev.Close()
 	}
 }
 
@@ -849,7 +856,12 @@ func (m *exitManager) MarkForExit(name string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tuns[name]
-	if !ok || t.dev == nil {
+	if !ok {
+		return -1
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.dev == nil {
 		return -1
 	}
 	return fwMarkBase + t.idx
@@ -861,7 +873,12 @@ func (m *exitManager) DomainConnectAddr(name string) (string, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	t, ok := m.tuns[name]
-	if !ok || t.dev == nil || t.serverTunIP == "" {
+	if !ok {
+		return "", false
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.dev == nil || t.serverTunIP == "" {
 		return "", false
 	}
 	addr := exit.DomainConnectAddr(t.serverTunIP)
@@ -1019,15 +1036,18 @@ func (m *exitManager) desiredPolicyRulesLocked() []policyRule {
 		out = append(out, newPolicyRule([]string{"from", m.cluster}, m.clusterTable, rulePrefClusterDefault))
 	}
 	for _, t := range m.tuns {
+		t.mu.RLock()
+		dev, server := t.dev, t.server
+		t.mu.RUnlock()
 		// Down tunnels carry no rules: cleanupDevice removed them and
 		// upOnce/ensureTunnelRoute reinstall them with the device.
-		if t.dev == nil {
+		if dev == nil {
 			continue
 		}
 		table := strconv.Itoa(ruleTableBase + t.idx)
 		out = append(out, newPolicyRule([]string{"fwmark", strconv.Itoa(fwMarkBase + t.idx)}, table, rulePrefFwmark))
-		if t.server != "" {
-			out = append(out, newPolicyRule([]string{"to", t.server + "/32"}, "main", rulePrefEndpoint))
+		if server != "" {
+			out = append(out, newPolicyRule([]string{"to", server + "/32"}, "main", rulePrefEndpoint))
 		}
 	}
 	return out

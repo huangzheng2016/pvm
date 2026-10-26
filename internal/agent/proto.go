@@ -84,16 +84,20 @@ func (fw *frameWriter) write(f *Frame) error {
 }
 
 func readFrame(r *bufio.Reader, f *Frame) error {
-	line, err := r.ReadBytes('\n')
-	if err != nil {
-		if err == io.EOF && len(line) > 0 {
-			// tolerate a final unterminated frame
-		} else {
+	var line []byte
+	for {
+		part, err := r.ReadSlice('\n')
+		if len(part) > MaxFrameBytes-len(line) {
+			return fmt.Errorf("frame too large (limit %d bytes)", MaxFrameBytes)
+		}
+		line = append(line, part...)
+		if err == bufio.ErrBufferFull {
+			continue
+		}
+		if err != nil && (err != io.EOF || len(line) == 0) {
 			return err
 		}
-	}
-	if len(line) > MaxFrameBytes {
-		return fmt.Errorf("frame too large (%d bytes)", len(line))
+		break // tolerate a final unterminated frame
 	}
 	if err := json.Unmarshal(line, f); err != nil {
 		return fmt.Errorf("bad frame: %w", err)

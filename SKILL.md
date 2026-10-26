@@ -1,11 +1,15 @@
 ---
 name: pvm
-description: Create and manage isolated Linux dev VMs with pvm, and route all of a VM's (or the whole cluster's) traffic through a VPS exit-node. Use when you need a clean/disposable dev machine, isolated device or network fingerprints, an environment that exits only via a specific VPS, a browser desktop, port maps, snapshots, or clones.
+description: Create and manage isolated Linux dev VMs with pvm, and route all of a VM's (or the whole cluster's) traffic through a VPS exit-node. Use when you need a clean/disposable dev machine, separate guest filesystems and controlled egress, an environment that exits only via a specific VPS, a browser desktop, port maps, snapshots, or clones.
 ---
 
 # pvm: isolated dev VMs and egress control
 
 pvm is a QEMU virtual machine system for the local machine (single Go binary). A daemon runs permanently; the CLI auto-spawns it when needed (exception: after an explicit `pvm daemon stop` it stays down until `pvm daemon start`). Everything goes through the `pvm` command — never touch QEMU directly.
+
+## Security boundary
+
+Read `pvm security` before running sensitive or untrusted workloads. VMs in one cluster share a layer-2 network and gateway; registered IP/MAC pairs do not authenticate a hostile guest. All user VMs share the same read-write `/share`. Extra mounts give guests access to host files with the host user's privileges. Do not treat these VMs as mutually untrusted tenants, and do not expose credentials through shared files. Explicit direct/internal rules are exceptions to a selected exit. A new VM, clone, or route does not guarantee anonymity, a new application identity, or a third-party account outcome.
 
 ## Architecture boundary
 
@@ -16,7 +20,7 @@ pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, l
 - If pvm is on PATH, use `pvm ...`; inside the repo, use `./pvm ...` from the repo root.
 - Run `pvm daemon status` first to confirm the daemon is healthy; `pvm list` shows existing VMs.
   - If the status shows `warning: N vm(s) running under tcg fallback`, the host's hardware accelerator is unavailable (on macOS this means Hypervisor.framework is wedged after long uptime — reboot the Mac to restore full speed). VMs work meanwhile, just slowly.
-- On first use, `pvm image list` to confirm a base image is present; if missing, `pvm image fetch <distro:version>` (fetch is checksum-cached; `--force` re-downloads). create fails with a clear hint when the base image is absent.
+- On first use, `pvm image list` shows cached base and golden images. `pvm create` can fetch a missing base and build a missing golden; this first run is much slower. Use `pvm image fetch <distro:version>` and `pvm image build <distro:version>` to prepare them explicitly. Fetch rechecks the distribution checksum; `--force` re-downloads.
 - Example exits: `my-exit` (WireGuard over UDP) and `my-exit-tcp` (WireGuard over TCP). Run `pvm exit ls` to see the names configured on the current host and do not re-add an existing name.
 - The `pvm-exit-agent.service` on the VPS must stay running. Never stop it unless you are deliberately testing the kill-switch or upgrading.
 
@@ -47,7 +51,7 @@ pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, l
 - Neither profile removes the metadata cost of source-tree builds. Do not claim a pnpm, Vite, or TypeScript build speedup without measuring it; keep Node/TypeScript dependencies and build caches on the guest's local disk.
 - Only `coherent` and `readahead` are accepted; `loose`, `fscache`, and arbitrary mount options are rejected. To switch an extra mount's profile, close guest users of the mount, then use the normal `pvm mount rm` and `pvm mount --profile ...` path. Upgrading pvm does not rewrite existing cloud-init, automatically migrate profiles, force an unmount, or restart the VM.
 - `--image debian:13` and `--distro debian --version 13` are equivalent; conflicting flags are rejected.
-- **`pvm image build` proxy passthrough**: golden builds honor the host's `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY` (loopback proxy addresses are rewritten to a VM-reachable one) and clean up thoroughly — no proxy config is baked into the image.
+- **`pvm image build` proxy passthrough**: golden builds honor the host's `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY` (loopback addresses are rewritten for the build VM). Successful provisioning removes its temporary proxy configuration. A failed build kept with `--keep-vm` can retain credentials; deletion is not forensic disk erasure. Bake uses host/slirp egress, independently of the final VM's exit route. Concurrent downloads/builds of the same base are rejected with a retry hint, and golden builds are serialized. Abandoned build VMs are preserved for explicit inspection and removal.
 
 ## Core workflows
 
@@ -187,21 +191,18 @@ pvm daemon status
 pvm daemon stop && pvm daemon start
 ```
 
-- Snapshots suit machines left unused for days, or a checkpoint before risky operations.
+- Snapshots suit machines left unused for days, or a checkpoint before risky operations. Existing snapshot artifacts are not overwritten implicitly. After a restore, the active restore overlay and any `.bak` hold VM data: snapshot removal or another snapshot is refused. Clone the stopped VM to flatten its current disk before creating a new checkpoint; do not manually delete backing files.
 - Restarting the daemon stops user VMs (the gateway recovers automatically); start them again with `pvm start <name>`. `pvm upgrade` does this restart and restores previously running user VMs automatically; use `--no-restart` only when you want to handle that lifecycle yourself.
 - If the gateway pvm-gw1 spins at high CPU with SSH unreachable for a long time, recover with `pvm stop pvm-gw1 && pvm start pvm-gw1`. Never delete pvm-gw1 (the daemon recreates it, but cluster networking is down and custom state is lost in the meantime).
 - The daemon holds a single-instance lock; on `another pvm daemon is already running`, find the existing daemon instead of spawning a second one.
 - A boot watchdog restarts a VM only after two consecutive checks show full CPU with zero console progress; slow TCG boots are left alone.
 
-## Security and identity posture (anti-risk-control)
+## Credentials and application identity
 
-- Do not set `DISABLE_TELEMETRY` or similar kill switches for the AI client's nonessential traffic: disabling is itself a strong signal concentrated in a specific user population, and it downgrades paid features. Keep defaults inside VMs.
-- Do not set `ANTHROPIC_BASE_URL` or reach the service through any AI gateway/proxy (LiteLLM, Helicone, Portkey, etc.) — the gateway host travels upstream in plaintext and gateway-flavored response headers are a fingerprint. pvm already exits via the VPS; stacking a relay only adds signals.
-- Keep one service/account on one consistent egress; do not flip between direct and VPS exits. Keep activity hours plausible for the exit's geography — 24/7 nonstop automation lets the server infer your real timezone.
-- Never copy the host's `~/.gitconfig`, `~/.ssh`, or personal files into a VM; the pvm keypair is isolated from host SSH.
-- VM timezone/locale should match the exit geography; use stock Ubuntu/Debian and official package mirrors, and avoid regional mirrors or CJK locale artifacts.
-- gitStatus rides along with every request: beyond `user.name/email`, the branch name, `git status` file names, and the latest ~5 commit subjects are included — keep branch/commit/file names in VMs free of your native language.
-- For a fresh device identity, create a new VM (each new VM gets a fresh random device ID in the client's local config dotfile). clone is a full disk copy: machine identifiers (hostname/machine-id/SSH host keys) are regenerated, but user files carry over — a machine that already ran the client stays the same device server-side after cloning. The right order is clone first, then install the client (or delete the client's config dotfile yourself afterwards). Restoring a snapshot means the same device.
+- Never copy or mount the host's `~/.gitconfig`, `~/.ssh`, credential stores, or personal files into a VM. Treat `/share` and extra mounts as an explicit disclosure of their contents.
+- Fresh VMs initialize OS identifiers. pvm does not generate third-party application IDs; the application controls enrollment. Clone copies user files and credentials, and snapshots preserve them. Use supported application enrollment and revocation procedures.
+- Timezone and locale are convenience settings, not evidence of geography or anonymity. Keep application configuration consistent with its supported deployment and the service's terms.
+- pvm cannot guarantee a service's trust score, telemetry behavior, paid features, account separation, or ban outcome. See `pvm security` for the security boundaries and actual checks.
 
 ## Adding an exit (only when the user explicitly asks)
 
@@ -255,7 +256,7 @@ Notes:
 - Roll back a failed deploy: `ssh $VPS 'mv /usr/local/bin/pvm.prev /usr/local/bin/pvm && systemctl restart pvm-exit-agent'`.
 - Existing production exits are already running — do not redeploy a name that is already registered; upgrading the binary uses the same flow (unit and token/fingerprint unchanged).
 - Both amd64 and arm64 binaries come from GitHub Releases — no local build needed; verify with the release's `SHA256SUMS` (`sha256sum -c`) when required.
-- Control plane: HTTPS + Bearer token + TOFU fingerprint pinning. Data plane: WireGuard, UDP preferred with TCP fallback.
+- Control plane: HTTPS + Bearer token + fingerprint pinning. Verify the initial fingerprint through a trusted channel; trust-on-first-use alone does not authenticate the first connection. Data plane: WireGuard, UDP preferred with TCP fallback.
 - Speed probes never touch third-party public servers: the exit-agent serves `/speed?bytes=N` (64MB cap) and `/ping` at `.1:18081` on each tunnel NIC, reachable only inside the tunnel. The gateway uses `/ping` as its data-plane health probe.
 - Registrations idle for 24h are reaped by the exit-agent; a gateway returning after sleep re-enrolls automatically with its persisted peer key.
 - exit-agent NAT backends: `nft` / `iptables` / `userspace`; userspace needs no root and forwards TCP/UDP/ICMP. ICMP uses Linux ping sockets, so insufficient socket permission drops only that ICMP flow and never falls back to another egress.
@@ -271,6 +272,7 @@ pvm route dev1 --via my-warp
 
 - `add-warp` registers a device directly through Cloudflare's API. pvm does not install `warp-cli` or `wgcf`, does not generate a `wgcf-profile.conf`, and does not modify any VM image.
 - The private key and device token stay in `~/.pvm/exits/my-warp.json` with mode `0600`. Only the referenced exit's WireGuard data-plane parameters are pushed to the managed gateway; the Cloudflare API token is not.
+- If registration fails and remote rollback also fails, pvm preserves recovery credentials in a mode-`0600` `<name>.warp-pending` file and refuses to register that name again until it is restored or revoked. Treat that file as a secret.
 - Registration alone changes no routes. Bind a VM explicitly with `pvm route`, or use `pvm route default --via my-warp` deliberately. `pvm exit rm my-warp` removes the local entry and makes a best-effort Cloudflare device deletion.
 - WARP uses UDP WireGuard only. `pvm exit test` is handshake-only for WARP; the self-contained TCP/UDP/ICMP probes and VPS-only `--speed` / `client-config` are not available. Default-exit and explicit fake-ip split domains resolve through `1.1.1.1` inside the WARP tunnel, never through host DNS.
 - WARP egress location can vary and has no pvm VPS timezone probe. Set the intended region explicitly with `--tz` / `--locale`, or later with `pvm exit set`, before routing a VM.

@@ -63,3 +63,21 @@ func TestEnsureRejectsMismatchedKeypair(t *testing.T) {
 		t.Fatal("private key changed after mismatched keypair")
 	}
 }
+
+func TestEnsurePreservesOrphanPublicKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "id_ed25519")
+	const public = "existing-public-key"
+	if err := os.WriteFile(path+".pub", []byte(public), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Ensure(path); err == nil {
+		t.Fatal("missing private key silently replaced")
+	}
+	got, err := os.ReadFile(path + ".pub")
+	if err != nil || string(got) != public {
+		t.Fatal("public key overwritten")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatal("replacement private key created")
+	}
+}

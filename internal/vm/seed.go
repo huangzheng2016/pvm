@@ -12,7 +12,10 @@ import (
 
 // WriteSeed uses FAT32 because diskfs hardcodes the ISO9660 volume label
 // to ISOIMAGE, while NoCloud requires "cidata" and accepts vfat.
-func WriteSeed(path string, userData, metaData []byte) error {
+func WriteSeed(path string, userData, metaData []byte) (retErr error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
 	tmp := path + ".tmp"
 	os.Remove(tmp)
 	// 32 MiB is far above the NoCloud payload but small enough to stay
@@ -21,7 +24,15 @@ func WriteSeed(path string, userData, metaData []byte) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(tmp) // no-op once renamed
+	defer os.Remove(tmp)
+	closed := false
+	defer func() {
+		if !closed {
+			if err := d.Close(); retErr == nil {
+				retErr = err
+			}
+		}
+	}()
 	fs, err := d.CreateFilesystem(disk.FilesystemSpec{
 		Partition:   0,
 		FSType:      filesystem.TypeFat32,
@@ -39,28 +50,39 @@ func WriteSeed(path string, userData, metaData []byte) error {
 			return fmt.Errorf("seed %s: %w", name, err)
 		}
 		if _, err := f.Write(content); err != nil {
+			f.Close()
 			return err
 		}
 		if err := f.Close(); err != nil {
 			return err
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := d.Close(); err != nil {
+		closed = true
 		return err
 	}
-	// fsync the image (via a second handle, diskfs owns the first) and
-	// the directory after rename, so a crash cannot yield a 0-byte seed
-	// (the VM would boot with no user and no way in).
-	if f, err := os.OpenFile(tmp, os.O_RDWR, 0); err == nil {
-		f.Sync()
+	closed = true
+	f, err := os.OpenFile(tmp, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
 		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
-	if dir, err := os.Open(filepath.Dir(path)); err == nil {
-		dir.Sync()
-		dir.Close()
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("seed installed but opening directory for sync failed: %w", err)
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return fmt.Errorf("seed installed but directory sync failed: %w", err)
 	}
 	return nil
 }
