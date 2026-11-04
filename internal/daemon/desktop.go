@@ -146,11 +146,12 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort, Public: st.Public})
 		return
 	}
-	// One bounded context covers both mapMu sections below; the gateway
-	// push inside desktopEnsureMap gets its own total deadline.
-	ctx, cancel := context.WithTimeout(r.Context(), mapPushTimeout)
-	defer cancel()
-	if err := s.mapMu.Lock(ctx); err != nil {
+	// The old-map cleanup gets its own bounded context; the session
+	// start below may take up to a minute and must not eat the map
+	// operation's budget.
+	cleanCtx, cleanCancel := context.WithTimeout(r.Context(), mapPushTimeout)
+	defer cleanCancel()
+	if err := s.mapMu.Lock(cleanCtx); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
@@ -171,7 +172,10 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	hostPort, err := s.desktopEnsureMap(ctx, spec, public)
+	// The ensure gets a fresh deadline created after the session start.
+	ensureCtx, ensureCancel := context.WithTimeout(r.Context(), mapPushTimeout)
+	defer ensureCancel()
+	hostPort, err := s.desktopEnsureMap(ensureCtx, spec, public, s.pushGatewayConfigCtx)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -188,7 +192,7 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 // creating it through the shared map creation path (membership, global
 // port ownership, push and rollback) with the public bind variant when
 // requested.
-func (s *Server) desktopEnsureMap(ctx context.Context, spec *vm.Spec, public bool) (int, error) {
+func (s *Server) desktopEnsureMap(ctx context.Context, spec *vm.Spec, public bool, push func(context.Context, int) error) (int, error) {
 	ensure := s.relays.Ensure
 	if public {
 		ensure = s.relays.EnsurePublic
@@ -202,7 +206,7 @@ func (s *Server) desktopEnsureMap(ctx context.Context, spec *vm.Spec, public boo
 			return m.HostPort, nil
 		}
 	}
-	m, _, err := s.addMap(ctx, spec, 0, desktopWebPort, "tcp", ensure, s.pushGatewayConfigCtx)
+	m, _, err := s.addMap(ctx, spec, 0, desktopWebPort, "tcp", ensure, push)
 	if err != nil {
 		return 0, err
 	}

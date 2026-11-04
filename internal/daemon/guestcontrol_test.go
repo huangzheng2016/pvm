@@ -908,7 +908,7 @@ func TestDesktopEnsureMapRequiresMembership(t *testing.T) {
 	s.removeVMMapsLocked(dev1.ClusterID, "dev1")
 	s.mapMu.Unlock()
 
-	_, err := s.desktopEnsureMap(context.Background(), dev1, false)
+	_, err := s.desktopEnsureMap(context.Background(), dev1, false, okPush)
 	if err == nil || !strings.Contains(err.Error(), "not a cluster member") {
 		t.Fatalf("desktop map for removed vm = %v, want membership error", err)
 	}
@@ -932,7 +932,7 @@ func TestDesktopEnsureMapInterleavesWithDelete(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			s.desktopEnsureMap(context.Background(), dev1, false)
+			s.desktopEnsureMap(context.Background(), dev1, false, okPush)
 		}()
 		wg.Wait()
 
@@ -1119,5 +1119,143 @@ func TestGuestMapLockWaitCancelled(t *testing.T) {
 	}
 	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 0 {
 		t.Fatalf("no map may be created: %+v", got)
+	}
+}
+
+// A clone rollback that cannot get the gate (main push and rollback
+// push both blocked on it) must NOT fall through to a destructive
+// delete: the spec, membership, maps and relays stay recoverable, and
+// a later real delete finishes the cleanup.
+func TestRollbackCloneVMLockTimeoutPreservesState(t *testing.T) {
+	s, _, dev2 := newMapTestServer(t)
+	port := freePort(t, "tcp")
+	m, err := s.Clusters.AddMap(dev2.ClusterID, "dev2", dev2.IP, port, 80, "tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.relays.Ensure("tcp", port, m.PoolPort); err != nil {
+		t.Fatal(err)
+	}
+
+	old := rollbackLockTimeout
+	rollbackLockTimeout = 200 * time.Millisecond
+	defer func() { rollbackLockTimeout = old }()
+
+	// Hold the gate: every map operation (and every push under it)
+	// queues behind it.
+	s.mapMu.Lock(context.Background())
+
+	err = s.rollbackCloneVM(s.Clusters.Get(dev2.ClusterID), dev2)
+	if err == nil || !strings.Contains(err.Error(), "pvm rm dev2") {
+		t.Fatalf("rollback = %v, want recoverable pvm rm error", err)
+	}
+	// Nothing was deleted: spec, membership, map and relay all survive.
+	if _, err := os.Stat(s.P.VMDir("dev2")); err != nil {
+		t.Fatal("spec dir must survive a lock timeout")
+	}
+	if cl := s.Clusters.Get(dev2.ClusterID); cl.VMs["dev2"] == nil || len(cl.Maps) != 1 {
+		t.Fatalf("membership and maps must survive: %+v", cl)
+	}
+	if err := portFree("tcp", port); err == nil {
+		t.Fatal("relay must survive a lock timeout")
+	}
+	s.mapMu.Unlock()
+
+	// The recovery path: a real delete finishes the precise cleanup.
+	req := httptest.NewRequest("DELETE", "/v1/vms/dev2", nil)
+	req.SetPathValue("name", "dev2")
+	s.handleDelete(httptest.NewRecorder(), req)
+	if _, err := os.Stat(s.P.VMDir("dev2")); err == nil {
+		t.Fatal("delete must remove the spec dir once the gate is free")
+	}
+	if cl := s.Clusters.Get(dev2.ClusterID); cl.VMs["dev2"] != nil || len(cl.Maps) != 0 {
+		t.Fatalf("membership and maps must be cleaned: %+v", cl)
+	}
+	if err := portFree("tcp", port); err != nil {
+		t.Fatal("relay must be removed by the recovery delete")
+	}
+}
+
+// Same guarantee for the create-start rollback: a lock timeout
+// preserves everything and the error says how to finish.
+func TestRollbackFailedCreateLockTimeoutPreservesState(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	port := freePort(t, "tcp")
+	m, err := s.Clusters.AddMap(dev1.ClusterID, "dev1", dev1.IP, port, 80, "tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.relays.Ensure("tcp", port, m.PoolPort); err != nil {
+		t.Fatal(err)
+	}
+
+	old := rollbackLockTimeout
+	rollbackLockTimeout = 200 * time.Millisecond
+	defer func() { rollbackLockTimeout = old }()
+
+	s.mapMu.Lock(context.Background())
+
+	err = s.rollbackFailedCreate(dev1, s.Clusters.Get(dev1.ClusterID))
+	if err == nil || !strings.Contains(err.Error(), "pvm rm dev1") {
+		t.Fatalf("rollback = %v, want recoverable pvm rm error", err)
+	}
+	if _, err := os.Stat(s.P.VMDir("dev1")); err != nil {
+		t.Fatal("spec dir must survive a lock timeout")
+	}
+	if cl := s.Clusters.Get(dev1.ClusterID); cl.VMs["dev1"] == nil || len(cl.Maps) != 1 {
+		t.Fatalf("membership and maps must survive: %+v", cl)
+	}
+	if err := portFree("tcp", port); err == nil {
+		t.Fatal("relay must survive a lock timeout")
+	}
+	s.mapMu.Unlock()
+}
+
+// A desktop session start slower than mapPushTimeout must not fail the
+// map operation: the ensure context is created after the start.
+func TestDesktopEnsureMapFreshDeadlineAfterSlowStart(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	old := mapPushTimeout
+	mapPushTimeout = 100 * time.Millisecond
+	defer func() { mapPushTimeout = old }()
+
+	// A context created before the slow session start is expired by the
+	// time the ensure runs.
+	staleCtx, staleCancel := context.WithTimeout(context.Background(), mapPushTimeout)
+	defer staleCancel()
+	time.Sleep(200 * time.Millisecond)
+	if _, err := s.desktopEnsureMap(staleCtx, dev1, false, okPush); err == nil {
+		t.Fatal("an expired context must fail, not succeed")
+	}
+	// The fresh context created after the start succeeds.
+	freshCtx, freshCancel := context.WithTimeout(context.Background(), mapPushTimeout)
+	defer freshCancel()
+	port, err := s.desktopEnsureMap(freshCtx, dev1, false, okPush)
+	if err != nil || port == 0 {
+		t.Fatalf("fresh deadline after slow start: port=%d err=%v", port, err)
+	}
+	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 1 || got[0].GuestPort != desktopWebPort {
+		t.Fatalf("desktop map must exist: %+v", got)
+	}
+	if err := portFree("tcp", port); err == nil {
+		t.Fatal("desktop relay must be bound")
+	}
+}
+
+// The clone API keeps its explicit host port range: 0 is rejected even
+// though plain map add auto-assigns it.
+func TestCloneInheritMapsHostPortValidation(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	if _, code, err := s.cloneInheritMaps(context.Background(), dev1, []cloneMapRequest{{HostPort: 0, GuestPort: 80, Proto: "tcp"}}); code != 400 ||
+		!strings.Contains(err.Error(), "1024-65535") {
+		t.Fatalf("host_port 0 = %d %v, want 400 range error", code, err)
+	}
+	if _, code, err := s.cloneInheritMaps(context.Background(), dev1, []cloneMapRequest{{HostPort: 80, GuestPort: 80, Proto: "tcp"}}); code != 400 {
+		t.Fatalf("host_port 80 = %d %v, want 400", code, err)
+	}
+	// Plain map add still auto-assigns host_port 0.
+	m, _, err := s.addMap(context.Background(), dev1, 0, 80, "tcp", s.relays.Ensure, okPush)
+	if err != nil || m.HostPort == 0 {
+		t.Fatalf("plain add with host_port 0: %v %v", m, err)
 	}
 }

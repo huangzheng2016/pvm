@@ -430,15 +430,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	createStart := time.Now()
 	if err := vm.Create(s.P, s.TC, spec, s.SSHPub); err != nil {
-		lockCtx, lockCancel := mapLockCtx()
-		defer lockCancel()
-		if err := s.mapMu.Lock(lockCtx); err != nil {
-			log.Printf("create rollback: map lock: %v", err)
-			writeErr(w, 500, err)
-			return
-		}
-		defer s.mapMu.Unlock()
-		s.Clusters.RemoveVM(cl.ID, req.Name)
+		s.removeVMWithRetry(cl.ID, req.Name)
 		writeErr(w, 500, err)
 		return
 	}
@@ -450,21 +442,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if req.Start {
 		bootStart := time.Now()
 		if _, _, err := s.startVM(spec); err != nil {
-			_ = s.instance(spec).Stop()
-			lockCtx, lockCancel := mapLockCtx()
-			defer lockCancel()
-			if err := s.mapMu.Lock(lockCtx); err != nil {
-				log.Printf("create start rollback: map lock: %v", err)
-			} else {
-				s.closeVMResources(spec.Name, cl)
-				s.removeLink(cl, spec.Name)
-				_ = s.pushBounded(cl.ID)
-				s.mapMu.Unlock()
+			if rerr := s.rollbackFailedCreate(spec, cl); rerr != nil {
+				writeErr(w, 500, fmt.Errorf("start failed (%v) and %v", err, rerr))
+				return
 			}
-			_ = vm.Delete(s.P, spec.Name)
-			s.mu.Lock()
-			delete(s.vms, spec.Name)
-			s.mu.Unlock()
 			writeErr(w, 500, fmt.Errorf("start failed; create rolled back: %w", err))
 			return
 		}
@@ -472,6 +453,28 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		s.ensureAgentAsync(spec)
 	}
 	writeJSON(w, 201, vmInfo{Spec: spec, Running: req.Start})
+}
+
+// rollbackFailedCreate removes a VM whose start failed after create:
+// precise map/relay cleanup from the latest store, then the VM itself.
+// On lock timeout nothing is deleted and the returned error tells the
+// caller to finish with `pvm rm` (idempotent).
+func (s *Server) rollbackFailedCreate(spec *vm.Spec, cl *cluster.Cluster) error {
+	_ = s.instance(spec).Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), rollbackLockTimeout)
+	defer cancel()
+	if err := s.mapMu.Lock(ctx); err != nil {
+		return fmt.Errorf("cleanup incomplete (map lock: %v); run `pvm rm %s` to finish", err, spec.Name)
+	}
+	defer s.mapMu.Unlock()
+	s.closeVMResources(spec.Name, cl)
+	s.removeLink(cl, spec.Name)
+	_ = s.pushBounded(cl.ID)
+	_ = vm.Delete(s.P, spec.Name)
+	s.mu.Lock()
+	delete(s.vms, spec.Name)
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *Server) startVM(spec *vm.Spec) (*qemu.Instance, *qemu.SnapshotManifest, error) {
@@ -704,7 +707,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	lockCtx, lockCancel := mapLockCtx()
 	defer lockCancel()
 	if err := s.mapMu.Lock(lockCtx); err != nil {
-		writeErr(w, 500, err)
+		writeErr(w, 500, fmt.Errorf("map lock: %v; the vm is untouched, retry the delete", err))
 		return
 	}
 	defer s.mapMu.Unlock()

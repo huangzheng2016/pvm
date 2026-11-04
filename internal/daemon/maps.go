@@ -43,6 +43,15 @@ func (g mapGate) Unlock() { <-g }
 // variable so tests can shorten it.
 var mapPushTimeout = 30 * time.Second
 
+// rollbackLockTimeout is the lock budget for lifecycle rollbacks
+// (clone/create-start failure, delete). A single map operation can
+// hold the gate for at most two push timeouts (main push plus its
+// rollback push), so the rollback budget must exceed that — a
+// rollback that gives up earlier must NOT fall through to a
+// destructive delete, and one that waits this long will always get
+// the gate in practice. It is a variable so tests can shorten it.
+var rollbackLockTimeout = 150 * time.Second
+
 // mapLockCtx bounds a mapMu wait for lifecycle paths that have no
 // request context (clone, desktop, delete, recovery).
 func mapLockCtx() (context.Context, context.CancelFunc) {

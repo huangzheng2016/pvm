@@ -1,6 +1,12 @@
 package daemon
 
-import "github.com/huangzheng2016/pvm/internal/cluster"
+import (
+	"context"
+	"log"
+	"time"
+
+	"github.com/huangzheng2016/pvm/internal/cluster"
+)
 
 // removeVMMapsLocked removes the relays of every map the VM currently
 // holds in the store, then drops the VM itself. It reads the store
@@ -16,6 +22,37 @@ func (s *Server) removeVMMapsLocked(clusterID int, name string) {
 		}
 	}
 	s.Clusters.RemoveVM(clusterID, name)
+}
+
+// removeVMWithRetry drops a cluster membership under the gate. On lock
+// timeout it keeps retrying in the background (bounded) so a failed
+// create never silently leaves an orphan member.
+func (s *Server) removeVMWithRetry(clusterID int, name string) {
+	ctx, cancel := context.WithTimeout(context.Background(), rollbackLockTimeout)
+	err := s.mapMu.Lock(ctx)
+	cancel()
+	if err == nil {
+		s.Clusters.RemoveVM(clusterID, name)
+		s.mapMu.Unlock()
+		return
+	}
+	log.Printf("cluster %d: remove %s: map lock: %v; retrying in background", clusterID, name, err)
+	go func() {
+		for i := 0; i < 60; i++ {
+			time.Sleep(5 * time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), rollbackLockTimeout)
+			if err := s.mapMu.Lock(ctx); err == nil {
+				s.Clusters.RemoveVM(clusterID, name)
+				s.mapMu.Unlock()
+				cancel()
+				log.Printf("cluster %d: removed %s after retry", clusterID, name)
+				return
+			} else {
+				cancel()
+			}
+		}
+		log.Printf("cluster %d: giving up removing %s after retries; remove it manually", clusterID, name)
+	}()
 }
 
 // Close resources before the cluster forgets the VM so no port remains
