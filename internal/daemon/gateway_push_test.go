@@ -25,7 +25,7 @@ func newPushTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{P: p, Clusters: st, vms: map[string]*vm.Spec{}}
+	s := &Server{P: p, Clusters: st, vms: map[string]*vm.Spec{}, mapMu: newMapGate()}
 	return s
 }
 

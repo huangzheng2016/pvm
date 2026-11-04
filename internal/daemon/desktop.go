@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -145,7 +146,14 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort, Public: st.Public})
 		return
 	}
-	s.mapMu.Lock()
+	// One bounded context covers both mapMu sections below; the gateway
+	// push inside desktopEnsureMap gets its own total deadline.
+	ctx, cancel := context.WithTimeout(r.Context(), mapPushTimeout)
+	defer cancel()
+	if err := s.mapMu.Lock(ctx); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
 	for _, m := range s.Clusters.Get(spec.ClusterID).Maps {
 		if m.VM == spec.Name && m.GuestPort == desktopWebPort {
 			s.relays.Remove(m.Proto, m.HostPort)
@@ -163,41 +171,10 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The map add commits under mapMu so a concurrent guest control
-	// remove/add of the same port cannot interleave.
-	s.mapMu.Lock()
-	defer s.mapMu.Unlock()
-	hostPort := 0
-	for _, m := range s.Clusters.Get(spec.ClusterID).Maps {
-		if m.VM == spec.Name && m.GuestPort == desktopWebPort && m.Proto == "tcp" {
-			hostPort = m.HostPort
-		}
-	}
-	if hostPort == 0 {
-		port, err := s.freeMapPort("tcp")
-		if err != nil {
-			writeErr(w, 500, err)
-			return
-		}
-		m, err := s.Clusters.AddMap(spec.ClusterID, spec.Name, spec.IP, port, desktopWebPort, "tcp")
-		if err != nil {
-			writeErr(w, 409, err)
-			return
-		}
-		ensure := s.relays.Ensure
-		if public {
-			ensure = s.relays.EnsurePublic
-		}
-		if err := ensure("tcp", m.HostPort, m.PoolPort); err != nil {
-			_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, "tcp")
-			writeErr(w, 500, err)
-			return
-		}
-		if err := s.pushBounded(spec.ClusterID); err != nil {
-			writeErr(w, 500, err)
-			return
-		}
-		hostPort = m.HostPort
+	hostPort, err := s.desktopEnsureMap(ctx, spec, public)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
 	}
 	st.HostPort = hostPort
 	if err := s.saveDesktopState(name, st); err != nil {
@@ -205,6 +182,31 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort, Public: st.Public})
+}
+
+// desktopEnsureMap returns the desktop web port mapping for spec,
+// creating it through the shared map creation path (membership, global
+// port ownership, push and rollback) with the public bind variant when
+// requested.
+func (s *Server) desktopEnsureMap(ctx context.Context, spec *vm.Spec, public bool) (int, error) {
+	ensure := s.relays.Ensure
+	if public {
+		ensure = s.relays.EnsurePublic
+	}
+	if err := s.mapMu.Lock(ctx); err != nil {
+		return 0, err
+	}
+	defer s.mapMu.Unlock()
+	for _, m := range s.Clusters.Get(spec.ClusterID).Maps {
+		if m.VM == spec.Name && m.GuestPort == desktopWebPort && m.Proto == "tcp" {
+			return m.HostPort, nil
+		}
+	}
+	m, _, err := s.addMap(ctx, spec, 0, desktopWebPort, "tcp", ensure, s.pushGatewayConfigCtx)
+	if err != nil {
+		return 0, err
+	}
+	return m.HostPort, nil
 }
 
 func (s *Server) desktopRelayMatches(spec *vm.Spec, st *desktopState, public bool) bool {
@@ -234,7 +236,12 @@ func (s *Server) handleDesktopStop(w http.ResponseWriter, r *http.Request) {
 	if st, err := s.instance(spec).Running(); err == nil && st != nil {
 		_, _ = s.sshRun(spec, fmt.Sprintf("vncserver -kill %s >/dev/null 2>&1; fuser -k %d/tcp >/dev/null 2>&1 || true", desktopVNCDisplay, desktopWebPort))
 	}
-	s.mapMu.Lock()
+	ctx, cancel := context.WithTimeout(r.Context(), mapPushTimeout)
+	defer cancel()
+	if err := s.mapMu.Lock(ctx); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
 	defer s.mapMu.Unlock()
 	if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
 		for _, m := range cl.Maps {

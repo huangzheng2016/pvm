@@ -54,9 +54,11 @@ type Server struct {
 	ctrlWatch   map[string]uint64
 
 	// mapMu serializes every map mutation (host API, guest control,
-	// rollbacks) so ownership checks, relay changes and the store stay
-	// consistent against concurrent callers.
-	mapMu sync.Mutex
+	// clone, desktop, rollbacks, cleanup) so ownership checks, relay
+	// changes and the store stay consistent against concurrent callers.
+	// The gate is context-aware: a cancelled waiter gives up its slot
+	// instead of blocking past its deadline.
+	mapMu mapGate
 
 	deskMu sync.Mutex // serializes desktop start/stop per daemon
 
@@ -82,7 +84,7 @@ type vmInfo struct {
 
 func NewServer(p *paths.Paths, cfg *config.Config, tc *qemu.Toolchain, accel qemu.Accel, sshPub string, clusters *cluster.Store) *Server {
 	return &Server{P: p, Cfg: cfg, TC: tc, Accel: accel, SSHPub: sshPub,
-		Clusters: clusters, relays: newRelaySet(), started: time.Now(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}, prog: map[string][]StageEvent{}, watchSeq: map[string]uint64{}, ctrlWatch: map[string]uint64{}}
+		Clusters: clusters, relays: newRelaySet(), started: time.Now(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}, prog: map[string][]StageEvent{}, watchSeq: map[string]uint64{}, ctrlWatch: map[string]uint64{}, mapMu: newMapGate()}
 }
 
 // agentClient returns the shared per-VM agent connection, dialing if
@@ -428,9 +430,15 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	createStart := time.Now()
 	if err := vm.Create(s.P, s.TC, spec, s.SSHPub); err != nil {
-		s.mapMu.Lock()
+		lockCtx, lockCancel := mapLockCtx()
+		defer lockCancel()
+		if err := s.mapMu.Lock(lockCtx); err != nil {
+			log.Printf("create rollback: map lock: %v", err)
+			writeErr(w, 500, err)
+			return
+		}
+		defer s.mapMu.Unlock()
 		s.Clusters.RemoveVM(cl.ID, req.Name)
-		s.mapMu.Unlock()
 		writeErr(w, 500, err)
 		return
 	}
@@ -443,11 +451,16 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		bootStart := time.Now()
 		if _, _, err := s.startVM(spec); err != nil {
 			_ = s.instance(spec).Stop()
-			s.mapMu.Lock()
-			s.closeVMResources(spec.Name, cl)
-			s.removeLink(cl, spec.Name)
-			_ = s.pushBounded(cl.ID)
-			s.mapMu.Unlock()
+			lockCtx, lockCancel := mapLockCtx()
+			defer lockCancel()
+			if err := s.mapMu.Lock(lockCtx); err != nil {
+				log.Printf("create start rollback: map lock: %v", err)
+			} else {
+				s.closeVMResources(spec.Name, cl)
+				s.removeLink(cl, spec.Name)
+				_ = s.pushBounded(cl.ID)
+				s.mapMu.Unlock()
+			}
 			_ = vm.Delete(s.P, spec.Name)
 			s.mu.Lock()
 			delete(s.vms, spec.Name)
@@ -688,7 +701,13 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if spec.Role != "gateway" && spec.ClusterID > 0 {
 		cl = s.Clusters.Get(spec.ClusterID)
 	}
-	s.mapMu.Lock()
+	lockCtx, lockCancel := mapLockCtx()
+	defer lockCancel()
+	if err := s.mapMu.Lock(lockCtx); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	defer s.mapMu.Unlock()
 	s.closeVMResources(name, cl)
 	if cl != nil {
 		s.removeLink(cl, name)
@@ -696,7 +715,6 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 			log.Printf("delete %s: gateway config push failed: %v", name, err)
 		}
 	}
-	s.mapMu.Unlock()
 	if err := vm.Delete(s.P, name); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -794,7 +812,12 @@ func (s *Server) recoverClusters() {
 // its port rebound, or the stale relay later forwards another VM's
 // traffic once the pool port is reused.
 func (s *Server) recoverRelays() {
-	s.mapMu.Lock()
+	ctx, cancel := mapLockCtx()
+	defer cancel()
+	if err := s.mapMu.Lock(ctx); err != nil {
+		log.Printf("recover relays: map lock: %v", err)
+		return
+	}
 	defer s.mapMu.Unlock()
 	for _, cl := range s.Clusters.List() {
 		for _, m := range cl.Maps {

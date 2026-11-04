@@ -530,7 +530,7 @@ func TestMapAddCrossClusterPersistedPortRejected(t *testing.T) {
 	}
 
 	// The host add path shares the same global check.
-	m, code, err := s.addMap(context.Background(), dev1, port, 80, "tcp", okPush)
+	m, code, err := s.addMap(context.Background(), dev1, port, 80, "tcp", s.relays.Ensure, okPush)
 	if err == nil || code != 409 {
 		t.Fatalf("host add on persisted port = %v %d %v, want 409", m, code, err)
 	}
@@ -625,7 +625,7 @@ func TestGuestMapRemoveBlockingPushCancelReleasesLock(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		s.mapMu.Lock()
+		s.mapMu.Lock(context.Background())
 		defer s.mapMu.Unlock()
 	}()
 	select {
@@ -669,7 +669,7 @@ func TestGuestRemoveInterleavesWithHostMapPaths(t *testing.T) {
 	port := freePort(t, "tcp")
 
 	for i := 0; i < 20; i++ {
-		if _, _, err := s.addMap(context.Background(), dev1, port, 80, "tcp", okPush); err != nil {
+		if _, _, err := s.addMap(context.Background(), dev1, port, 80, "tcp", s.relays.Ensure, okPush); err != nil {
 			t.Fatal(err)
 		}
 		var wg sync.WaitGroup
@@ -728,7 +728,7 @@ func TestRecoverRelaysUsesLatestStore(t *testing.T) {
 
 	// recovery is blocked on mapMu; the remove commits first (store
 	// mutex only), so the restore must observe it.
-	s.mapMu.Lock()
+	s.mapMu.Lock(context.Background())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -753,11 +753,11 @@ func TestRecoverRelaysUsesLatestStore(t *testing.T) {
 func TestAddMapRequiresClusterMembership(t *testing.T) {
 	s, dev1, _ := newMapTestServer(t)
 	port := freePort(t, "tcp")
-	s.mapMu.Lock()
+	s.mapMu.Lock(context.Background())
 	s.Clusters.RemoveVM(dev1.ClusterID, "dev1")
 	s.mapMu.Unlock()
 
-	_, code, err := s.addMap(context.Background(), dev1, port, 80, "tcp", okPush)
+	_, code, err := s.addMap(context.Background(), dev1, port, 80, "tcp", s.relays.Ensure, okPush)
 	if err == nil || code != 404 || !strings.Contains(err.Error(), "not a cluster member") {
 		t.Fatalf("add for removed vm = %d %v, want 404 membership", code, err)
 	}
@@ -789,7 +789,7 @@ func TestRemoveVMMapsLockedUsesLatestStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s.mapMu.Lock()
+	s.mapMu.Lock(context.Background())
 	s.removeVMMapsLocked(cl.ID, "dev1")
 	s.mapMu.Unlock()
 
@@ -810,7 +810,7 @@ func TestDeleteInterleavesWithAdd(t *testing.T) {
 	s, dev1, _ := newMapTestServer(t)
 	port := freePort(t, "tcp")
 	for i := 0; i < 10; i++ {
-		if _, _, err := s.addMap(context.Background(), dev1, port, 80, "tcp", okPush); err != nil {
+		if _, _, err := s.addMap(context.Background(), dev1, port, 80, "tcp", s.relays.Ensure, okPush); err != nil {
 			t.Fatal(err)
 		}
 		var wg sync.WaitGroup
@@ -823,7 +823,7 @@ func TestDeleteInterleavesWithAdd(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			s.addMap(context.Background(), dev1, port, 80, "tcp", okPush)
+			s.addMap(context.Background(), dev1, port, 80, "tcp", s.relays.Ensure, okPush)
 		}()
 		wg.Wait()
 
@@ -875,9 +875,9 @@ func TestPushBoundedReleasesOnTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	old := rollbackPushTimeout
-	rollbackPushTimeout = 100 * time.Millisecond
-	defer func() { rollbackPushTimeout = old }()
+	old := mapPushTimeout
+	mapPushTimeout = 100 * time.Millisecond
+	defer func() { mapPushTimeout = old }()
 
 	started := make(chan struct{})
 	hold := make(chan struct{})
@@ -898,4 +898,226 @@ func TestPushBoundedReleasesOnTimeout(t *testing.T) {
 		t.Fatal("pushBounded outlived its bound")
 	}
 	close(hold)
+}
+
+// desktop's map add must go through the shared membership check: a
+// delete that already removed the VM blocks the desktop map.
+func TestDesktopEnsureMapRequiresMembership(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	s.mapMu.Lock(context.Background())
+	s.removeVMMapsLocked(dev1.ClusterID, "dev1")
+	s.mapMu.Unlock()
+
+	_, err := s.desktopEnsureMap(context.Background(), dev1, false)
+	if err == nil || !strings.Contains(err.Error(), "not a cluster member") {
+		t.Fatalf("desktop map for removed vm = %v, want membership error", err)
+	}
+	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 0 {
+		t.Fatalf("no map may be created for a removed vm: %+v", got)
+	}
+}
+
+// A real delete racing the desktop map add must leave no map for the
+// deleted VM, in either order.
+func TestDesktopEnsureMapInterleavesWithDelete(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	for i := 0; i < 10; i++ {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest("DELETE", "/v1/vms/dev1", nil)
+			req.SetPathValue("name", "dev1")
+			s.handleDelete(httptest.NewRecorder(), req)
+		}()
+		go func() {
+			defer wg.Done()
+			s.desktopEnsureMap(context.Background(), dev1, false)
+		}()
+		wg.Wait()
+
+		for _, cl := range s.Clusters.List() {
+			for _, m := range cl.Maps {
+				if m.VM == "dev1" {
+					t.Fatalf("iter %d: map for deleted vm survives: %+v", i, m)
+				}
+			}
+		}
+		if cl := s.Clusters.Get(dev1.ClusterID); cl.VMs["dev1"] != nil {
+			t.Fatalf("iter %d: deleted vm still a member", i)
+		}
+
+		// Recreate dev1 for the next round.
+		vnet, err := s.Clusters.AddVM(dev1.ClusterID, "dev1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dev1.IP = vnet.IP
+		if err := os.MkdirAll(s.P.VMDir("dev1"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := dev1.Save(s.P); err != nil {
+			t.Fatal(err)
+		}
+		s.mu.Lock()
+		s.vms["dev1"] = dev1
+		s.mu.Unlock()
+	}
+}
+
+// clone inherit-ports shares the global port/proto ownership check: a
+// port persisted by another cluster without a live relay cannot be
+// inherited either.
+func TestCloneInheritMapsCrossClusterPersistedPortRejected(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	cl2, err := s.Clusters.Ensure(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vnet, err := s.Clusters.AddVM(cl2.ID, "dev9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := freePort(t, "tcp")
+	if _, err := s.Clusters.AddMap(cl2.ID, "dev9", vnet.IP, port, 80, "tcp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := portFree("tcp", port); err != nil {
+		t.Fatal("test needs the port unbound on the host")
+	}
+
+	_, code, err := s.cloneInheritMaps(context.Background(), dev1, []cloneMapRequest{{HostPort: port, GuestPort: 80, Proto: "tcp"}})
+	if err == nil || code != 409 || !strings.Contains(err.Error(), "already mapped") {
+		t.Fatalf("clone inherit on persisted port = %d %v, want 409", code, err)
+	}
+	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 0 {
+		t.Fatalf("no map may be created in cluster 1: %+v", got)
+	}
+}
+
+// The real host add path must give up on a gateway push that never
+// completes: the bounded context fires, the add rolls back, and mapMu
+// is released.
+func TestHandleMapAddBlockingPushBounded(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	cl := s.Clusters.Get(dev1.ClusterID)
+	gw := &vm.Spec{Name: cl.Gateway, Role: "gateway", User: "pvmgw"}
+	if err := os.MkdirAll(s.P.VMDir(gw.Name), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Save(s.P); err != nil {
+		t.Fatal(err)
+	}
+
+	old := mapPushTimeout
+	mapPushTimeout = 150 * time.Millisecond
+	defer func() { mapPushTimeout = old }()
+
+	port := freePort(t, "tcp")
+	started := make(chan struct{})
+	hold := make(chan struct{})
+	go func() {
+		_ = s.renderGatewayConfigLocked(context.Background(), cl.ID, func([]byte) error {
+			close(started)
+			<-hold
+			return nil
+		})
+	}()
+	<-started
+
+	body := fmt.Sprintf(`{"vm":"dev1","host_port":%d,"guest_port":80,"proto":"tcp"}`, port)
+	rec := httptest.NewRecorder()
+	begin := time.Now()
+	s.handleMapAdd(rec, httptest.NewRequest("POST", "/v1/maps", strings.NewReader(body)))
+	if rec.Code != 500 || !strings.Contains(rec.Body.String(), "rolled back") {
+		t.Fatalf("add = %d %s, want rolled-back 500", rec.Code, rec.Body.String())
+	}
+	if time.Since(begin) > 5*time.Second {
+		t.Fatal("the push deadline did not fire")
+	}
+	if got := s.Clusters.Get(cl.ID).Maps; len(got) != 0 {
+		t.Fatalf("map must be rolled back: %+v", got)
+	}
+	if err := portFree("tcp", port); err != nil {
+		t.Fatal("relay must be removed by the rollback")
+	}
+	close(hold)
+}
+
+// Same for the real host remove path: a push that never completes
+// rolls the removal back and releases mapMu.
+func TestHandleMapRemoveBlockingPushBounded(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	cl := s.Clusters.Get(dev1.ClusterID)
+	gw := &vm.Spec{Name: cl.Gateway, Role: "gateway", User: "pvmgw"}
+	if err := os.MkdirAll(s.P.VMDir(gw.Name), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Save(s.P); err != nil {
+		t.Fatal(err)
+	}
+	port := freePort(t, "tcp")
+	if _, _, err := s.addMap(context.Background(), dev1, port, 80, "tcp", s.relays.Ensure, okPush); err != nil {
+		t.Fatal(err)
+	}
+
+	old := mapPushTimeout
+	mapPushTimeout = 150 * time.Millisecond
+	defer func() { mapPushTimeout = old }()
+
+	started := make(chan struct{})
+	hold := make(chan struct{})
+	go func() {
+		_ = s.renderGatewayConfigLocked(context.Background(), cl.ID, func([]byte) error {
+			close(started)
+			<-hold
+			return nil
+		})
+	}()
+	<-started
+
+	req := httptest.NewRequest("DELETE", "/v1/maps/x/tcp", nil)
+	req.SetPathValue("port", fmt.Sprint(port))
+	req.SetPathValue("proto", "tcp")
+	rec := httptest.NewRecorder()
+	begin := time.Now()
+	s.handleMapRemove(rec, req)
+	if rec.Code != 500 || !strings.Contains(rec.Body.String(), "rolled back") {
+		t.Fatalf("remove = %d %s, want rolled-back 500", rec.Code, rec.Body.String())
+	}
+	if time.Since(begin) > 5*time.Second {
+		t.Fatal("the push deadline did not fire")
+	}
+	if got := s.Clusters.Get(cl.ID).Maps; len(got) != 1 || got[0].HostPort != port {
+		t.Fatalf("map must be restored by the rollback: %+v", got)
+	}
+	if err := portFree("tcp", port); err == nil {
+		t.Fatal("relay must be restored by the rollback")
+	}
+	close(hold)
+}
+
+// The guest handler's mapMu wait itself must be cancellable: a guest
+// that gives up at its deadline does not stay queued on the gate.
+func TestGuestMapLockWaitCancelled(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	h := s.guestControlHandlerWithPush("dev1", okPush)
+
+	s.mapMu.Lock(context.Background()) // hold the gate
+	defer s.mapMu.Unlock()
+
+	addReq, _ := json.Marshal(agent.MapAddRequest{HostPort: freePort(t, "tcp"), GuestPort: 80, Proto: "tcp"})
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := h(ctx, &agent.Frame{ID: "a1", Op: agent.OpControl, Action: agent.ControlMapAdd, Payload: addReq})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("lock wait = %v, want context.DeadlineExceeded", err)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("the lock wait was not cancelled at the deadline")
+	}
+	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 0 {
+		t.Fatalf("no map may be created: %+v", got)
+	}
 }

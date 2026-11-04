@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -112,13 +113,18 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 		if committed {
 			return
 		}
-		s.mapMu.Lock()
-		// Clean up from the latest store, not just `added`: a map
-		// committed for the clone after the snapshot must not orphan
-		// its relay.
-		s.removeVMMapsLocked(cl.ID, spec.Name)
-		_ = s.pushBounded(cl.ID)
-		s.mapMu.Unlock()
+		ctx, cancel := mapLockCtx()
+		defer cancel()
+		if err := s.mapMu.Lock(ctx); err != nil {
+			log.Printf("clone rollback: map lock: %v", err)
+		} else {
+			// Clean up from the latest store, not just `added`: a map
+			// committed for the clone after the snapshot must not orphan
+			// its relay.
+			s.removeVMMapsLocked(cl.ID, spec.Name)
+			_ = s.pushBounded(cl.ID)
+			s.mapMu.Unlock()
+		}
 		_ = s.instance(spec).Stop()
 		s.removeLink(cl, spec.Name)
 		_ = vm.Delete(s.P, spec.Name)
@@ -126,42 +132,12 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 		delete(s.vms, spec.Name)
 		s.mu.Unlock()
 	}()
-	// Inherit-ports mutates maps/relays: it commits under mapMu, without
-	// spanning the (slow) VM start below.
-	code, err := func() (int, error) {
-		s.mapMu.Lock()
-		defer s.mapMu.Unlock()
-		for _, m := range req.Maps {
-			proto := m.Proto
-			if proto == "" {
-				proto = "tcp"
-			}
-			if m.GuestPort <= 0 || m.GuestPort > 65535 {
-				return 400, fmt.Errorf("guest_port %d out of range", m.GuestPort)
-			}
-			if m.HostPort < 1024 || m.HostPort > 65535 {
-				return 400, fmt.Errorf("host_port %d must be 1024-65535", m.HostPort)
-			}
-			if err := portFree(proto, m.HostPort); err != nil {
-				return 409, fmt.Errorf("map %d:%d/%s: %w", m.HostPort, m.GuestPort, proto, err)
-			}
-			pm, err := s.Clusters.AddMap(cl.ID, spec.Name, spec.IP, m.HostPort, m.GuestPort, proto)
-			if err != nil {
-				return 409, err
-			}
-			if err := s.relays.Ensure(pm.Proto, pm.HostPort, pm.PoolPort); err != nil {
-				_, _ = s.Clusters.RemoveMap(cl.ID, pm.HostPort, pm.Proto)
-				return 500, err
-			}
-			added = append(added, pm)
-		}
-		if len(added) > 0 {
-			if err := s.pushBounded(cl.ID); err != nil {
-				return 500, fmt.Errorf("clone created but gateway config push failed: %w", err)
-			}
-		}
-		return 0, nil
-	}()
+	// Inherit-ports commits under mapMu through the same validation as
+	// every other map creation (membership, global port ownership),
+	// without spanning the (slow) VM start below.
+	ctx, cancel := mapLockCtx()
+	added, code, err := s.cloneInheritMaps(ctx, spec, req.Maps)
+	cancel()
 	if err != nil {
 		writeErr(w, code, err)
 		return
@@ -177,6 +153,29 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 	}
 	committed = true
 	writeJSON(w, 201, map[string]any{"spec": spec, "maps": added, "running": req.Start})
+}
+
+// cloneInheritMaps installs the clone's inherited port maps under
+// mapMu through the same validation and commit path as every other map
+// creation (membership, global port/proto ownership, per-map push and
+// rollback). The HTTP status return matches the host map API's codes.
+func (s *Server) cloneInheritMaps(ctx context.Context, spec *vm.Spec, maps []cloneMapRequest) ([]*cluster.PortMap, int, error) {
+	if err := s.mapMu.Lock(ctx); err != nil {
+		return nil, 500, err
+	}
+	defer s.mapMu.Unlock()
+	var added []*cluster.PortMap
+	for _, m := range maps {
+		if m.GuestPort <= 0 || m.GuestPort > 65535 {
+			return nil, 400, fmt.Errorf("guest_port %d out of range", m.GuestPort)
+		}
+		pm, code, err := s.addMap(ctx, spec, m.HostPort, m.GuestPort, m.Proto, s.relays.Ensure, s.pushGatewayConfigCtx)
+		if err != nil {
+			return nil, code, fmt.Errorf("map %d:%d/%s: %w", m.HostPort, m.GuestPort, m.Proto, err)
+		}
+		added = append(added, pm)
+	}
+	return added, 0, nil
 }
 
 // The source's netplan pins DHCP to the source MAC, so a clone has no

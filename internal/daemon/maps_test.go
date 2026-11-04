@@ -36,7 +36,7 @@ func newMapTestServer(t *testing.T) (*Server, *vm.Spec, *vm.Spec) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{P: p, Clusters: st, relays: newRelaySet(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}}
+	s := &Server{P: p, Clusters: st, relays: newRelaySet(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}, mapMu: newMapGate()}
 	t.Cleanup(func() {
 		s.relays.mu.Lock()
 		defer s.relays.mu.Unlock()
@@ -130,7 +130,7 @@ func TestAddMapSuccess(t *testing.T) {
 		}
 		return nil
 	}
-	m, code, err := s.addMap(context.Background(), dev1, port, 80, "tcp", push)
+	m, code, err := s.addMap(context.Background(), dev1, port, 80, "tcp", s.relays.Ensure, push)
 	if err != nil || code != 201 {
 		t.Fatalf("addMap = %v, %d, %v", m, code, err)
 	}
@@ -147,7 +147,7 @@ func TestAddMapSuccess(t *testing.T) {
 
 func TestAddMapAutoHostPort(t *testing.T) {
 	s, dev1, _ := newMapTestServer(t)
-	m, _, err := s.addMap(context.Background(), dev1, 0, 80, "tcp", okPush)
+	m, _, err := s.addMap(context.Background(), dev1, 0, 80, "tcp", s.relays.Ensure, okPush)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestAddMapRollbackOnPushFailure(t *testing.T) {
 	s, dev1, _ := newMapTestServer(t)
 	port := freePort(t, "tcp")
 	push := func(ctx context.Context, clusterID int) error { return errors.New("gateway away") }
-	m, code, err := s.addMap(context.Background(), dev1, port, 80, "tcp", push)
+	m, code, err := s.addMap(context.Background(), dev1, port, 80, "tcp", s.relays.Ensure, push)
 	if err == nil || code != 500 || !strings.Contains(err.Error(), "rolled back") {
 		t.Fatalf("want rolled-back 500, got %v %d %v", m, code, err)
 	}
@@ -175,15 +175,15 @@ func TestAddMapRollbackOnPushFailure(t *testing.T) {
 func TestAddMapDuplicateHostPort(t *testing.T) {
 	s, dev1, dev2 := newMapTestServer(t)
 	port := freePort(t, "tcp")
-	if _, _, err := s.addMap(context.Background(), dev1, port, 80, "tcp", okPush); err != nil {
+	if _, _, err := s.addMap(context.Background(), dev1, port, 80, "tcp", s.relays.Ensure, okPush); err != nil {
 		t.Fatal(err)
 	}
-	_, code, err := s.addMap(context.Background(), dev2, port, 80, "tcp", okPush)
+	_, code, err := s.addMap(context.Background(), dev2, port, 80, "tcp", s.relays.Ensure, okPush)
 	if err == nil || code != 409 {
 		t.Fatalf("duplicate add = %d %v, want 409", code, err)
 	}
 	// Same port on the other proto is a different mapping and allowed.
-	if _, _, err := s.addMap(context.Background(), dev2, port, 80, "udp", okPush); err != nil {
+	if _, _, err := s.addMap(context.Background(), dev2, port, 80, "udp", s.relays.Ensure, okPush); err != nil {
 		t.Fatalf("udp on same port: %v", err)
 	}
 }
@@ -192,11 +192,11 @@ func TestAddMapRejectsNonClusterVM(t *testing.T) {
 	s, _, _ := newMapTestServer(t)
 	port := freePort(t, "tcp")
 	gw := &vm.Spec{Name: "gw1", Role: "gateway"}
-	if _, code, err := s.addMap(context.Background(), gw, port, 80, "tcp", okPush); err == nil || code != 400 {
+	if _, code, err := s.addMap(context.Background(), gw, port, 80, "tcp", s.relays.Ensure, okPush); err == nil || code != 400 {
 		t.Fatalf("gateway add = %d %v, want 400", code, err)
 	}
 	solo := &vm.Spec{Name: "solo", Role: "user"}
-	if _, code, err := s.addMap(context.Background(), solo, port, 80, "tcp", okPush); err == nil || code != 400 {
+	if _, code, err := s.addMap(context.Background(), solo, port, 80, "tcp", s.relays.Ensure, okPush); err == nil || code != 400 {
 		t.Fatalf("standalone add = %d %v, want 400", code, err)
 	}
 }
@@ -205,7 +205,7 @@ func TestHandleMapRemoveUnchanged(t *testing.T) {
 	// The global host API keeps its remove-by-port semantics.
 	s, dev1, _ := newMapTestServer(t)
 	port := freePort(t, "tcp")
-	if _, _, err := s.addMap(context.Background(), dev1, port, 80, "tcp", okPush); err != nil {
+	if _, _, err := s.addMap(context.Background(), dev1, port, 80, "tcp", s.relays.Ensure, okPush); err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest("DELETE", "/v1/maps/18084/tcp", nil)

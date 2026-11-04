@@ -56,13 +56,15 @@ func (s *Server) guestMapAdd(ctx context.Context, vmName string, payload []byte,
 	if req.GuestPort <= 0 || req.GuestPort > 65535 {
 		return nil, fmt.Errorf("guest_port must be 1-65535")
 	}
-	s.mapMu.Lock()
+	if err := s.mapMu.Lock(ctx); err != nil {
+		return nil, err
+	}
 	defer s.mapMu.Unlock()
 	spec, err := s.getSpec(vmName)
 	if err != nil {
 		return nil, err
 	}
-	m, _, err := s.addMap(ctx, spec, req.HostPort, req.GuestPort, req.Proto, push)
+	m, _, err := s.addMap(ctx, spec, req.HostPort, req.GuestPort, req.Proto, s.relays.Ensure, push)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +88,9 @@ func (s *Server) guestMapRemove(ctx context.Context, vmName string, payload []by
 		proto = "tcp"
 	}
 
-	s.mapMu.Lock()
+	if err := s.mapMu.Lock(ctx); err != nil {
+		return nil, err
+	}
 	defer s.mapMu.Unlock()
 	var owner *cluster.Cluster
 	var owned *cluster.PortMap
