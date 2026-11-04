@@ -1,6 +1,6 @@
 module github.com/huangzheng2016/pvm
 
-go 1.26.0
+go 1.27.0
 
 require (
 	github.com/diskfs/go-diskfs v1.9.4

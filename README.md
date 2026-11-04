@@ -112,10 +112,10 @@ This creates a new client key, enrolls it with the exit agent, writes the config
 
 ## Development
 
-A full build uses Go 1.26.2 and garble v0.17.0, with both versions pinned in CI. The build uses the dedicated `cmd/agent` entry point and reproducible obfuscation settings.
+A full build uses Go 1.27.3 and garble v0.18.0, with both versions pinned in CI. The build uses the dedicated `cmd/agent` entry point and reproducible obfuscation settings.
 
 ```bash
-go install mvdan.cc/garble@v0.17.0
+go install mvdan.cc/garble@v0.18.0
 ./script/build.sh
 go test ./...
 ```

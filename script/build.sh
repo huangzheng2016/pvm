@@ -11,7 +11,7 @@ cd "$SCRIPT_DIR/.."
 rm -f internal/assets/packed/gateway-linux-* internal/assets/packed/agent-linux-*
 
 echo "== guest binaries ($PVM_HOSTARCH)"
-PVM_GARBLE_VERSION=v0.17.0
+PVM_GARBLE_VERSION=v0.18.0
 PVM_GARBLE_SEED=cHZtZ3Vlc3Q=
 if ! command -v garble >/dev/null 2>&1; then
   echo "error: garble $PVM_GARBLE_VERSION is required: go install mvdan.cc/garble@$PVM_GARBLE_VERSION" >&2
