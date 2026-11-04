@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/huangzheng2016/pvm/internal/cluster"
+	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
 type mapRequest struct {
@@ -43,48 +44,53 @@ func (s *Server) handleMapAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err)
 		return
 	}
-	if spec.Role == "gateway" || spec.ClusterID == 0 {
-		writeErr(w, 400, fmt.Errorf("vm %s is not a cluster vm", req.VM))
-		return
-	}
-	if req.Proto == "" {
-		req.Proto = "tcp"
-	}
-	if req.HostPort == 0 {
-		port, err := freeLoopbackPort(req.Proto)
-		if err != nil {
-			writeErr(w, 500, err)
-			return
-		}
-		req.HostPort = port
-	}
-	if req.HostPort < 1024 || req.HostPort > 65535 {
-		writeErr(w, 400, fmt.Errorf("host_port must be 1024-65535"))
-		return
-	}
-	if err := portFree(req.Proto, req.HostPort); err != nil {
-		writeErr(w, 409, err)
-		return
-	}
-
-	m, err := s.Clusters.AddMap(spec.ClusterID, spec.Name, spec.IP, req.HostPort, req.GuestPort, req.Proto)
+	m, code, err := s.addMap(spec, req.HostPort, req.GuestPort, req.Proto, s.pushGatewayConfig)
 	if err != nil {
-		writeErr(w, 409, err)
-		return
-	}
-	if err := s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort); err != nil {
-		_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
-		writeErr(w, 500, err)
-		return
-	}
-	if err := s.pushGatewayConfig(spec.ClusterID); err != nil {
-		s.relays.Remove(m.Proto, m.HostPort)
-		_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
-		_ = s.pushGatewayConfig(spec.ClusterID)
-		writeErr(w, 500, fmt.Errorf("map rolled back after gateway config push failed: %w", err))
+		writeErr(w, code, err)
 		return
 	}
 	writeJSON(w, 201, m)
+}
+
+// addMap validates and installs a host->guest port mapping for spec,
+// rolling back on relay or gateway-config failure. The status return is
+// the HTTP code for API callers; the guest control path only uses err.
+func (s *Server) addMap(spec *vm.Spec, hostPort, guestPort int, proto string, push func(int) error) (*cluster.PortMap, int, error) {
+	if spec.Role == "gateway" || spec.ClusterID == 0 {
+		return nil, 400, fmt.Errorf("vm %s is not a cluster vm", spec.Name)
+	}
+	if proto == "" {
+		proto = "tcp"
+	}
+	if hostPort == 0 {
+		port, err := freeLoopbackPort(proto)
+		if err != nil {
+			return nil, 500, err
+		}
+		hostPort = port
+	}
+	if hostPort < 1024 || hostPort > 65535 {
+		return nil, 400, fmt.Errorf("host_port must be 1024-65535")
+	}
+	if err := portFree(proto, hostPort); err != nil {
+		return nil, 409, err
+	}
+
+	m, err := s.Clusters.AddMap(spec.ClusterID, spec.Name, spec.IP, hostPort, guestPort, proto)
+	if err != nil {
+		return nil, 409, err
+	}
+	if err := s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort); err != nil {
+		_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
+		return nil, 500, err
+	}
+	if err := push(spec.ClusterID); err != nil {
+		s.relays.Remove(m.Proto, m.HostPort)
+		_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
+		_ = push(spec.ClusterID)
+		return nil, 500, fmt.Errorf("map rolled back after gateway config push failed: %w", err)
+	}
+	return m, 201, nil
 }
 
 func (s *Server) handleMapRemove(w http.ResponseWriter, r *http.Request) {

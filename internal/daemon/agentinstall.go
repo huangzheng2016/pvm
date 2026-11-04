@@ -6,7 +6,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/huangzheng2016/pvm/internal/agent"
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
@@ -36,6 +35,7 @@ func (s *Server) ensureAgentAsync(spec *vm.Spec) {
 			return
 		}
 		log.Printf("agent: installed and reachable in %s", spec.Name)
+		s.ensureControlWatcher(spec)
 	}()
 }
 
@@ -65,14 +65,12 @@ func (s *Server) installAgent(spec *vm.Spec, bin string) error {
 
 	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
-		ac, err := agent.DialSock(s.P.AgentSock(spec.Name))
-		if err == nil {
-			_, perr := ac.Ping()
-			ac.Close()
-			if perr == nil {
-				s.stage(spec.Name, "agent", "guest agent installed")
-				return nil
-			}
+		// The shared client stays cached: the control watcher adopts it
+		// so the guest can initiate requests without a second dial
+		// (QEMU's chardev allows exactly one host connection).
+		if _, err := s.agentClient(spec.Name); err == nil {
+			s.stage(spec.Name, "agent", "guest agent installed")
+			return nil
 		}
 		time.Sleep(time.Second)
 	}

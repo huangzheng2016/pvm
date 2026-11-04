@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -21,10 +23,20 @@ type Server struct {
 	started time.Time
 	mu      sync.Mutex // guards execs
 	execs   map[string]chan Frame
+
+	ctrlMu       sync.Mutex // guards ctrlPending and the session write
+	ctrlPending  map[string]chan Frame
+	sessionWrite func(*Frame) error
+	sessionSeq   uint64
 }
 
 func NewServer() *Server {
-	return &Server{Version: buildinfo.Version, started: time.Now(), execs: map[string]chan Frame{}}
+	return &Server{
+		Version:     buildinfo.Version,
+		started:     time.Now(),
+		execs:       map[string]chan Frame{},
+		ctrlPending: map[string]chan Frame{},
+	}
 }
 
 // Run opens the virtio-serial port and serves forever.
@@ -41,6 +53,11 @@ func (s *Server) Run(sysfsRoot string) error {
 		return err
 	}
 	log.Printf("agent: serving on %s (version %s)", dev, s.Version)
+	go func() {
+		if err := s.ServeControl(ControlSock); err != nil {
+			log.Printf("agent: control broker stopped: %v", err)
+		}
+	}()
 	var f *os.File
 	for {
 		if f == nil {
@@ -75,16 +92,33 @@ func (s *Server) Serve(rw io.ReadWriteCloser) error {
 		return w.write(f)
 	}
 
-	r := bufio.NewReaderSize(rw, 64<<10)
+	s.ctrlMu.Lock()
+	s.sessionSeq++
+	seq := s.sessionSeq
+	s.sessionWrite = write
+	s.ctrlMu.Unlock()
 	var wg sync.WaitGroup
 	defer func() {
+		s.ctrlMu.Lock()
+		if s.sessionSeq == seq {
+			s.sessionWrite = nil
+		}
+		s.failCtrlPendingLocked("host session ended")
+		s.ctrlMu.Unlock()
 		cancelExecs()
 		wg.Wait()
 	}()
+
+	r := bufio.NewReaderSize(rw, 64<<10)
 	for {
 		var f Frame
 		if err := readFrame(r, &f); err != nil {
 			return err
+		}
+		if f.Op == OpResult || (f.Op == "" && f.Error != "") {
+			if s.deliverControl(&f) {
+				continue
+			}
 		}
 		switch f.Op {
 		case OpPing:
@@ -140,6 +174,75 @@ func (s *Server) stdinOf(id string) chan Frame {
 		return ch
 	}
 	return nil
+}
+
+// deliverControl routes a result/error frame to its pending control
+// request; it reports whether the id belonged to one.
+func (s *Server) deliverControl(f *Frame) bool {
+	s.ctrlMu.Lock()
+	ch, ok := s.ctrlPending[f.ID]
+	if ok {
+		delete(s.ctrlPending, f.ID)
+	}
+	s.ctrlMu.Unlock()
+	if !ok {
+		return false
+	}
+	// The channel has capacity one and only one terminal frame is ever
+	// delivered, so this cannot block.
+	ch <- *f
+	return true
+}
+
+// failCtrlPendingLocked errors every in-flight control request so
+// callers never hang on a dead session. Callers hold ctrlMu.
+func (s *Server) failCtrlPendingLocked(msg string) {
+	for id, ch := range s.ctrlPending {
+		delete(s.ctrlPending, id)
+		ch <- Frame{ID: id, Error: msg}
+	}
+}
+
+// Control forwards one scoped control request to the host over the
+// active session and waits for its result. It fails fast while no host
+// session is attached.
+func (s *Server) Control(action string, payload []byte, timeout time.Duration) ([]byte, error) {
+	if len(payload) > MaxControlPayloadBytes {
+		return nil, fmt.Errorf("control payload exceeds %d bytes", MaxControlPayloadBytes)
+	}
+	id := newControlID()
+	ch := make(chan Frame, 1)
+	s.ctrlMu.Lock()
+	if s.ctrlPending == nil {
+		s.ctrlPending = map[string]chan Frame{}
+	}
+	s.ctrlPending[id] = ch
+	write := s.sessionWrite
+	s.ctrlMu.Unlock()
+	if write == nil {
+		s.untrackControl(id)
+		return nil, fmt.Errorf("%w: host not connected", ErrUnreachable)
+	}
+	if err := write(&Frame{ID: id, Op: OpControl, Action: action, Payload: payload}); err != nil {
+		s.untrackControl(id)
+		return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
+	}
+	select {
+	case f := <-ch:
+		if f.Error != "" {
+			return nil, errors.New(f.Error)
+		}
+		return f.Payload, nil
+	case <-time.After(timeout):
+		s.untrackControl(id)
+		return nil, fmt.Errorf("control %s: no result within %s", action, timeout)
+	}
+}
+
+func (s *Server) untrackControl(id string) {
+	s.ctrlMu.Lock()
+	delete(s.ctrlPending, id)
+	s.ctrlMu.Unlock()
 }
 
 func (s *Server) runExec(serveCtx context.Context, f *Frame, stdinCh <-chan Frame, write func(*Frame) error) {

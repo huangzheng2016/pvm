@@ -50,6 +50,9 @@ type Server struct {
 	agentMu sync.Mutex // guards agents
 	agents  map[string]*agent.Client
 
+	ctrlWatchMu sync.Mutex // guards ctrlWatch
+	ctrlWatch   map[string]uint64
+
 	deskMu sync.Mutex // serializes desktop start/stop per daemon
 
 	progMu sync.Mutex // guards prog
@@ -74,14 +77,16 @@ type vmInfo struct {
 
 func NewServer(p *paths.Paths, cfg *config.Config, tc *qemu.Toolchain, accel qemu.Accel, sshPub string, clusters *cluster.Store) *Server {
 	return &Server{P: p, Cfg: cfg, TC: tc, Accel: accel, SSHPub: sshPub,
-		Clusters: clusters, relays: newRelaySet(), started: time.Now(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}, prog: map[string][]StageEvent{}, watchSeq: map[string]uint64{}}
+		Clusters: clusters, relays: newRelaySet(), started: time.Now(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}, prog: map[string][]StageEvent{}, watchSeq: map[string]uint64{}, ctrlWatch: map[string]uint64{}}
 }
 
 // agentClient returns the shared per-VM agent connection, dialing if
 // needed. QEMU's chardev socket accepts exactly one host connection,
 // so every exec multiplexes over this single client. Fresh connections
 // are Ping-checked: a half-open or protocol-desynced channel is
-// discarded instead of handed to callers.
+// discarded instead of handed to callers. The control handler is bound
+// to the VM owning the channel before the client is shared, so guest
+// control requests are scoped by construction.
 func (s *Server) agentClient(name string) (*agent.Client, error) {
 	s.agentMu.Lock()
 	defer s.agentMu.Unlock()
@@ -92,6 +97,7 @@ func (s *Server) agentClient(name string) (*agent.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.HandleControl(s.guestControlHandler(name))
 	if _, err := c.Ping(); err != nil {
 		c.Close()
 		return nil, err
@@ -756,6 +762,10 @@ func (s *Server) recoverClusters() {
 				if err := s.ensureLink(cl, vn.Name); err != nil {
 					log.Printf("recover link %s: %v", vn.Name, err)
 				}
+				// The guest agent survives a daemon restart (systemd
+				// unit); re-establish the control connection for VMs
+				// that stayed up.
+				s.ensureControlWatcher(spec)
 			}
 		}
 		for _, m := range cl.Maps {

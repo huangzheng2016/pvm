@@ -24,6 +24,7 @@ type Client struct {
 
 	mu      sync.Mutex
 	pending map[string]chan Frame
+	control ControlHandler
 	closed  bool
 }
 
@@ -51,6 +52,12 @@ func (c *Client) readLoop() {
 			c.failAll(err)
 			return
 		}
+		if f.Op == OpControl {
+			// Guest-initiated request: handle off-loop so a slow control
+			// never stalls exec stream demux.
+			go c.dispatchControl(&f)
+			continue
+		}
 		c.mu.Lock()
 		ch := c.pending[f.ID]
 		if f.Done || f.Error != "" {
@@ -64,6 +71,40 @@ func (c *Client) readLoop() {
 			}
 		}
 	}
+}
+
+// HandleControl registers the handler for guest-initiated control
+// requests; the host daemon binds it to the VM owning this channel.
+// Call before the client is shared.
+func (c *Client) HandleControl(h ControlHandler) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.control = h
+}
+
+func (c *Client) dispatchControl(f *Frame) {
+	c.mu.Lock()
+	h := c.control
+	c.mu.Unlock()
+	resp := Frame{ID: f.ID}
+	switch {
+	case h == nil:
+		resp.Error = "control unsupported"
+	case len(f.Payload) > MaxControlPayloadBytes:
+		resp.Error = "control payload too large"
+	default:
+		payload, err := h(f)
+		switch {
+		case err != nil:
+			resp.Error = err.Error()
+		case len(payload) > MaxControlPayloadBytes:
+			resp.Error = "control result too large"
+		default:
+			resp.Op = OpResult
+			resp.Payload = payload
+		}
+	}
+	c.write(&resp)
 }
 
 func (c *Client) failAll(err error) {
