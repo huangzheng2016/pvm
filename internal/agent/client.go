@@ -2,7 +2,9 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,7 +27,11 @@ type Client struct {
 	mu      sync.Mutex
 	pending map[string]chan Frame
 	control ControlHandler
+	ctrlSem chan struct{}
 	closed  bool
+
+	done     chan struct{} // closed on connection loss or Close
+	doneOnce sync.Once
 }
 
 // DialSock connects to the agent channel at a unix socket path.
@@ -40,6 +46,7 @@ func DialSock(sock string) (*Client, error) {
 		w:       newFrameWriter(conn),
 		r:       bufio.NewReaderSize(conn, 64<<10),
 		pending: map[string]chan Frame{},
+		done:    make(chan struct{}),
 	}
 	go c.readLoop()
 	return c, nil
@@ -85,6 +92,10 @@ func (c *Client) HandleControl(h ControlHandler) {
 func (c *Client) dispatchControl(f *Frame) {
 	c.mu.Lock()
 	h := c.control
+	if c.ctrlSem == nil {
+		c.ctrlSem = make(chan struct{}, maxConcurrentControls)
+	}
+	sem := c.ctrlSem
 	c.mu.Unlock()
 	resp := Frame{ID: f.ID}
 	switch {
@@ -93,24 +104,58 @@ func (c *Client) dispatchControl(f *Frame) {
 	case len(f.Payload) > MaxControlPayloadBytes:
 		resp.Error = "control payload too large"
 	default:
-		payload, err := h(f)
-		switch {
-		case err != nil:
-			resp.Error = err.Error()
-		case len(payload) > MaxControlPayloadBytes:
-			resp.Error = "control result too large"
+		// A bounded number of handlers may run at once so a guest
+		// cannot accumulate host work (ssh sessions, goroutines) without
+		// limit; excess requests are refused, not queued.
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+			resp.Op, resp.Payload, resp.Error = c.runControl(h, f)
 		default:
-			resp.Op = OpResult
-			resp.Payload = payload
+			resp.Error = "control busy"
 		}
 	}
 	c.write(&resp)
+}
+
+// runControl executes the handler under an overall deadline that is
+// also cancelled when the connection drops, so abandoned requests stop
+// consuming host resources.
+func (c *Client) runControl(h ControlHandler, f *Frame) (string, json.RawMessage, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), controlHandlerTimeout)
+	defer cancel()
+	if c.done != nil {
+		go func() {
+			select {
+			case <-c.done:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
+	payload, err := h(ctx, f)
+	switch {
+	case err != nil:
+		return "", nil, err.Error()
+	case len(payload) > MaxControlPayloadBytes:
+		return "", nil, "control result too large"
+	default:
+		return OpResult, payload, ""
+	}
+}
+
+func (c *Client) signalDone() {
+	if c.done == nil {
+		return
+	}
+	c.doneOnce.Do(func() { close(c.done) })
 }
 
 func (c *Client) failAll(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closed = true
+	c.signalDone()
 	for id, ch := range c.pending {
 		delete(c.pending, id)
 		ch <- Frame{ID: id, Error: fmt.Sprintf("%v: %v", ErrUnreachable, err)}
@@ -234,7 +279,10 @@ func (c *Client) register(id string) chan Frame {
 	return ch
 }
 
-func (c *Client) Close() error { return c.conn.Close() }
+func (c *Client) Close() error {
+	c.signalDone()
+	return c.conn.Close()
+}
 
 func (c *Client) Closed() bool {
 	c.mu.Lock()

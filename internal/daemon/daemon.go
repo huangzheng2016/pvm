@@ -53,6 +53,11 @@ type Server struct {
 	ctrlWatchMu sync.Mutex // guards ctrlWatch
 	ctrlWatch   map[string]uint64
 
+	// mapMu serializes every map mutation (host API, guest control,
+	// rollbacks) so ownership checks, relay changes and the store stay
+	// consistent against concurrent callers.
+	mapMu sync.Mutex
+
 	deskMu sync.Mutex // serializes desktop start/stop per daemon
 
 	progMu sync.Mutex // guards prog

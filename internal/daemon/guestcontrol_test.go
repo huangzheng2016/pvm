@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -43,7 +44,7 @@ func TestGuestMapAddAndRemove(t *testing.T) {
 	port := freePort(t, "tcp")
 
 	addReq, _ := json.Marshal(agent.MapAddRequest{HostPort: port, GuestPort: 80, Proto: "tcp"})
-	payload, err := h(&agent.Frame{ID: "a1", Op: agent.OpControl, Action: agent.ControlMapAdd, Payload: addReq})
+	payload, err := h(context.Background(), &agent.Frame{ID: "a1", Op: agent.OpControl, Action: agent.ControlMapAdd, Payload: addReq})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +60,7 @@ func TestGuestMapAddAndRemove(t *testing.T) {
 	}
 
 	rmReq, _ := json.Marshal(agent.MapRemoveRequest{HostPort: port, Proto: "tcp"})
-	if _, err := h(&agent.Frame{ID: "r1", Op: agent.OpControl, Action: agent.ControlMapRemove, Payload: rmReq}); err != nil {
+	if _, err := h(context.Background(), &agent.Frame{ID: "r1", Op: agent.OpControl, Action: agent.ControlMapRemove, Payload: rmReq}); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 0 {
@@ -77,16 +78,16 @@ func TestGuestMapRemoveCrossVMRejected(t *testing.T) {
 	}
 	h := s.guestControlHandlerWithPush("dev1", okPush)
 	rmReq, _ := json.Marshal(agent.MapRemoveRequest{HostPort: 18091, Proto: "tcp"})
-	_, err := h(&agent.Frame{ID: "r1", Op: agent.OpControl, Action: agent.ControlMapRemove, Payload: rmReq})
-	if err == nil || !strings.Contains(err.Error(), "not mapped by this vm") {
-		t.Fatalf("cross-vm remove = %v, want ownership error", err)
+	_, err := h(context.Background(), &agent.Frame{ID: "r1", Op: agent.OpControl, Action: agent.ControlMapRemove, Payload: rmReq})
+	if err == nil || !strings.Contains(err.Error(), "no tcp map on port 18091") {
+		t.Fatalf("cross-vm remove = %v, want not-found error", err)
 	}
 	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 1 || got[0].VM != "dev2" {
 		t.Fatalf("dev2's map must survive, store: %+v", got)
 	}
 	// dev2 itself may remove it.
 	h2 := s.guestControlHandlerWithPush("dev2", okPush)
-	if _, err := h2(&agent.Frame{ID: "r2", Op: agent.OpControl, Action: agent.ControlMapRemove, Payload: rmReq}); err != nil {
+	if _, err := h2(context.Background(), &agent.Frame{ID: "r2", Op: agent.OpControl, Action: agent.ControlMapRemove, Payload: rmReq}); err != nil {
 		t.Fatalf("owner remove: %v", err)
 	}
 	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 0 {
@@ -94,11 +95,38 @@ func TestGuestMapRemoveCrossVMRejected(t *testing.T) {
 	}
 }
 
+// A guest must not be able to distinguish "port mapped by another VM"
+// from "port not mapped at all": for the same port, the error must be
+// identical whether another VM owns it or nothing is mapped.
+func TestGuestMapRemoveErrorIsIndistinguishable(t *testing.T) {
+	s, dev1, dev2 := newMapTestServer(t)
+	const port = 18091
+	if _, err := s.Clusters.AddMap(dev1.ClusterID, "dev2", dev2.IP, port, 80, "tcp"); err != nil {
+		t.Fatal(err)
+	}
+	h := s.guestControlHandlerWithPush("dev1", okPush)
+	rmReq, _ := json.Marshal(agent.MapRemoveRequest{HostPort: port, Proto: "tcp"})
+	_, errOwned := h(context.Background(), &agent.Frame{ID: "r1", Op: agent.OpControl, Action: agent.ControlMapRemove, Payload: rmReq})
+
+	// Same port, now unmapped: the error must read exactly the same.
+	if _, err := s.Clusters.RemoveMap(dev1.ClusterID, port, "tcp"); err != nil {
+		t.Fatal(err)
+	}
+	_, errUnmapped := h(context.Background(), &agent.Frame{ID: "r2", Op: agent.OpControl, Action: agent.ControlMapRemove, Payload: rmReq})
+
+	if errOwned == nil || errUnmapped == nil {
+		t.Fatalf("both removes must fail: %v / %v", errOwned, errUnmapped)
+	}
+	if errOwned.Error() != errUnmapped.Error() {
+		t.Fatalf("errors must be indistinguishable: %q vs %q", errOwned, errUnmapped)
+	}
+}
+
 func TestGuestMapRemoveMissing(t *testing.T) {
 	s, _, _ := newMapTestServer(t)
 	h := s.guestControlHandler("dev1")
 	rmReq, _ := json.Marshal(agent.MapRemoveRequest{HostPort: 18092})
-	_, err := h(&agent.Frame{ID: "r1", Op: agent.OpControl, Action: agent.ControlMapRemove, Payload: rmReq})
+	_, err := h(context.Background(), &agent.Frame{ID: "r1", Op: agent.OpControl, Action: agent.ControlMapRemove, Payload: rmReq})
 	if err == nil || !strings.Contains(err.Error(), "no tcp map on port 18092") {
 		t.Fatalf("missing remove = %v", err)
 	}
@@ -106,24 +134,64 @@ func TestGuestMapRemoveMissing(t *testing.T) {
 
 func TestGuestMapRemoveRollbackOnPushFailure(t *testing.T) {
 	s, dev1, _ := newMapTestServer(t)
-	if _, err := s.Clusters.AddMap(dev1.ClusterID, "dev1", dev1.IP, 18093, 80, "tcp"); err != nil {
+	port := freePort(t, "tcp")
+	if _, err := s.Clusters.AddMap(dev1.ClusterID, "dev1", dev1.IP, port, 80, "tcp"); err != nil {
 		t.Fatal(err)
 	}
-	push := func(clusterID int) error { return errors.New("gateway away") }
-	rmReq, _ := json.Marshal(agent.MapRemoveRequest{HostPort: 18093})
-	_, err := s.guestMapRemove("dev1", rmReq, push)
+	pushes := 0
+	push := func(clusterID int) error {
+		pushes++
+		return errors.New("gateway away")
+	}
+	rmReq, _ := json.Marshal(agent.MapRemoveRequest{HostPort: port})
+	_, err := s.guestMapRemove(context.Background(), "dev1", rmReq, push)
 	if err == nil || !strings.Contains(err.Error(), "rolled back") {
 		t.Fatalf("remove with failing push = %v, want rollback", err)
+	}
+	if pushes != 2 {
+		t.Fatalf("push calls = %d, want remove push + rollback re-push", pushes)
 	}
 	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 1 {
 		t.Fatalf("map must be restored after failed push, store: %+v", got)
 	}
 }
 
+// The first push may apply the config and still return an error; the
+// rollback must re-push the restored state and succeed.
+func TestGuestMapRemoveRollbackRepushesRestoredState(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	port := freePort(t, "tcp")
+	if _, err := s.Clusters.AddMap(dev1.ClusterID, "dev1", dev1.IP, port, 80, "tcp"); err != nil {
+		t.Fatal(err)
+	}
+	pushes := 0
+	push := func(clusterID int) error {
+		pushes++
+		if pushes == 1 {
+			return errors.New("apply acknowledged then ssh dropped")
+		}
+		return nil
+	}
+	rmReq, _ := json.Marshal(agent.MapRemoveRequest{HostPort: port})
+	_, err := s.guestMapRemove(context.Background(), "dev1", rmReq, push)
+	if err == nil || !strings.Contains(err.Error(), "rolled back") {
+		t.Fatalf("remove = %v, want rolled-back error", err)
+	}
+	if pushes != 2 {
+		t.Fatalf("push calls = %d, want the restore push to run", pushes)
+	}
+	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 1 || got[0].HostPort != port {
+		t.Fatalf("restored store: %+v", got)
+	}
+	if err := portFree("tcp", port); err == nil {
+		t.Fatal("relay must be restored by the rollback")
+	}
+}
+
 func TestGuestControlUnknownAction(t *testing.T) {
 	s, _, _ := newMapTestServer(t)
 	h := s.guestControlHandler("dev1")
-	_, err := h(&agent.Frame{ID: "x1", Op: agent.OpControl, Action: "vm.delete"})
+	_, err := h(context.Background(), &agent.Frame{ID: "x1", Op: agent.OpControl, Action: "vm.delete"})
 	if err == nil || !strings.Contains(err.Error(), "unknown control action") {
 		t.Fatalf("unknown action = %v", err)
 	}
@@ -132,12 +200,12 @@ func TestGuestControlUnknownAction(t *testing.T) {
 func TestGuestMapAddMalformed(t *testing.T) {
 	s, dev1, _ := newMapTestServer(t)
 	h := s.guestControlHandler("dev1")
-	if _, err := h(&agent.Frame{ID: "a1", Op: agent.OpControl, Action: agent.ControlMapAdd, Payload: json.RawMessage(`{`)}); err == nil ||
+	if _, err := h(context.Background(), &agent.Frame{ID: "a1", Op: agent.OpControl, Action: agent.ControlMapAdd, Payload: json.RawMessage(`{`)}); err == nil ||
 		!strings.Contains(err.Error(), "bad map.add payload") {
 		t.Fatalf("bad json = %v", err)
 	}
 	bad, _ := json.Marshal(agent.MapAddRequest{GuestPort: 0})
-	if _, err := h(&agent.Frame{ID: "a2", Op: agent.OpControl, Action: agent.ControlMapAdd, Payload: bad}); err == nil ||
+	if _, err := h(context.Background(), &agent.Frame{ID: "a2", Op: agent.OpControl, Action: agent.ControlMapAdd, Payload: bad}); err == nil ||
 		!strings.Contains(err.Error(), "guest_port") {
 		t.Fatalf("bad guest port = %v", err)
 	}
@@ -150,7 +218,7 @@ func TestGuestMapAddBadProto(t *testing.T) {
 	s, _, _ := newMapTestServer(t)
 	h := s.guestControlHandler("dev1")
 	req, _ := json.Marshal(agent.MapAddRequest{HostPort: freePort(t, "tcp"), GuestPort: 80, Proto: "sctp"})
-	_, err := h(&agent.Frame{ID: "a1", Op: agent.OpControl, Action: agent.ControlMapAdd, Payload: req})
+	_, err := h(context.Background(), &agent.Frame{ID: "a1", Op: agent.OpControl, Action: agent.ControlMapAdd, Payload: req})
 	if err == nil || !strings.Contains(err.Error(), "proto must be tcp|udp") {
 		t.Fatalf("bad proto = %v", err)
 	}
@@ -402,5 +470,106 @@ func TestAgentClientControlEndToEnd(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("no control result on the agent channel")
+	}
+}
+
+// A daemon restart leaves both the watch generation and the watcher
+// registry at zero; recovery must still start the control watcher for
+// VMs that stayed up (no watchVM bump happens in that path).
+func TestEnsureControlWatcherSeqZeroRecover(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	markVMRunning(t, s, "dev1")
+	fake := startFakeGuest(t, s.P.AgentSock("dev1"), nil)
+
+	s.ensureControlWatcher(dev1) // no watchVM: the daemon-restart path
+	waitFor(t, 5*time.Second, func() bool { return fake.connections() == 1 })
+
+	// A second ensure for the same generation must not stack a watcher.
+	s.ensureControlWatcher(dev1)
+	time.Sleep(200 * time.Millisecond)
+	if fake.maxConnections() > 1 {
+		t.Fatalf("duplicate watcher, max connections %d", fake.maxConnections())
+	}
+}
+
+// A port persisted by another cluster without a live relay (recovery
+// failed or has not run) is still taken: neither the guest nor the host
+// add path may hijack it.
+func TestMapAddCrossClusterPersistedPortRejected(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	cl2, err := s.Clusters.Ensure(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	vnet, err := s.Clusters.AddVM(cl2.ID, "dev9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := freePort(t, "tcp")
+	if _, err := s.Clusters.AddMap(cl2.ID, "dev9", vnet.IP, port, 80, "tcp"); err != nil {
+		t.Fatal(err)
+	}
+	// No relay is bound for cluster 2's map (recovery failure case):
+	// the port is only persisted in the store.
+	if err := portFree("tcp", port); err != nil {
+		t.Fatal("test needs the port unbound on the host")
+	}
+
+	h := s.guestControlHandlerWithPush("dev1", okPush)
+	addReq, _ := json.Marshal(agent.MapAddRequest{HostPort: port, GuestPort: 80, Proto: "tcp"})
+	_, err = h(context.Background(), &agent.Frame{ID: "a1", Op: agent.OpControl, Action: agent.ControlMapAdd, Payload: addReq})
+	if err == nil || !strings.Contains(err.Error(), "already mapped") {
+		t.Fatalf("guest add on persisted port = %v, want conflict", err)
+	}
+	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 0 {
+		t.Fatalf("no map may be created in cluster 1, store: %+v", got)
+	}
+
+	// The host add path shares the same global check.
+	m, code, err := s.addMap(context.Background(), dev1, port, 80, "tcp", okPush)
+	if err == nil || code != 409 {
+		t.Fatalf("host add on persisted port = %v %d %v, want 409", m, code, err)
+	}
+}
+
+// Concurrent adds of the same port serialize: exactly one wins, and
+// concurrent add/remove mixes leave the store consistent.
+func TestMapMutationSerializedConcurrent(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	port := freePort(t, "tcp")
+	h := s.guestControlHandlerWithPush("dev1", okPush)
+
+	const n = 8
+	var wg sync.WaitGroup
+	addReq, _ := json.Marshal(agent.MapAddRequest{HostPort: port, GuestPort: 80, Proto: "tcp"})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h(context.Background(), &agent.Frame{ID: "a", Op: agent.OpControl, Action: agent.ControlMapAdd, Payload: addReq})
+		}()
+	}
+	wg.Wait()
+	maps := s.Clusters.Get(dev1.ClusterID).Maps
+	if len(maps) != 1 || maps[0].HostPort != port {
+		t.Fatalf("concurrent adds must collapse to one map, store: %+v", maps)
+	}
+
+	// Mixed removes of the same port: all succeed or exactly one fails
+	// with not-found; the store ends empty with the relay released.
+	rmReq, _ := json.Marshal(agent.MapRemoveRequest{HostPort: port, Proto: "tcp"})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h(context.Background(), &agent.Frame{ID: "r", Op: agent.OpControl, Action: agent.ControlMapRemove, Payload: rmReq})
+		}()
+	}
+	wg.Wait()
+	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 0 {
+		t.Fatalf("store after concurrent removes: %+v", got)
+	}
+	if err := portFree("tcp", port); err != nil {
+		t.Fatal("relay must be released after removes")
 	}
 }

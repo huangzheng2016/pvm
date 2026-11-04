@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,7 +26,7 @@ func controlPair(t *testing.T, h ControlHandler) (*Server, *Client) {
 }
 
 func TestControlRoundTrip(t *testing.T) {
-	srv, _ := controlPair(t, func(req *Frame) ([]byte, error) {
+	srv, _ := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
 		if req.Action != ControlMapList {
 			t.Errorf("action = %q", req.Action)
 		}
@@ -45,7 +46,7 @@ func TestControlRoundTrip(t *testing.T) {
 }
 
 func TestControlHandlerError(t *testing.T) {
-	srv, _ := controlPair(t, func(req *Frame) ([]byte, error) {
+	srv, _ := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
 		return nil, fmt.Errorf("unknown control action %q", req.Action)
 	})
 	waitSession(t, srv)
@@ -73,7 +74,7 @@ func TestControlSessionDropFailsPending(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(guest) }()
 	c := &Client{conn: host, w: newFrameWriter(host), r: bufioReader(host), pending: map[string]chan Frame{}}
-	c.HandleControl(func(req *Frame) ([]byte, error) {
+	c.HandleControl(func(ctx context.Context, req *Frame) ([]byte, error) {
 		select {} // never answer
 	})
 	go c.readLoop()
@@ -100,7 +101,7 @@ func TestControlSessionDropFailsPending(t *testing.T) {
 
 func TestControlReconnect(t *testing.T) {
 	srv := NewServer()
-	handler := func(req *Frame) ([]byte, error) {
+	handler := func(ctx context.Context, req *Frame) ([]byte, error) {
 		return json.Marshal(MapListResponse{Maps: []MapEntry{}})
 	}
 
@@ -153,7 +154,7 @@ func waitSession(t *testing.T, srv *Server) {
 }
 
 func TestControlConcurrentExec(t *testing.T) {
-	srv, c := controlPair(t, func(req *Frame) ([]byte, error) {
+	srv, c := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
 		return json.Marshal(MapListResponse{Maps: []MapEntry{}})
 	})
 	const n = 8
@@ -194,7 +195,7 @@ func TestControlConcurrentExec(t *testing.T) {
 }
 
 func TestControlConcurrentControls(t *testing.T) {
-	srv, _ := controlPair(t, func(req *Frame) ([]byte, error) {
+	srv, _ := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
 		var in MapAddRequest
 		if err := json.Unmarshal(req.Payload, &in); err != nil {
 			return nil, err
@@ -232,7 +233,7 @@ func TestControlConcurrentControls(t *testing.T) {
 }
 
 func TestControlTimeout(t *testing.T) {
-	srv, _ := controlPair(t, func(req *Frame) ([]byte, error) {
+	srv, _ := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
 		time.Sleep(300 * time.Millisecond)
 		return []byte(`{}`), nil
 	})
@@ -252,7 +253,7 @@ func TestControlTimeout(t *testing.T) {
 }
 
 func TestControlOversizedPayload(t *testing.T) {
-	srv, _ := controlPair(t, func(req *Frame) ([]byte, error) {
+	srv, _ := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
 		return []byte(`{}`), nil
 	})
 	big := bytes.Repeat([]byte("x"), MaxControlPayloadBytes+1)
@@ -270,7 +271,7 @@ func TestControlOversizedRequestRejected(t *testing.T) {
 	defer guest.Close()
 	called := make(chan struct{}, 1)
 	c := &Client{conn: host, w: newFrameWriter(host), r: bufioReader(host), pending: map[string]chan Frame{}}
-	c.HandleControl(func(req *Frame) ([]byte, error) {
+	c.HandleControl(func(ctx context.Context, req *Frame) ([]byte, error) {
 		called <- struct{}{}
 		return []byte(`{}`), nil
 	})
@@ -294,7 +295,7 @@ func TestControlOversizedRequestRejected(t *testing.T) {
 }
 
 func TestControlResultTooLarge(t *testing.T) {
-	srv, _ := controlPair(t, func(req *Frame) ([]byte, error) {
+	srv, _ := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
 		return bytes.Repeat([]byte("x"), MaxControlPayloadBytes+1), nil
 	})
 	_, err := srv.Control(ControlMapList, nil, 5*time.Second)
@@ -340,7 +341,7 @@ func TestServeUnknownOpStillAnswered(t *testing.T) {
 }
 
 func TestControlCallBrokerRoundTrip(t *testing.T) {
-	srv, _ := controlPair(t, func(req *Frame) ([]byte, error) {
+	srv, _ := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
 		var in MapAddRequest
 		if err := json.Unmarshal(req.Payload, &in); err != nil {
 			return nil, err
@@ -361,7 +362,7 @@ func TestControlCallBrokerRoundTrip(t *testing.T) {
 }
 
 func TestControlCallBrokerErrorPropagates(t *testing.T) {
-	srv, _ := controlPair(t, func(req *Frame) ([]byte, error) {
+	srv, _ := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
 		return nil, errors.New("port 80/tcp is not mapped by this vm")
 	})
 	sock := brokerSock(t)
@@ -457,4 +458,113 @@ func waitBroker(t *testing.T, sock string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("broker did not start")
+}
+
+func TestControlConcurrencyLimit(t *testing.T) {
+	entered := make(chan struct{}, maxConcurrentControls+4)
+	release := make(chan struct{})
+	srv, _ := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
+		entered <- struct{}{}
+		<-release
+		return []byte(`{}`), nil
+	})
+
+	const extra = 3
+	var wg sync.WaitGroup
+	errs := make(chan error, maxConcurrentControls+extra)
+	for i := 0; i < maxConcurrentControls+extra; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := srv.Control(ControlMapList, nil, 20*time.Second)
+			errs <- err
+		}()
+	}
+	// While the first maxConcurrentControls handlers are blocked, the
+	// excess requests must be refused, not queued: `extra` busy errors
+	// prove the semaphore was saturated at dispatch time.
+	busy := 0
+	for busy < extra {
+		select {
+		case err := <-errs:
+			if err != nil && strings.Contains(err.Error(), "control busy") {
+				busy++
+			} else {
+				t.Fatalf("expected control busy, got %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d/%d excess requests refused", busy, extra)
+		}
+	}
+	close(release)
+	wg.Wait()
+	close(errs)
+	done := 0
+	for err := range errs {
+		if err == nil {
+			done++
+		}
+	}
+	if done != maxConcurrentControls {
+		t.Fatalf("served = %d, want %d", done, maxConcurrentControls)
+	}
+}
+
+func TestControlHandlerDeadline(t *testing.T) {
+	old := controlHandlerTimeout
+	controlHandlerTimeout = 100 * time.Millisecond
+	defer func() { controlHandlerTimeout = old }()
+
+	srv, _ := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	start := time.Now()
+	_, err := srv.Control(ControlMapList, nil, 20*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "deadline") {
+		t.Fatalf("want deadline error, got %v", err)
+	}
+	if d := time.Since(start); d < 100*time.Millisecond || d > 10*time.Second {
+		t.Fatalf("deadline not enforced, took %v", d)
+	}
+}
+
+func TestControlDisconnectCancelsHandler(t *testing.T) {
+	host, guest := net.Pipe()
+	srv := NewServer()
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- srv.Serve(guest) }()
+	handlerDone := make(chan error, 1)
+	c := &Client{
+		conn:    host,
+		w:       newFrameWriter(host),
+		r:       bufioReader(host),
+		pending: map[string]chan Frame{},
+		done:    make(chan struct{}),
+	}
+	c.HandleControl(func(ctx context.Context, req *Frame) ([]byte, error) {
+		<-ctx.Done() // cancelled by the disconnect, not by the deadline
+		handlerDone <- ctx.Err()
+		return nil, ctx.Err()
+	})
+	go c.readLoop()
+	waitSession(t, srv)
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := srv.Control(ControlMapList, nil, time.Minute)
+		errCh <- err
+	}()
+	time.Sleep(100 * time.Millisecond) // let the handler start
+	c.Close()                          // connection drops
+	select {
+	case err := <-handlerDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("handler ctx err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler was not cancelled on disconnect")
+	}
+	<-errCh
+	<-serveDone
 }

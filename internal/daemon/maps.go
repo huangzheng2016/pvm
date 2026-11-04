@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -44,7 +45,9 @@ func (s *Server) handleMapAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err)
 		return
 	}
-	m, code, err := s.addMap(spec, req.HostPort, req.GuestPort, req.Proto, s.pushGatewayConfig)
+	s.mapMu.Lock()
+	defer s.mapMu.Unlock()
+	m, code, err := s.addMap(r.Context(), spec, req.HostPort, req.GuestPort, req.Proto, s.pushGatewayConfig)
 	if err != nil {
 		writeErr(w, code, err)
 		return
@@ -55,7 +58,9 @@ func (s *Server) handleMapAdd(w http.ResponseWriter, r *http.Request) {
 // addMap validates and installs a host->guest port mapping for spec,
 // rolling back on relay or gateway-config failure. The status return is
 // the HTTP code for API callers; the guest control path only uses err.
-func (s *Server) addMap(spec *vm.Spec, hostPort, guestPort int, proto string, push func(int) error) (*cluster.PortMap, int, error) {
+// Callers hold mapMu: the global port/proto ownership check and the
+// mutation must be atomic against every other map add/remove/rollback.
+func (s *Server) addMap(ctx context.Context, spec *vm.Spec, hostPort, guestPort int, proto string, push func(int) error) (*cluster.PortMap, int, error) {
 	if spec.Role == "gateway" || spec.ClusterID == 0 {
 		return nil, 400, fmt.Errorf("vm %s is not a cluster vm", spec.Name)
 	}
@@ -63,7 +68,7 @@ func (s *Server) addMap(spec *vm.Spec, hostPort, guestPort int, proto string, pu
 		proto = "tcp"
 	}
 	if hostPort == 0 {
-		port, err := freeLoopbackPort(proto)
+		port, err := s.freeMapPort(proto)
 		if err != nil {
 			return nil, 500, err
 		}
@@ -72,8 +77,16 @@ func (s *Server) addMap(spec *vm.Spec, hostPort, guestPort int, proto string, pu
 	if hostPort < 1024 || hostPort > 65535 {
 		return nil, 400, fmt.Errorf("host_port must be 1024-65535")
 	}
+	// Ownership is global: a port persisted by another cluster without
+	// a live relay is still taken and must not be hijackable.
+	if s.mapPortInUse(hostPort, proto) {
+		return nil, 409, fmt.Errorf("host port %d/%s already mapped", hostPort, proto)
+	}
 	if err := portFree(proto, hostPort); err != nil {
 		return nil, 409, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, 500, err
 	}
 
 	m, err := s.Clusters.AddMap(spec.ClusterID, spec.Name, spec.IP, hostPort, guestPort, proto)
@@ -81,6 +94,11 @@ func (s *Server) addMap(spec *vm.Spec, hostPort, guestPort int, proto string, pu
 		return nil, 409, err
 	}
 	if err := s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort); err != nil {
+		_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
+		return nil, 500, err
+	}
+	if err := ctx.Err(); err != nil {
+		s.relays.Remove(m.Proto, m.HostPort)
 		_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
 		return nil, 500, err
 	}
@@ -93,6 +111,33 @@ func (s *Server) addMap(spec *vm.Spec, hostPort, guestPort int, proto string, pu
 	return m, 201, nil
 }
 
+// mapPortInUse reports whether any cluster already persists hostPort
+// with proto, regardless of whether its relay is currently bound.
+func (s *Server) mapPortInUse(hostPort int, proto string) bool {
+	for _, cl := range s.Clusters.List() {
+		for _, m := range cl.Maps {
+			if m.HostPort == hostPort && m.Proto == proto {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// freeMapPort picks a loopback port that is both bindable and not
+// persisted by any cluster.
+func (s *Server) freeMapPort(proto string) (int, error) {
+	for p := 18080; p < 18080+2000; p++ {
+		if s.mapPortInUse(p, proto) {
+			continue
+		}
+		if portFree(proto, p) == nil {
+			return p, nil
+		}
+	}
+	return 0, fmt.Errorf("no free loopback port")
+}
+
 func (s *Server) handleMapRemove(w http.ResponseWriter, r *http.Request) {
 	port, err := strconv.Atoi(r.PathValue("port"))
 	if err != nil {
@@ -100,6 +145,8 @@ func (s *Server) handleMapRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proto := r.PathValue("proto")
+	s.mapMu.Lock()
+	defer s.mapMu.Unlock()
 	previous := s.Clusters.List()
 	rollback := func() {
 		for _, cl := range previous {

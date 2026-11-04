@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,10 +20,20 @@ const ControlSock = "/run/pvm/control.sock"
 // MaxControlPayloadBytes bounds a control request or result payload.
 const MaxControlPayloadBytes = 64 << 10
 
+// maxConcurrentControls caps concurrently running host handlers per
+// agent connection.
+const maxConcurrentControls = 8
+
 // controlCallTimeout bounds one brokered control round trip. The host
 // side bounds its own work (ssh/gateway push timeouts), so this only
 // guards a silent channel.
 const controlCallTimeout = 30 * time.Second
+
+// controlHandlerTimeout bounds one host-side control handler: the guest
+// broker gives up at controlCallTimeout, so the host stops earlier and
+// its error still reaches the guest. It is a variable so tests can
+// shorten it.
+var controlHandlerTimeout = 25 * time.Second
 
 // Control actions a guest may request; the host rejects anything else.
 const (
@@ -61,8 +72,9 @@ type MapRemoveRequest struct {
 
 // ControlHandler answers a guest-initiated control request; the
 // returned payload becomes the result frame. The host binds the VM
-// identity to the channel, never to request fields.
-type ControlHandler func(req *Frame) ([]byte, error)
+// identity to the channel, never to request fields. The context carries
+// an overall deadline and is cancelled when the connection drops.
+type ControlHandler func(ctx context.Context, req *Frame) ([]byte, error)
 
 func newControlID() string {
 	return "c" + newID()

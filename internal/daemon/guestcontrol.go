@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -20,19 +21,21 @@ func (s *Server) guestControlHandler(vmName string) agent.ControlHandler {
 }
 
 func (s *Server) guestControlHandlerWithPush(vmName string, push func(int) error) agent.ControlHandler {
-	return func(req *agent.Frame) ([]byte, error) {
+	return func(ctx context.Context, req *agent.Frame) ([]byte, error) {
 		switch req.Action {
 		case agent.ControlMapList:
 			return s.guestMapList(vmName)
 		case agent.ControlMapAdd:
-			return s.guestMapAdd(vmName, req.Payload, push)
+			return s.guestMapAdd(ctx, vmName, req.Payload, push)
 		case agent.ControlMapRemove:
-			return s.guestMapRemove(vmName, req.Payload, push)
+			return s.guestMapRemove(ctx, vmName, req.Payload, push)
 		}
 		return nil, fmt.Errorf("unknown control action %q", req.Action)
 	}
 }
 
+// guestMapList is a point-in-time scan of the store snapshot; it never
+// blocks behind map mutations.
 func (s *Server) guestMapList(vmName string) ([]byte, error) {
 	resp := agent.MapListResponse{Maps: []agent.MapEntry{}}
 	for _, cl := range s.Clusters.List() {
@@ -45,7 +48,7 @@ func (s *Server) guestMapList(vmName string) ([]byte, error) {
 	return json.Marshal(resp)
 }
 
-func (s *Server) guestMapAdd(vmName string, payload []byte, push func(int) error) ([]byte, error) {
+func (s *Server) guestMapAdd(ctx context.Context, vmName string, payload []byte, push func(int) error) ([]byte, error) {
 	var req agent.MapAddRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, fmt.Errorf("bad map.add payload: %v", err)
@@ -53,11 +56,13 @@ func (s *Server) guestMapAdd(vmName string, payload []byte, push func(int) error
 	if req.GuestPort <= 0 || req.GuestPort > 65535 {
 		return nil, fmt.Errorf("guest_port must be 1-65535")
 	}
+	s.mapMu.Lock()
+	defer s.mapMu.Unlock()
 	spec, err := s.getSpec(vmName)
 	if err != nil {
 		return nil, err
 	}
-	m, _, err := s.addMap(spec, req.HostPort, req.GuestPort, req.Proto, push)
+	m, _, err := s.addMap(ctx, spec, req.HostPort, req.GuestPort, req.Proto, push)
 	if err != nil {
 		return nil, err
 	}
@@ -66,8 +71,9 @@ func (s *Server) guestMapAdd(vmName string, payload []byte, push func(int) error
 
 // guestMapRemove deletes a mapping only when it belongs to the calling
 // VM; the global host API's remove-by-port semantics are deliberately
-// not reachable from the guest.
-func (s *Server) guestMapRemove(vmName string, payload []byte, push func(int) error) ([]byte, error) {
+// not reachable from the guest. "Not present" and "owned by another
+// VM" return the same error so guests cannot probe other VMs' maps.
+func (s *Server) guestMapRemove(ctx context.Context, vmName string, payload []byte, push func(int) error) ([]byte, error) {
 	var req agent.MapRemoveRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, fmt.Errorf("bad map.remove payload: %v", err)
@@ -80,14 +86,13 @@ func (s *Server) guestMapRemove(vmName string, payload []byte, push func(int) er
 		proto = "tcp"
 	}
 
+	s.mapMu.Lock()
+	defer s.mapMu.Unlock()
 	var owner *cluster.Cluster
 	var owned *cluster.PortMap
 	for _, cl := range s.Clusters.List() {
 		for _, m := range cl.Maps {
-			if m.HostPort == req.HostPort && m.Proto == proto {
-				if m.VM != vmName {
-					return nil, fmt.Errorf("port %d/%s is not mapped by this vm", req.HostPort, proto)
-				}
+			if m.HostPort == req.HostPort && m.Proto == proto && m.VM == vmName {
 				owner, owned = cl, m
 			}
 		}
@@ -107,8 +112,17 @@ func (s *Server) guestMapRemove(vmName string, payload []byte, push func(int) er
 		s.restoreMaps(owner.ID, previous)
 		return nil, fmt.Errorf("no %s map on port %d", proto, req.HostPort)
 	}
+	if err := ctx.Err(); err != nil {
+		s.restoreMaps(owner.ID, previous)
+		return nil, err
+	}
 	if err := push(owner.ID); err != nil {
 		s.restoreMaps(owner.ID, previous)
+		// The failed push may have applied the config before erroring;
+		// re-push the restored state so the gateway cannot diverge.
+		if rerr := push(owner.ID); rerr != nil {
+			log.Printf("guest control: rollback re-push cluster %d: %v", owner.ID, rerr)
+		}
 		return nil, fmt.Errorf("map removal rolled back after gateway push failed: %v", err)
 	}
 	return json.Marshal(struct{}{})
@@ -133,14 +147,16 @@ func mapEntry(m *cluster.PortMap) agent.MapEntry {
 // ensureControlWatcher starts the per-VM control reconnect watcher for
 // the VM's current watch generation, if that generation has no watcher
 // yet. A VM restart bumps the generation, so restarts never stack
-// watchers.
+// watchers. The entry-existence check matters: after a daemon restart
+// the generation is 0 and a bare == comparison would mistake the
+// missing entry for an already-running watcher and never reconnect.
 func (s *Server) ensureControlWatcher(spec *vm.Spec) {
 	seq := s.currentWatchSeq(spec.Name)
 	s.ctrlWatchMu.Lock()
 	if s.ctrlWatch == nil {
 		s.ctrlWatch = map[string]uint64{}
 	}
-	if s.ctrlWatch[spec.Name] == seq {
+	if cur, ok := s.ctrlWatch[spec.Name]; ok && cur == seq {
 		s.ctrlWatchMu.Unlock()
 		return
 	}
