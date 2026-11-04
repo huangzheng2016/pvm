@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -8,7 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/cluster"
@@ -301,10 +301,17 @@ func (s *Server) deployGatewayAgent(cl *cluster.Cluster) error {
 // and writes it into the gateway guest. Callers pass only the cluster
 // ID: rendering re-reads the store at push time, so a stale caller-held
 // copy can never roll back someone else's newer config. All pushes for
-// one gateway are serialized through a per-cluster mutex, and the guest
+// one gateway are serialized through a per-cluster gate, and the guest
 // file is replaced atomically (install to temp + mv), so concurrent
 // callers cannot interleave a truncated file.
 func (s *Server) pushGatewayConfig(clusterID int) error {
+	return s.pushGatewayConfigCtx(context.Background(), clusterID)
+}
+
+// pushGatewayConfigCtx is the context-aware variant: a cancelled ctx
+// aborts the gate wait and kills the scp/ssh children, so guest control
+// deadlines and disconnects actually stop the work.
+func (s *Server) pushGatewayConfigCtx(ctx context.Context, clusterID int) error {
 	cl := s.Clusters.Get(clusterID)
 	if cl == nil {
 		return fmt.Errorf("cluster %d not found", clusterID)
@@ -313,7 +320,7 @@ func (s *Server) pushGatewayConfig(clusterID int) error {
 	if err != nil {
 		return err
 	}
-	return s.renderGatewayConfigLocked(clusterID, func(cfg []byte) error {
+	return s.renderGatewayConfigLocked(ctx, clusterID, func(cfg []byte) error {
 		tmp, err := os.CreateTemp("", "pvm-gwcfg-*.json")
 		if err != nil {
 			return err
@@ -325,10 +332,10 @@ func (s *Server) pushGatewayConfig(clusterID int) error {
 		}
 		tmp.Close()
 		remote := gatewayRemoteTmp()
-		if err := s.scpTo(gwSpec, tmp.Name(), remote); err != nil {
+		if err := s.scpToCtx(ctx, gwSpec, tmp.Name(), remote); err != nil {
 			return err
 		}
-		out, err := s.sshRun(gwSpec, gatewayInstallCmd(remote))
+		out, err := s.sshRunCtx(ctx, gwSpec, gatewayInstallCmd(remote))
 		if err != nil {
 			return fmt.Errorf("install config: %v\n%s", err, out)
 		}
@@ -340,11 +347,15 @@ func (s *Server) pushGatewayConfig(clusterID int) error {
 // and invokes fn with a payload rendered from a fresh store snapshot.
 // Callers must not hold any cluster-derived state across fn — the
 // point is that everything fn sends reflects the store as of this call.
-func (s *Server) renderGatewayConfigLocked(clusterID int, fn func([]byte) error) error {
-	mu, _ := s.gwPushLocks.LoadOrStore(clusterID, &sync.Mutex{})
-	lock := mu.(*sync.Mutex)
-	lock.Lock()
-	defer lock.Unlock()
+func (s *Server) renderGatewayConfigLocked(ctx context.Context, clusterID int, fn func([]byte) error) error {
+	v, _ := s.gwPushLocks.LoadOrStore(clusterID, make(chan struct{}, 1))
+	gate := v.(chan struct{})
+	select {
+	case gate <- struct{}{}:
+		defer func() { <-gate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 
 	cl := s.Clusters.Get(clusterID)
 	if cl == nil {
@@ -423,11 +434,17 @@ func (s *Server) sshBaseArgs(spec *vm.Spec) ([]string, string, error) {
 // and would otherwise corrupt machine-parsed output (json, version
 // strings, region profiles). Failures include stderr for diagnosis.
 func (s *Server) sshRun(spec *vm.Spec, cmd string) (string, error) {
+	return s.sshRunCtx(context.Background(), spec, cmd)
+}
+
+// sshRunCtx kills the ssh child when ctx is done, so a cancelled
+// request does not leave the process running.
+func (s *Server) sshRunCtx(ctx context.Context, spec *vm.Spec, cmd string) (string, error) {
 	args, target, err := s.sshBaseArgs(spec)
 	if err != nil {
 		return "", err
 	}
-	c := exec.Command("ssh", append(args, target, cmd)...)
+	c := exec.CommandContext(ctx, "ssh", append(args, target, cmd)...)
 	var stdout, stderr strings.Builder
 	c.Stdout = &stdout
 	c.Stderr = &stderr
@@ -438,6 +455,10 @@ func (s *Server) sshRun(spec *vm.Spec, cmd string) (string, error) {
 }
 
 func (s *Server) scpTo(spec *vm.Spec, local, remote string) error {
+	return s.scpToCtx(context.Background(), spec, local, remote)
+}
+
+func (s *Server) scpToCtx(ctx context.Context, spec *vm.Spec, local, remote string) error {
 	base, target, err := s.sshBaseArgs(spec)
 	if err != nil {
 		return err
@@ -448,7 +469,7 @@ func (s *Server) scpTo(spec *vm.Spec, local, remote string) error {
 		}
 	}
 	args := append(base, local, target+":"+remote)
-	out, err := exec.Command("scp", args...).CombinedOutput()
+	out, err := exec.CommandContext(ctx, "scp", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("scp: %v\n%s", err, out)
 	}

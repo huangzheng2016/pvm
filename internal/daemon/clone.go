@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -85,19 +86,31 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
-	cleanup := func() {
-		s.Clusters.RemoveVM(cl.ID, req.NewName)
+	cleanup := func() error {
+		err := s.removeVMMember(cl.ID, req.NewName)
+		// The partial disk is untracked: always safe to remove, and the
+		// retry needs the directory gone.
 		_ = vm.Delete(s.P, req.NewName)
+		if err != nil {
+			return fmt.Errorf("membership cleanup incomplete (%v); retry the same clone to finish", err)
+		}
+		return nil
 	}
 
 	spec := vm.CloneSpec(src, req.NewName, vnet.IP, vnet.MAC)
 	if err := vm.CloneDisk(s.P, s.TC, src, spec); err != nil {
-		cleanup()
+		if cerr := cleanup(); cerr != nil {
+			writeErr(w, 500, fmt.Errorf("clone failed (%v) and %v", err, cerr))
+			return
+		}
 		writeErr(w, 500, err)
 		return
 	}
 	if err := spec.Save(s.P); err != nil {
-		cleanup()
+		if cerr := cleanup(); cerr != nil {
+			writeErr(w, 500, fmt.Errorf("clone failed (%v) and %v", err, cerr))
+			return
+		}
 		writeErr(w, 500, err)
 		return
 	}
@@ -107,69 +120,87 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	var added []*cluster.PortMap
-	committed := false
-	defer func() {
-		if committed {
+	// Inherit-ports commits under mapMu through the same validation as
+	// every other map creation (membership, global port ownership),
+	// without spanning the (slow) VM start below.
+	ctx, cancel := mapLockCtx()
+	added, code, err := s.cloneInheritMaps(ctx, spec, req.Maps)
+	cancel()
+	if err != nil {
+		if rerr := s.rollbackCloneVM(cl, spec); rerr != nil {
+			writeErr(w, 500, fmt.Errorf("clone failed (%v) and %v", err, rerr))
 			return
 		}
-		for _, pm := range added {
-			s.relays.Remove(pm.Proto, pm.HostPort)
-		}
-		_ = s.instance(spec).Stop()
-		s.removeLink(cl, spec.Name)
-		s.Clusters.RemoveVM(cl.ID, spec.Name)
-		_ = vm.Delete(s.P, spec.Name)
-		s.mu.Lock()
-		delete(s.vms, spec.Name)
-		s.mu.Unlock()
-		_ = s.pushGatewayConfig(cl.ID)
-	}()
-	for _, m := range req.Maps {
-		proto := m.Proto
-		if proto == "" {
-			proto = "tcp"
-		}
-		if m.GuestPort <= 0 || m.GuestPort > 65535 {
-			writeErr(w, 400, fmt.Errorf("guest_port %d out of range", m.GuestPort))
-			return
-		}
-		if m.HostPort < 1024 || m.HostPort > 65535 {
-			writeErr(w, 400, fmt.Errorf("host_port %d must be 1024-65535", m.HostPort))
-			return
-		}
-		if err := portFree(proto, m.HostPort); err != nil {
-			writeErr(w, 409, fmt.Errorf("map %d:%d/%s: %w", m.HostPort, m.GuestPort, proto, err))
-			return
-		}
-		pm, err := s.Clusters.AddMap(cl.ID, spec.Name, spec.IP, m.HostPort, m.GuestPort, proto)
-		if err != nil {
-			writeErr(w, 409, err)
-			return
-		}
-		if err := s.relays.Ensure(pm.Proto, pm.HostPort, pm.PoolPort); err != nil {
-			_, _ = s.Clusters.RemoveMap(cl.ID, pm.HostPort, pm.Proto)
-			writeErr(w, 500, err)
-			return
-		}
-		added = append(added, pm)
-	}
-	if len(added) > 0 {
-		if err := s.pushGatewayConfig(cl.ID); err != nil {
-			writeErr(w, 500, fmt.Errorf("clone created but gateway config push failed: %w", err))
-			return
-		}
+		writeErr(w, code, err)
+		return
 	}
 
 	if req.Start {
 		if _, _, err := s.startVM(spec); err != nil {
+			if rerr := s.rollbackCloneVM(cl, spec); rerr != nil {
+				writeErr(w, 500, fmt.Errorf("cloned but start failed (%v) and %v", err, rerr))
+				return
+			}
 			writeErr(w, 500, fmt.Errorf("cloned but start failed: %w", err))
 			return
 		}
 		s.ensureAgentAsync(spec)
 		s.maybeIdentityReset(spec)
 	}
-	committed = true
 	writeJSON(w, 201, map[string]any{"spec": spec, "maps": added, "running": req.Start})
+}
+
+// rollbackCloneVM removes a clone whose creation failed after the spec
+// existed: maps/relays from the latest store, then the VM itself. On
+// lock timeout nothing is deleted and the returned error tells the
+// caller to finish with `pvm rm` (idempotent).
+func (s *Server) rollbackCloneVM(cl *cluster.Cluster, spec *vm.Spec) error {
+	ctx, cancel := context.WithTimeout(context.Background(), rollbackLockTimeout)
+	defer cancel()
+	if err := s.mapMu.Lock(ctx); err != nil {
+		return fmt.Errorf("cleanup incomplete (map lock: %v); run `pvm rm %s` to finish", err, spec.Name)
+	}
+	defer s.mapMu.Unlock()
+	// Clean up from the latest store, not just the inherited maps: a
+	// map committed for the clone after the snapshot must not orphan
+	// its relay.
+	s.removeVMMapsLocked(cl.ID, spec.Name)
+	_ = s.pushBounded(cl.ID)
+	_ = s.instance(spec).Stop()
+	s.removeLink(cl, spec.Name)
+	_ = vm.Delete(s.P, spec.Name)
+	s.mu.Lock()
+	delete(s.vms, spec.Name)
+	s.mu.Unlock()
+	return nil
+}
+
+// cloneInheritMaps installs the clone's inherited port maps under
+// mapMu through the same validation and commit path as every other map
+// creation (membership, global port/proto ownership, per-map push and
+// rollback). The HTTP status return matches the host map API's codes.
+func (s *Server) cloneInheritMaps(ctx context.Context, spec *vm.Spec, maps []cloneMapRequest) ([]*cluster.PortMap, int, error) {
+	if err := s.mapMu.Lock(ctx); err != nil {
+		return nil, 500, err
+	}
+	defer s.mapMu.Unlock()
+	var added []*cluster.PortMap
+	for _, m := range maps {
+		if m.GuestPort <= 0 || m.GuestPort > 65535 {
+			return nil, 400, fmt.Errorf("guest_port %d out of range", m.GuestPort)
+		}
+		// The clone API has always required an explicit host port; 0 is
+		// not auto-assigned here even though plain map add supports it.
+		if m.HostPort < 1024 || m.HostPort > 65535 {
+			return nil, 400, fmt.Errorf("host_port %d must be 1024-65535", m.HostPort)
+		}
+		pm, code, err := s.addMap(ctx, spec, m.HostPort, m.GuestPort, m.Proto, s.relays.Ensure, s.pushGatewayConfigCtx)
+		if err != nil {
+			return nil, code, fmt.Errorf("map %d:%d/%s: %w", m.HostPort, m.GuestPort, m.Proto, err)
+		}
+		added = append(added, pm)
+	}
+	return added, 0, nil
 }
 
 // The source's netplan pins DHCP to the source MAC, so a clone has no

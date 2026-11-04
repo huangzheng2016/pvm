@@ -2,7 +2,9 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,7 +26,18 @@ type Client struct {
 
 	mu      sync.Mutex
 	pending map[string]chan Frame
+	control ControlHandler
+	ctrlSem chan struct{}
+	busySem chan struct{}
 	closed  bool
+
+	// Per-client timeout overrides (zero = package default); tests
+	// shorten them without racing leaked goroutines on shared vars.
+	ctrlHandlerTimeout time.Duration
+	ctrlWriteTimeout   time.Duration
+
+	done     chan struct{} // closed on connection loss or Close
+	doneOnce sync.Once
 }
 
 // DialSock connects to the agent channel at a unix socket path.
@@ -39,6 +52,7 @@ func DialSock(sock string) (*Client, error) {
 		w:       newFrameWriter(conn),
 		r:       bufio.NewReaderSize(conn, 64<<10),
 		pending: map[string]chan Frame{},
+		done:    make(chan struct{}),
 	}
 	go c.readLoop()
 	return c, nil
@@ -50,6 +64,25 @@ func (c *Client) readLoop() {
 		if err := readFrame(c.r, &f); err != nil {
 			c.failAll(err)
 			return
+		}
+		if f.Op == OpControl {
+			// Bounded admission BEFORE any goroutine spawns: the
+			// semaphore caps running handlers, a smaller one caps
+			// in-flight refusals, and past both, frames are dropped
+			// (the guest's own request timeout is the backstop) — a
+			// flooding guest cannot accumulate host goroutines.
+			ctrlSem, busySem := c.controlSems()
+			select {
+			case ctrlSem <- struct{}{}:
+				go c.dispatchControl(&f)
+			default:
+				select {
+				case busySem <- struct{}{}:
+					go c.writeControlBusy(&f)
+				default:
+				}
+			}
+			continue
 		}
 		c.mu.Lock()
 		ch := c.pending[f.ID]
@@ -66,10 +99,119 @@ func (c *Client) readLoop() {
 	}
 }
 
+// HandleControl registers the handler for guest-initiated control
+// requests; the host daemon binds it to the VM owning this channel.
+// Call before the client is shared.
+func (c *Client) HandleControl(h ControlHandler) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.control = h
+}
+
+// controlSems lazily creates the admission semaphores (tests construct
+// Clients directly).
+func (c *Client) controlSems() (chan struct{}, chan struct{}) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ctrlSem == nil {
+		c.ctrlSem = make(chan struct{}, maxConcurrentControls)
+	}
+	if c.busySem == nil {
+		c.busySem = make(chan struct{}, maxConcurrentControlRefusals)
+	}
+	return c.ctrlSem, c.busySem
+}
+
+// dispatchControl runs an admitted control request; the semaphore slot
+// is released when the response write completes or times out.
+func (c *Client) dispatchControl(f *Frame) {
+	defer func() { <-c.ctrlSem }()
+	c.mu.Lock()
+	h := c.control
+	c.mu.Unlock()
+	resp := Frame{ID: f.ID}
+	switch {
+	case h == nil:
+		resp.Error = "control unsupported"
+	case len(f.Payload) > MaxControlPayloadBytes:
+		resp.Error = "control payload too large"
+	default:
+		resp.Op, resp.Payload, resp.Error = c.runControl(h, f)
+	}
+	if err := c.writeWithDeadline(&resp, time.Now().Add(c.writeTimeout())); err != nil {
+		c.kill(err)
+	}
+}
+
+func (c *Client) writeControlBusy(f *Frame) {
+	defer func() { <-c.busySem }()
+	if err := c.writeWithDeadline(&Frame{ID: f.ID, Error: "control busy"}, time.Now().Add(controlBusyWriteTimeout)); err != nil {
+		c.kill(err)
+	}
+}
+
+func (c *Client) handlerTimeout() time.Duration {
+	if c.ctrlHandlerTimeout > 0 {
+		return c.ctrlHandlerTimeout
+	}
+	return controlHandlerTimeout
+}
+
+func (c *Client) writeTimeout() time.Duration {
+	if c.ctrlWriteTimeout > 0 {
+		return c.ctrlWriteTimeout
+	}
+	return controlWriteTimeout
+}
+
+// kill tears the connection down after a failed control write: the
+// frameWriter latches the first error, so the channel stays poisoned
+// even if the peer resumes reading — closing it marks the client dead
+// (waking the daemon's watcher to redial a fresh one) and unblocks
+// every pending call.
+func (c *Client) kill(err error) {
+	c.failAll(err)
+	c.conn.Close()
+}
+
+// runControl executes the handler under an overall deadline that is
+// also cancelled when the connection drops, so abandoned requests stop
+// consuming host resources.
+func (c *Client) runControl(h ControlHandler, f *Frame) (string, json.RawMessage, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), c.handlerTimeout())
+	defer cancel()
+	if c.done != nil {
+		go func() {
+			select {
+			case <-c.done:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+	}
+	payload, err := h(ctx, f)
+	switch {
+	case err != nil:
+		return "", nil, err.Error()
+	case len(payload) > MaxControlPayloadBytes:
+		return "", nil, "control result too large"
+	default:
+		return OpResult, payload, ""
+	}
+}
+
+func (c *Client) signalDone() {
+	if c.done == nil {
+		return
+	}
+	c.doneOnce.Do(func() { close(c.done) })
+}
+
 func (c *Client) failAll(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closed = true
+	c.signalDone()
 	for id, ch := range c.pending {
 		delete(c.pending, id)
 		ch <- Frame{ID: id, Error: fmt.Sprintf("%v: %v", ErrUnreachable, err)}
@@ -78,6 +220,13 @@ func (c *Client) failAll(err error) {
 }
 
 func (c *Client) write(f *Frame) error {
+	return c.writeWithDeadline(f, time.Time{})
+}
+
+// writeWithDeadline serializes the frame write and bounds how long it
+// may stall on a peer that stopped reading; the deadline is cleared
+// afterwards so stream writes are unaffected.
+func (c *Client) writeWithDeadline(f *Frame, dl time.Time) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	c.mu.Lock()
@@ -85,6 +234,10 @@ func (c *Client) write(f *Frame) error {
 	c.mu.Unlock()
 	if closed {
 		return ErrUnreachable
+	}
+	if !dl.IsZero() {
+		c.conn.SetWriteDeadline(dl)
+		defer c.conn.SetWriteDeadline(time.Time{})
 	}
 	if err := c.w.write(f); err != nil {
 		return fmt.Errorf("%w: %v", ErrUnreachable, err)
@@ -193,7 +346,10 @@ func (c *Client) register(id string) chan Frame {
 	return ch
 }
 
-func (c *Client) Close() error { return c.conn.Close() }
+func (c *Client) Close() error {
+	c.signalDone()
+	return c.conn.Close()
+}
 
 func (c *Client) Closed() bool {
 	c.mu.Lock()

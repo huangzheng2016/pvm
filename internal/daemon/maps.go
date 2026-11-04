@@ -1,13 +1,16 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/huangzheng2016/pvm/internal/cluster"
+	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
 type mapRequest struct {
@@ -15,6 +18,44 @@ type mapRequest struct {
 	HostPort  int    `json:"host_port"` // 0 = auto
 	GuestPort int    `json:"guest_port"`
 	Proto     string `json:"proto"`
+}
+
+// mapGate is a context-aware mutual-exclusion gate for map mutations.
+// A cancelled waiter gives up instead of blocking past its deadline,
+// so a guest handler or HTTP request cannot pile up on a slow push.
+type mapGate chan struct{}
+
+func newMapGate() mapGate { return make(chan struct{}, 1) }
+
+func (g mapGate) Lock(ctx context.Context) error {
+	select {
+	case g <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (g mapGate) Unlock() { <-g }
+
+// mapPushTimeout bounds every gateway push made while holding mapMu
+// (main push and rollback alike) and the lock wait itself. It is a
+// variable so tests can shorten it.
+var mapPushTimeout = 30 * time.Second
+
+// rollbackLockTimeout is the lock budget for lifecycle rollbacks
+// (clone/create-start failure, delete). A single map operation can
+// hold the gate for at most two push timeouts (main push plus its
+// rollback push), so the rollback budget must exceed that — a
+// rollback that gives up earlier must NOT fall through to a
+// destructive delete, and one that waits this long will always get
+// the gate in practice. It is a variable so tests can shorten it.
+var rollbackLockTimeout = 150 * time.Second
+
+// mapLockCtx bounds a mapMu wait for lifecycle paths that have no
+// request context (clone, desktop, delete, recovery).
+func mapLockCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), mapPushTimeout)
 }
 
 func (s *Server) handleMapList(w http.ResponseWriter, r *http.Request) {
@@ -43,48 +84,129 @@ func (s *Server) handleMapAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err)
 		return
 	}
-	if spec.Role == "gateway" || spec.ClusterID == 0 {
-		writeErr(w, 400, fmt.Errorf("vm %s is not a cluster vm", req.VM))
-		return
-	}
-	if req.Proto == "" {
-		req.Proto = "tcp"
-	}
-	if req.HostPort == 0 {
-		port, err := freeLoopbackPort(req.Proto)
-		if err != nil {
-			writeErr(w, 500, err)
-			return
-		}
-		req.HostPort = port
-	}
-	if req.HostPort < 1024 || req.HostPort > 65535 {
-		writeErr(w, 400, fmt.Errorf("host_port must be 1024-65535"))
-		return
-	}
-	if err := portFree(req.Proto, req.HostPort); err != nil {
-		writeErr(w, 409, err)
-		return
-	}
-
-	m, err := s.Clusters.AddMap(spec.ClusterID, spec.Name, spec.IP, req.HostPort, req.GuestPort, req.Proto)
-	if err != nil {
-		writeErr(w, 409, err)
-		return
-	}
-	if err := s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort); err != nil {
-		_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
+	// One bounded context covers the lock wait and the gateway push:
+	// a hung ssh must not hold mapMu (and the caller) forever.
+	ctx, cancel := context.WithTimeout(r.Context(), mapPushTimeout)
+	defer cancel()
+	if err := s.mapMu.Lock(ctx); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	if err := s.pushGatewayConfig(spec.ClusterID); err != nil {
-		s.relays.Remove(m.Proto, m.HostPort)
-		_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
-		_ = s.pushGatewayConfig(spec.ClusterID)
-		writeErr(w, 500, fmt.Errorf("map rolled back after gateway config push failed: %w", err))
+	defer s.mapMu.Unlock()
+	m, code, err := s.addMap(ctx, spec, req.HostPort, req.GuestPort, req.Proto, s.relays.Ensure, s.pushGatewayConfigCtx)
+	if err != nil {
+		writeErr(w, code, err)
 		return
 	}
 	writeJSON(w, 201, m)
+}
+
+// rollbackPush re-pushes restored state with its own bounded context,
+// independent of the (possibly cancelled) caller context.
+func rollbackPush(push func(context.Context, int) error, clusterID int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), mapPushTimeout)
+	defer cancel()
+	return push(ctx, clusterID)
+}
+
+// pushBounded runs a gateway config push with its own timeout so a hung
+// ssh cannot hold mapMu forever. For call sites without an injectable
+// push function.
+func (s *Server) pushBounded(clusterID int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), mapPushTimeout)
+	defer cancel()
+	return s.pushGatewayConfigCtx(ctx, clusterID)
+}
+
+// addMap validates and installs a host->guest port mapping for spec,
+// rolling back on relay or gateway-config failure. The status return is
+// the HTTP code for API callers; the guest control path only uses err.
+// Callers hold mapMu: the global port/proto ownership check and the
+// mutation must be atomic against every other map add/remove/rollback.
+// ensure binds the relay (relays.Ensure, or relays.EnsurePublic for
+// desktop's public mode).
+func (s *Server) addMap(ctx context.Context, spec *vm.Spec, hostPort, guestPort int, proto string, ensure func(string, int, int) error, push func(context.Context, int) error) (*cluster.PortMap, int, error) {
+	if spec.Role == "gateway" || spec.ClusterID == 0 {
+		return nil, 400, fmt.Errorf("vm %s is not a cluster vm", spec.Name)
+	}
+	// The VM must still be a cluster member: a delete/rollback that ran
+	// after the caller loaded the spec must not be re-entered by a new
+	// map for a removed VM.
+	if cl := s.Clusters.Get(spec.ClusterID); cl == nil || cl.VMs[spec.Name] == nil {
+		return nil, 404, fmt.Errorf("vm %s is not a cluster member", spec.Name)
+	}
+	if proto == "" {
+		proto = "tcp"
+	}
+	if hostPort == 0 {
+		port, err := s.freeMapPort(proto)
+		if err != nil {
+			return nil, 500, err
+		}
+		hostPort = port
+	}
+	if hostPort < 1024 || hostPort > 65535 {
+		return nil, 400, fmt.Errorf("host_port must be 1024-65535")
+	}
+	// Ownership is global: a port persisted by another cluster without
+	// a live relay is still taken and must not be hijackable.
+	if s.mapPortInUse(hostPort, proto) {
+		return nil, 409, fmt.Errorf("host port %d/%s already mapped", hostPort, proto)
+	}
+	if err := portFree(proto, hostPort); err != nil {
+		return nil, 409, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, 500, err
+	}
+
+	m, err := s.Clusters.AddMap(spec.ClusterID, spec.Name, spec.IP, hostPort, guestPort, proto)
+	if err != nil {
+		return nil, 409, err
+	}
+	if err := ensure(m.Proto, m.HostPort, m.PoolPort); err != nil {
+		_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
+		return nil, 500, err
+	}
+	if err := ctx.Err(); err != nil {
+		s.relays.Remove(m.Proto, m.HostPort)
+		_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
+		return nil, 500, err
+	}
+	if err := push(ctx, spec.ClusterID); err != nil {
+		s.relays.Remove(m.Proto, m.HostPort)
+		_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
+		_ = rollbackPush(push, spec.ClusterID)
+		return nil, 500, fmt.Errorf("map rolled back after gateway config push failed: %w", err)
+	}
+	return m, 201, nil
+}
+
+// mapPortInUse reports whether any cluster already persists hostPort
+// with proto, regardless of whether its relay is currently bound.
+func (s *Server) mapPortInUse(hostPort int, proto string) bool {
+	for _, cl := range s.Clusters.List() {
+		for _, m := range cl.Maps {
+			if m.HostPort == hostPort && m.Proto == proto {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// freeMapPort picks a loopback port that is both bindable and not
+// persisted by any cluster.
+func (s *Server) freeMapPort(proto string) (int, error) {
+	for p := 18080; p < 18080+2000; p++ {
+		if s.mapPortInUse(p, proto) {
+			continue
+		}
+		if portFree(proto, p) == nil {
+			return p, nil
+		}
+	}
+	return 0, fmt.Errorf("no free loopback port")
 }
 
 func (s *Server) handleMapRemove(w http.ResponseWriter, r *http.Request) {
@@ -94,6 +216,15 @@ func (s *Server) handleMapRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	proto := r.PathValue("proto")
+	// One bounded context covers the lock wait and every gateway push
+	// in the loop; the rollback keeps its own fresh bounded push.
+	ctx, cancel := context.WithTimeout(r.Context(), mapPushTimeout)
+	defer cancel()
+	if err := s.mapMu.Lock(ctx); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	defer s.mapMu.Unlock()
 	previous := s.Clusters.List()
 	rollback := func() {
 		for _, cl := range previous {
@@ -101,7 +232,7 @@ func (s *Server) handleMapRemove(w http.ResponseWriter, r *http.Request) {
 			for _, m := range cl.Maps {
 				_ = s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort)
 			}
-			_ = s.pushGatewayConfig(cl.ID)
+			_ = s.pushBounded(cl.ID)
 		}
 	}
 	s.relays.Remove(proto, port)
@@ -114,7 +245,7 @@ func (s *Server) handleMapRemove(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		removed = removed || ok
-		if err := s.pushGatewayConfig(cl.ID); err != nil {
+		if err := s.pushGatewayConfigCtx(ctx, cl.ID); err != nil {
 			rollback()
 			writeErr(w, 500, fmt.Errorf("map removal rolled back after gateway push failed: %w", err))
 			return
@@ -125,15 +256,6 @@ func (s *Server) handleMapRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"removed": port})
-}
-
-func freeLoopbackPort(proto string) (int, error) {
-	for p := 18080; p < 18080+2000; p++ {
-		if portFree(proto, p) == nil {
-			return p, nil
-		}
-	}
-	return 0, fmt.Errorf("no free loopback port")
 }
 
 func portFree(proto string, port int) error {

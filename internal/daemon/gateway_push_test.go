@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"strings"
@@ -24,7 +25,7 @@ func newPushTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{P: p, Clusters: st, vms: map[string]*vm.Spec{}}
+	s := &Server{P: p, Clusters: st, vms: map[string]*vm.Spec{}, mapMu: newMapGate()}
 	return s
 }
 
@@ -36,7 +37,7 @@ func TestRenderGatewayConfigFreshSnapshot(t *testing.T) {
 	stale := s.Clusters.Get(1)
 
 	var first, second []byte
-	if err := s.renderGatewayConfigLocked(1, func(cfg []byte) error {
+	if err := s.renderGatewayConfigLocked(context.Background(), 1, func(cfg []byte) error {
 		first = append(first, cfg...)
 		return nil
 	}); err != nil {
@@ -45,7 +46,7 @@ func TestRenderGatewayConfigFreshSnapshot(t *testing.T) {
 	if _, err := s.Clusters.AddVM(1, "dev1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.renderGatewayConfigLocked(1, func(cfg []byte) error {
+	if err := s.renderGatewayConfigLocked(context.Background(), 1, func(cfg []byte) error {
 		second = append(second, cfg...)
 		return nil
 	}); err != nil {
@@ -76,7 +77,7 @@ func TestRenderGatewayConfigSerialized(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := s.renderGatewayConfigLocked(1, func([]byte) error {
+			if err := s.renderGatewayConfigLocked(context.Background(), 1, func([]byte) error {
 				mu.Lock()
 				running++
 				if running > maxRunning {
@@ -157,7 +158,7 @@ func TestRenderGatewayConfigValidJSON(t *testing.T) {
 		}
 		_ = i
 		var out []byte
-		if err := s.renderGatewayConfigLocked(1, func(cfg []byte) error {
+		if err := s.renderGatewayConfigLocked(context.Background(), 1, func(cfg []byte) error {
 			out = cfg
 			return nil
 		}); err != nil {
@@ -180,7 +181,7 @@ func TestRenderGatewayConfigDefaultExit(t *testing.T) {
 	}
 	render := func() []byte {
 		var out []byte
-		if err := s.renderGatewayConfigLocked(1, func(cfg []byte) error {
+		if err := s.renderGatewayConfigLocked(context.Background(), 1, func(cfg []byte) error {
 			out = cfg
 			return nil
 		}); err != nil {

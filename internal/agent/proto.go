@@ -12,6 +12,12 @@
 //	guest -> host: {id, done:true, exit_code:0}       (terminal frame)
 //	guest -> host: {id, op:"pong", version, hostname, uptime_s}
 //	guest -> host: {id, error:"..."}                  (terminal frame)
+//	guest -> host: {id, op:"control", action:"map.list", payload:{...}}
+//	host -> guest: {id, op:"result", payload:{...}}   (terminal frame)
+//
+// Control frames are guest-initiated and scoped by the host to the VM
+// owning the channel; the guest never names a VM. OpExec is never
+// accepted from the guest.
 package agent
 
 import (
@@ -24,10 +30,12 @@ import (
 const (
 	PortName = "pvm.agent"
 
-	OpPing  = "ping"
-	OpPong  = "pong"
-	OpExec  = "exec"
-	OpStdin = "stdin"
+	OpPing    = "ping"
+	OpPong    = "pong"
+	OpExec    = "exec"
+	OpStdin   = "stdin"
+	OpControl = "control"
+	OpResult  = "result"
 
 	StreamStdout = "stdout"
 	StreamStderr = "stderr"
@@ -40,6 +48,9 @@ type Frame struct {
 	Op       string   `json:"op,omitempty"`
 	Cmd      []string `json:"cmd,omitempty"`
 	TimeoutS int      `json:"timeout_s,omitempty"`
+
+	Action  string          `json:"action,omitempty"`
+	Payload json.RawMessage `json:"payload,omitempty"`
 
 	Stream  string `json:"stream,omitempty"`
 	DataB64 string `json:"data_b64,omitempty"`
@@ -76,11 +87,18 @@ func (fw *frameWriter) write(f *Frame) error {
 		return err
 	}
 	data = append(data, '\n')
-	if _, err := fw.w.Write(data); err == nil {
-		err = fw.w.Flush()
+	if _, err := fw.w.Write(data); err != nil {
+		fw.err = err
+		return err
 	}
-	fw.err = err
-	return err
+	// Flush failures must latch too: a swallowed flush error leaves the
+	// caller thinking the frame landed and poisons nothing, while the
+	// sticky writer keeps "succeeding" on a dead channel.
+	if err := fw.w.Flush(); err != nil {
+		fw.err = err
+		return err
+	}
+	return nil
 }
 
 func readFrame(r *bufio.Reader, f *Frame) error {
