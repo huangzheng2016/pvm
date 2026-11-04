@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/huangzheng2016/pvm/internal/cluster"
 	"github.com/huangzheng2016/pvm/internal/vm"
@@ -47,7 +48,7 @@ func (s *Server) handleMapAdd(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mapMu.Lock()
 	defer s.mapMu.Unlock()
-	m, code, err := s.addMap(r.Context(), spec, req.HostPort, req.GuestPort, req.Proto, s.pushGatewayConfig)
+	m, code, err := s.addMap(r.Context(), spec, req.HostPort, req.GuestPort, req.Proto, s.pushGatewayConfigCtx)
 	if err != nil {
 		writeErr(w, code, err)
 		return
@@ -55,12 +56,24 @@ func (s *Server) handleMapAdd(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, m)
 }
 
+// rollbackPushTimeout bounds the restore push after a failed map push:
+// the rollback must complete even when the caller's context is done.
+const rollbackPushTimeout = 30 * time.Second
+
+// rollbackPush re-pushes restored state with its own bounded context,
+// independent of the (possibly cancelled) caller context.
+func rollbackPush(push func(context.Context, int) error, clusterID int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), rollbackPushTimeout)
+	defer cancel()
+	return push(ctx, clusterID)
+}
+
 // addMap validates and installs a host->guest port mapping for spec,
 // rolling back on relay or gateway-config failure. The status return is
 // the HTTP code for API callers; the guest control path only uses err.
 // Callers hold mapMu: the global port/proto ownership check and the
 // mutation must be atomic against every other map add/remove/rollback.
-func (s *Server) addMap(ctx context.Context, spec *vm.Spec, hostPort, guestPort int, proto string, push func(int) error) (*cluster.PortMap, int, error) {
+func (s *Server) addMap(ctx context.Context, spec *vm.Spec, hostPort, guestPort int, proto string, push func(context.Context, int) error) (*cluster.PortMap, int, error) {
 	if spec.Role == "gateway" || spec.ClusterID == 0 {
 		return nil, 400, fmt.Errorf("vm %s is not a cluster vm", spec.Name)
 	}
@@ -102,10 +115,10 @@ func (s *Server) addMap(ctx context.Context, spec *vm.Spec, hostPort, guestPort 
 		_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
 		return nil, 500, err
 	}
-	if err := push(spec.ClusterID); err != nil {
+	if err := push(ctx, spec.ClusterID); err != nil {
 		s.relays.Remove(m.Proto, m.HostPort)
 		_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
-		_ = push(spec.ClusterID)
+		_ = rollbackPush(push, spec.ClusterID)
 		return nil, 500, fmt.Errorf("map rolled back after gateway config push failed: %w", err)
 	}
 	return m, 201, nil
@@ -167,7 +180,7 @@ func (s *Server) handleMapRemove(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		removed = removed || ok
-		if err := s.pushGatewayConfig(cl.ID); err != nil {
+		if err := s.pushGatewayConfigCtx(r.Context(), cl.ID); err != nil {
 			rollback()
 			writeErr(w, 500, fmt.Errorf("map removal rolled back after gateway push failed: %w", err))
 			return

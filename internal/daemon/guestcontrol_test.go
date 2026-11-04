@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/agent"
+	"github.com/huangzheng2016/pvm/internal/cluster"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 )
 
@@ -139,7 +142,7 @@ func TestGuestMapRemoveRollbackOnPushFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	pushes := 0
-	push := func(clusterID int) error {
+	push := func(ctx context.Context, clusterID int) error {
 		pushes++
 		return errors.New("gateway away")
 	}
@@ -165,7 +168,7 @@ func TestGuestMapRemoveRollbackRepushesRestoredState(t *testing.T) {
 		t.Fatal(err)
 	}
 	pushes := 0
-	push := func(clusterID int) error {
+	push := func(ctx context.Context, clusterID int) error {
 		pushes++
 		if pushes == 1 {
 			return errors.New("apply acknowledged then ssh dropped")
@@ -571,5 +574,138 @@ func TestMapMutationSerializedConcurrent(t *testing.T) {
 	}
 	if err := portFree("tcp", port); err != nil {
 		t.Fatal("relay must be released after removes")
+	}
+}
+
+// A push that really blocks until the request context fires must
+// unblock at the deadline, roll back with a fresh bounded context, and
+// release mapMu for the next operation.
+func TestGuestMapRemoveBlockingPushCancelReleasesLock(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	port := freePort(t, "tcp")
+	if _, err := s.Clusters.AddMap(dev1.ClusterID, "dev1", dev1.IP, port, 80, "tcp"); err != nil {
+		t.Fatal(err)
+	}
+
+	pushes := 0
+	push := func(ctx context.Context, clusterID int) error {
+		pushes++
+		if pushes > 1 {
+			// The rollback re-push gets a fresh bounded context and must
+			// be allowed to complete.
+			return nil
+		}
+		<-ctx.Done() // a genuinely stuck push, as a hung ssh would be
+		return ctx.Err()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	rmReq, _ := json.Marshal(agent.MapRemoveRequest{HostPort: port, Proto: "tcp"})
+	start := time.Now()
+	_, err := s.guestMapRemove(ctx, "dev1", rmReq, push)
+	if err == nil || !strings.Contains(err.Error(), "rolled back") {
+		t.Fatalf("remove = %v, want rolled-back error", err)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatal("the deadline did not unblock the push")
+	}
+	if pushes != 2 {
+		t.Fatalf("push calls = %d, want blocking push + rollback re-push", pushes)
+	}
+	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 1 || got[0].HostPort != port {
+		t.Fatalf("store must be restored: %+v", got)
+	}
+	if err := portFree("tcp", port); err == nil {
+		t.Fatal("relay must be restored")
+	}
+
+	// mapMu was released: the next map operation completes promptly.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.mapMu.Lock()
+		defer s.mapMu.Unlock()
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("mapMu still held after the cancelled push")
+	}
+}
+
+// The per-cluster gateway push gate must be abortable while waiting.
+func TestRenderGatewayConfigGateCtxCancel(t *testing.T) {
+	s := newPushTestServer(t)
+	if _, err := s.Clusters.Ensure(1); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	hold := make(chan struct{})
+	go func() {
+		_ = s.renderGatewayConfigLocked(context.Background(), 1, func([]byte) error {
+			close(started)
+			<-hold
+			return nil
+		})
+	}()
+	<-started
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err := s.renderGatewayConfigLocked(ctx, 1, func([]byte) error { return nil })
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("gate wait = %v, want context.DeadlineExceeded", err)
+	}
+	close(hold)
+}
+
+// The reviewer's interleaving: a guest remove of dev1's map racing the
+// real host HTTP paths (remove + reassign attempt to dev2) must never
+// leave two maps on one port or a relay that contradicts the store.
+func TestGuestRemoveInterleavesWithHostMapPaths(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	h := s.guestControlHandlerWithPush("dev1", okPush)
+	port := freePort(t, "tcp")
+
+	for i := 0; i < 20; i++ {
+		if _, _, err := s.addMap(context.Background(), dev1, port, 80, "tcp", okPush); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			rmReq, _ := json.Marshal(agent.MapRemoveRequest{HostPort: port, Proto: "tcp"})
+			h(context.Background(), &agent.Frame{ID: "r", Op: agent.OpControl, Action: agent.ControlMapRemove, Payload: rmReq})
+		}()
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest("DELETE", "/v1/maps/x/tcp", nil)
+			req.SetPathValue("port", fmt.Sprint(port))
+			req.SetPathValue("proto", "tcp")
+			s.handleMapRemove(httptest.NewRecorder(), req)
+			body := fmt.Sprintf(`{"vm":"dev2","host_port":%d,"guest_port":80,"proto":"tcp"}`, port)
+			s.handleMapAdd(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/maps", strings.NewReader(body)))
+		}()
+		wg.Wait()
+
+		var onPort []*cluster.PortMap
+		for _, cl := range s.Clusters.List() {
+			for _, m := range cl.Maps {
+				if m.HostPort == port && m.Proto == "tcp" {
+					onPort = append(onPort, m)
+				}
+			}
+		}
+		if len(onPort) > 1 {
+			t.Fatalf("iter %d: %d maps on port %d", i, len(onPort), port)
+		}
+		if len(onPort) == 1 {
+			if err := portFree("tcp", port); err == nil {
+				t.Fatalf("iter %d: map without relay", i)
+			}
+		} else if err := portFree("tcp", port); err != nil {
+			t.Fatalf("iter %d: relay outlives the map", i)
+		}
 	}
 }

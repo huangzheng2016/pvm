@@ -71,7 +71,7 @@ func newMapTestServer(t *testing.T) (*Server, *vm.Spec, *vm.Spec) {
 	return s, specs[0], specs[1]
 }
 
-func okPush(clusterID int) error { return nil }
+func okPush(ctx context.Context, clusterID int) error { return nil }
 
 // freePort reserves nothing but returns a currently-free loopback port,
 // so parallel test runs never collide on fixed ports.
@@ -112,7 +112,7 @@ func TestAddMapSuccess(t *testing.T) {
 	s, dev1, _ := newMapTestServer(t)
 	port := freePort(t, "tcp")
 	pushed := 0
-	push := func(clusterID int) error {
+	push := func(ctx context.Context, clusterID int) error {
 		pushed++
 		if clusterID != dev1.ClusterID {
 			t.Errorf("push cluster = %d", clusterID)
@@ -148,7 +148,7 @@ func TestAddMapAutoHostPort(t *testing.T) {
 func TestAddMapRollbackOnPushFailure(t *testing.T) {
 	s, dev1, _ := newMapTestServer(t)
 	port := freePort(t, "tcp")
-	push := func(clusterID int) error { return errors.New("gateway away") }
+	push := func(ctx context.Context, clusterID int) error { return errors.New("gateway away") }
 	m, code, err := s.addMap(context.Background(), dev1, port, 80, "tcp", push)
 	if err == nil || code != 500 || !strings.Contains(err.Error(), "rolled back") {
 		t.Fatalf("want rolled-back 500, got %v %d %v", m, code, err)

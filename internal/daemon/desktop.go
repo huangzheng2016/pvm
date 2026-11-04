@@ -145,12 +145,14 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort, Public: st.Public})
 		return
 	}
+	s.mapMu.Lock()
 	for _, m := range s.Clusters.Get(spec.ClusterID).Maps {
 		if m.VM == spec.Name && m.GuestPort == desktopWebPort {
 			s.relays.Remove(m.Proto, m.HostPort)
 			_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
 		}
 	}
+	s.mapMu.Unlock()
 	if running && st != nil {
 		st.Public = public
 	} else {
@@ -161,6 +163,10 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// The map add commits under mapMu so a concurrent guest control
+	// remove/add of the same port cannot interleave.
+	s.mapMu.Lock()
+	defer s.mapMu.Unlock()
 	hostPort := 0
 	for _, m := range s.Clusters.Get(spec.ClusterID).Maps {
 		if m.VM == spec.Name && m.GuestPort == desktopWebPort && m.Proto == "tcp" {
@@ -168,7 +174,7 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if hostPort == 0 {
-		port, err := freeLoopbackPort("tcp")
+		port, err := s.freeMapPort("tcp")
 		if err != nil {
 			writeErr(w, 500, err)
 			return
@@ -228,6 +234,8 @@ func (s *Server) handleDesktopStop(w http.ResponseWriter, r *http.Request) {
 	if st, err := s.instance(spec).Running(); err == nil && st != nil {
 		_, _ = s.sshRun(spec, fmt.Sprintf("vncserver -kill %s >/dev/null 2>&1; fuser -k %d/tcp >/dev/null 2>&1 || true", desktopVNCDisplay, desktopWebPort))
 	}
+	s.mapMu.Lock()
+	defer s.mapMu.Unlock()
 	if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
 		for _, m := range cl.Maps {
 			if m.VM == spec.Name && m.GuestPort == desktopWebPort {

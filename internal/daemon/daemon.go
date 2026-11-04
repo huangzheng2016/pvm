@@ -66,7 +66,7 @@ type Server struct {
 	watchMu  sync.Mutex // guards watchSeq
 	watchSeq map[string]uint64
 
-	gwPushLocks sync.Map // clusterID -> *sync.Mutex, serializes gateway config pushes
+	gwPushLocks sync.Map // clusterID -> chan struct{} (cap 1), serializes gateway config pushes
 }
 
 type vmInfo struct {
@@ -428,7 +428,9 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	createStart := time.Now()
 	if err := vm.Create(s.P, s.TC, spec, s.SSHPub); err != nil {
+		s.mapMu.Lock()
 		s.Clusters.RemoveVM(cl.ID, req.Name)
+		s.mapMu.Unlock()
 		writeErr(w, 500, err)
 		return
 	}
@@ -441,14 +443,16 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		bootStart := time.Now()
 		if _, _, err := s.startVM(spec); err != nil {
 			_ = s.instance(spec).Stop()
+			s.mapMu.Lock()
 			s.closeVMResources(spec.Name, cl)
 			s.removeLink(cl, spec.Name)
 			s.Clusters.RemoveVM(cl.ID, spec.Name)
+			_ = s.pushGatewayConfig(cl.ID)
+			s.mapMu.Unlock()
 			_ = vm.Delete(s.P, spec.Name)
 			s.mu.Lock()
 			delete(s.vms, spec.Name)
 			s.mu.Unlock()
-			_ = s.pushGatewayConfig(cl.ID)
 			writeErr(w, 500, fmt.Errorf("start failed; create rolled back: %w", err))
 			return
 		}
@@ -685,6 +689,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if spec.Role != "gateway" && spec.ClusterID > 0 {
 		cl = s.Clusters.Get(spec.ClusterID)
 	}
+	s.mapMu.Lock()
 	s.closeVMResources(name, cl)
 	if cl != nil {
 		s.removeLink(cl, name)
@@ -693,6 +698,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 			log.Printf("delete %s: gateway config push failed: %v", name, err)
 		}
 	}
+	s.mapMu.Unlock()
 	if err := vm.Delete(s.P, name); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -773,11 +779,13 @@ func (s *Server) recoverClusters() {
 				s.ensureControlWatcher(spec)
 			}
 		}
+		s.mapMu.Lock()
 		for _, m := range cl.Maps {
 			if err := s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort); err != nil {
 				log.Printf("recover relay %s/%d: %v", m.Proto, m.HostPort, err)
 			}
 		}
+		s.mapMu.Unlock()
 		go s.deployClusterAgent(cl)
 	}
 	s.ready.Store(healthy)

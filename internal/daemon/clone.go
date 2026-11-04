@@ -112,52 +112,59 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 		if committed {
 			return
 		}
+		s.mapMu.Lock()
 		for _, pm := range added {
 			s.relays.Remove(pm.Proto, pm.HostPort)
 		}
+		s.Clusters.RemoveVM(cl.ID, spec.Name)
+		_ = s.pushGatewayConfig(cl.ID)
+		s.mapMu.Unlock()
 		_ = s.instance(spec).Stop()
 		s.removeLink(cl, spec.Name)
-		s.Clusters.RemoveVM(cl.ID, spec.Name)
 		_ = vm.Delete(s.P, spec.Name)
 		s.mu.Lock()
 		delete(s.vms, spec.Name)
 		s.mu.Unlock()
-		_ = s.pushGatewayConfig(cl.ID)
 	}()
-	for _, m := range req.Maps {
-		proto := m.Proto
-		if proto == "" {
-			proto = "tcp"
+	// Inherit-ports mutates maps/relays: it commits under mapMu, without
+	// spanning the (slow) VM start below.
+	code, err := func() (int, error) {
+		s.mapMu.Lock()
+		defer s.mapMu.Unlock()
+		for _, m := range req.Maps {
+			proto := m.Proto
+			if proto == "" {
+				proto = "tcp"
+			}
+			if m.GuestPort <= 0 || m.GuestPort > 65535 {
+				return 400, fmt.Errorf("guest_port %d out of range", m.GuestPort)
+			}
+			if m.HostPort < 1024 || m.HostPort > 65535 {
+				return 400, fmt.Errorf("host_port %d must be 1024-65535", m.HostPort)
+			}
+			if err := portFree(proto, m.HostPort); err != nil {
+				return 409, fmt.Errorf("map %d:%d/%s: %w", m.HostPort, m.GuestPort, proto, err)
+			}
+			pm, err := s.Clusters.AddMap(cl.ID, spec.Name, spec.IP, m.HostPort, m.GuestPort, proto)
+			if err != nil {
+				return 409, err
+			}
+			if err := s.relays.Ensure(pm.Proto, pm.HostPort, pm.PoolPort); err != nil {
+				_, _ = s.Clusters.RemoveMap(cl.ID, pm.HostPort, pm.Proto)
+				return 500, err
+			}
+			added = append(added, pm)
 		}
-		if m.GuestPort <= 0 || m.GuestPort > 65535 {
-			writeErr(w, 400, fmt.Errorf("guest_port %d out of range", m.GuestPort))
-			return
+		if len(added) > 0 {
+			if err := s.pushGatewayConfig(cl.ID); err != nil {
+				return 500, fmt.Errorf("clone created but gateway config push failed: %w", err)
+			}
 		}
-		if m.HostPort < 1024 || m.HostPort > 65535 {
-			writeErr(w, 400, fmt.Errorf("host_port %d must be 1024-65535", m.HostPort))
-			return
-		}
-		if err := portFree(proto, m.HostPort); err != nil {
-			writeErr(w, 409, fmt.Errorf("map %d:%d/%s: %w", m.HostPort, m.GuestPort, proto, err))
-			return
-		}
-		pm, err := s.Clusters.AddMap(cl.ID, spec.Name, spec.IP, m.HostPort, m.GuestPort, proto)
-		if err != nil {
-			writeErr(w, 409, err)
-			return
-		}
-		if err := s.relays.Ensure(pm.Proto, pm.HostPort, pm.PoolPort); err != nil {
-			_, _ = s.Clusters.RemoveMap(cl.ID, pm.HostPort, pm.Proto)
-			writeErr(w, 500, err)
-			return
-		}
-		added = append(added, pm)
-	}
-	if len(added) > 0 {
-		if err := s.pushGatewayConfig(cl.ID); err != nil {
-			writeErr(w, 500, fmt.Errorf("clone created but gateway config push failed: %w", err))
-			return
-		}
+		return 0, nil
+	}()
+	if err != nil {
+		writeErr(w, code, err)
+		return
 	}
 
 	if req.Start {

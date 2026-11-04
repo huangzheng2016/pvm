@@ -28,6 +28,7 @@ type Client struct {
 	pending map[string]chan Frame
 	control ControlHandler
 	ctrlSem chan struct{}
+	busySem chan struct{}
 	closed  bool
 
 	done     chan struct{} // closed on connection loss or Close
@@ -60,9 +61,22 @@ func (c *Client) readLoop() {
 			return
 		}
 		if f.Op == OpControl {
-			// Guest-initiated request: handle off-loop so a slow control
-			// never stalls exec stream demux.
-			go c.dispatchControl(&f)
+			// Bounded admission BEFORE any goroutine spawns: the
+			// semaphore caps running handlers, a smaller one caps
+			// in-flight refusals, and past both, frames are dropped
+			// (the guest's own request timeout is the backstop) — a
+			// flooding guest cannot accumulate host goroutines.
+			ctrlSem, busySem := c.controlSems()
+			select {
+			case ctrlSem <- struct{}{}:
+				go c.dispatchControl(&f)
+			default:
+				select {
+				case busySem <- struct{}{}:
+					go c.writeControlBusy(&f)
+				default:
+				}
+			}
 			continue
 		}
 		c.mu.Lock()
@@ -89,13 +103,26 @@ func (c *Client) HandleControl(h ControlHandler) {
 	c.control = h
 }
 
-func (c *Client) dispatchControl(f *Frame) {
+// controlSems lazily creates the admission semaphores (tests construct
+// Clients directly).
+func (c *Client) controlSems() (chan struct{}, chan struct{}) {
 	c.mu.Lock()
-	h := c.control
+	defer c.mu.Unlock()
 	if c.ctrlSem == nil {
 		c.ctrlSem = make(chan struct{}, maxConcurrentControls)
 	}
-	sem := c.ctrlSem
+	if c.busySem == nil {
+		c.busySem = make(chan struct{}, maxConcurrentControlRefusals)
+	}
+	return c.ctrlSem, c.busySem
+}
+
+// dispatchControl runs an admitted control request; the semaphore slot
+// is released when the response write completes or times out.
+func (c *Client) dispatchControl(f *Frame) {
+	defer func() { <-c.ctrlSem }()
+	c.mu.Lock()
+	h := c.control
 	c.mu.Unlock()
 	resp := Frame{ID: f.ID}
 	switch {
@@ -104,18 +131,14 @@ func (c *Client) dispatchControl(f *Frame) {
 	case len(f.Payload) > MaxControlPayloadBytes:
 		resp.Error = "control payload too large"
 	default:
-		// A bounded number of handlers may run at once so a guest
-		// cannot accumulate host work (ssh sessions, goroutines) without
-		// limit; excess requests are refused, not queued.
-		select {
-		case sem <- struct{}{}:
-			defer func() { <-sem }()
-			resp.Op, resp.Payload, resp.Error = c.runControl(h, f)
-		default:
-			resp.Error = "control busy"
-		}
+		resp.Op, resp.Payload, resp.Error = c.runControl(h, f)
 	}
-	c.write(&resp)
+	c.writeWithDeadline(&resp, time.Now().Add(controlWriteTimeout))
+}
+
+func (c *Client) writeControlBusy(f *Frame) {
+	defer func() { <-c.busySem }()
+	c.writeWithDeadline(&Frame{ID: f.ID, Error: "control busy"}, time.Now().Add(controlBusyWriteTimeout))
 }
 
 // runControl executes the handler under an overall deadline that is
@@ -164,6 +187,13 @@ func (c *Client) failAll(err error) {
 }
 
 func (c *Client) write(f *Frame) error {
+	return c.writeWithDeadline(f, time.Time{})
+}
+
+// writeWithDeadline serializes the frame write and bounds how long it
+// may stall on a peer that stopped reading; the deadline is cleared
+// afterwards so stream writes are unaffected.
+func (c *Client) writeWithDeadline(f *Frame, dl time.Time) error {
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
 	c.mu.Lock()
@@ -171,6 +201,10 @@ func (c *Client) write(f *Frame) error {
 	c.mu.Unlock()
 	if closed {
 		return ErrUnreachable
+	}
+	if !dl.IsZero() {
+		c.conn.SetWriteDeadline(dl)
+		defer c.conn.SetWriteDeadline(time.Time{})
 	}
 	if err := c.w.write(f); err != nil {
 		return fmt.Errorf("%w: %v", ErrUnreachable, err)

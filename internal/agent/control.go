@@ -24,6 +24,17 @@ const MaxControlPayloadBytes = 64 << 10
 // agent connection.
 const maxConcurrentControls = 8
 
+// maxConcurrentControlRefusals caps concurrent "control busy" writes;
+// past it, excess control frames are dropped rather than queued.
+const maxConcurrentControlRefusals = 2
+
+// controlWriteTimeout bounds a control response write so a guest that
+// stopped reading cannot pin dispatch goroutines on the wire.
+const controlWriteTimeout = 10 * time.Second
+
+// controlBusyWriteTimeout bounds a "control busy" refusal write.
+const controlBusyWriteTimeout = 2 * time.Second
+
 // controlCallTimeout bounds one brokered control round trip. The host
 // side bounds its own work (ssh/gateway push timeouts), so this only
 // guards a silent channel.

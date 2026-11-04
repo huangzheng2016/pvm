@@ -17,10 +17,10 @@ import (
 // itself; request payloads never name a VM, so a guest can only ever
 // manage its own mappings.
 func (s *Server) guestControlHandler(vmName string) agent.ControlHandler {
-	return s.guestControlHandlerWithPush(vmName, s.pushGatewayConfig)
+	return s.guestControlHandlerWithPush(vmName, s.pushGatewayConfigCtx)
 }
 
-func (s *Server) guestControlHandlerWithPush(vmName string, push func(int) error) agent.ControlHandler {
+func (s *Server) guestControlHandlerWithPush(vmName string, push func(context.Context, int) error) agent.ControlHandler {
 	return func(ctx context.Context, req *agent.Frame) ([]byte, error) {
 		switch req.Action {
 		case agent.ControlMapList:
@@ -48,7 +48,7 @@ func (s *Server) guestMapList(vmName string) ([]byte, error) {
 	return json.Marshal(resp)
 }
 
-func (s *Server) guestMapAdd(ctx context.Context, vmName string, payload []byte, push func(int) error) ([]byte, error) {
+func (s *Server) guestMapAdd(ctx context.Context, vmName string, payload []byte, push func(context.Context, int) error) ([]byte, error) {
 	var req agent.MapAddRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, fmt.Errorf("bad map.add payload: %v", err)
@@ -73,7 +73,7 @@ func (s *Server) guestMapAdd(ctx context.Context, vmName string, payload []byte,
 // VM; the global host API's remove-by-port semantics are deliberately
 // not reachable from the guest. "Not present" and "owned by another
 // VM" return the same error so guests cannot probe other VMs' maps.
-func (s *Server) guestMapRemove(ctx context.Context, vmName string, payload []byte, push func(int) error) ([]byte, error) {
+func (s *Server) guestMapRemove(ctx context.Context, vmName string, payload []byte, push func(context.Context, int) error) ([]byte, error) {
 	var req agent.MapRemoveRequest
 	if err := json.Unmarshal(payload, &req); err != nil {
 		return nil, fmt.Errorf("bad map.remove payload: %v", err)
@@ -116,11 +116,11 @@ func (s *Server) guestMapRemove(ctx context.Context, vmName string, payload []by
 		s.restoreMaps(owner.ID, previous)
 		return nil, err
 	}
-	if err := push(owner.ID); err != nil {
+	if err := push(ctx, owner.ID); err != nil {
 		s.restoreMaps(owner.ID, previous)
 		// The failed push may have applied the config before erroring;
 		// re-push the restored state so the gateway cannot diverge.
-		if rerr := push(owner.ID); rerr != nil {
+		if rerr := rollbackPush(push, owner.ID); rerr != nil {
 			log.Printf("guest control: rollback re-push cluster %d: %v", owner.ID, rerr)
 		}
 		return nil, fmt.Errorf("map removal rolled back after gateway push failed: %v", err)

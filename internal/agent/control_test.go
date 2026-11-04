@@ -469,6 +469,9 @@ func TestControlConcurrencyLimit(t *testing.T) {
 		return []byte(`{}`), nil
 	})
 
+	// 8 handlers run; of the excess, at most maxConcurrentControlRefusals
+	// get a busy refusal, the rest are dropped (and see their own
+	// timeout — the guest-side backstop).
 	const extra = 3
 	var wg sync.WaitGroup
 	errs := make(chan error, maxConcurrentControls+extra)
@@ -476,15 +479,14 @@ func TestControlConcurrencyLimit(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := srv.Control(ControlMapList, nil, 20*time.Second)
+			_, err := srv.Control(ControlMapList, nil, 2*time.Second)
 			errs <- err
 		}()
 	}
 	// While the first maxConcurrentControls handlers are blocked, the
-	// excess requests must be refused, not queued: `extra` busy errors
-	// prove the semaphore was saturated at dispatch time.
+	// refusals must come back without queueing.
 	busy := 0
-	for busy < extra {
+	for busy < maxConcurrentControlRefusals {
 		select {
 		case err := <-errs:
 			if err != nil && strings.Contains(err.Error(), "control busy") {
@@ -493,20 +495,31 @@ func TestControlConcurrencyLimit(t *testing.T) {
 				t.Fatalf("expected control busy, got %v", err)
 			}
 		case <-time.After(5 * time.Second):
-			t.Fatalf("only %d/%d excess requests refused", busy, extra)
+			t.Fatalf("only %d/%d refusals arrived", busy, maxConcurrentControlRefusals)
 		}
 	}
 	close(release)
 	wg.Wait()
 	close(errs)
-	done := 0
+	done, dropped := 0, 0
 	for err := range errs {
-		if err == nil {
+		switch {
+		case err == nil:
 			done++
+		case strings.Contains(err.Error(), "no result within"):
+			dropped++
+		case strings.Contains(err.Error(), "control busy"):
+			busy++
 		}
 	}
+	// Exactly 8 handlers ran; every excess request got either a busy
+	// refusal or was dropped (busy slots free as refusals drain, so the
+	// split between the two is timing-dependent).
 	if done != maxConcurrentControls {
-		t.Fatalf("served = %d, want %d", done, maxConcurrentControls)
+		t.Fatalf("done = %d, want %d", done, maxConcurrentControls)
+	}
+	if busy+dropped != extra {
+		t.Fatalf("busy = %d, dropped = %d; want %d excess accounted", busy, dropped, extra)
 	}
 }
 
@@ -567,4 +580,87 @@ func TestControlDisconnectCancelsHandler(t *testing.T) {
 	}
 	<-errCh
 	<-serveDone
+}
+
+// A guest that floods control frames without ever reading responses
+// must not accumulate host goroutines: admission caps running handlers
+// and refusal writers, the rest are dropped, and the channel keeps
+// working once the guest resumes reading.
+func TestControlFloodBoundedWithoutReading(t *testing.T) {
+	host, guest := net.Pipe()
+	defer host.Close()
+	defer guest.Close()
+	c := &Client{
+		conn:    host,
+		w:       newFrameWriter(host),
+		r:       bufioReader(host),
+		pending: map[string]chan Frame{},
+		done:    make(chan struct{}),
+	}
+	entered := make(chan struct{}, 1024)
+	release := make(chan struct{})
+	c.HandleControl(func(ctx context.Context, req *Frame) ([]byte, error) {
+		entered <- struct{}{}
+		<-release
+		return []byte(`{}`), nil
+	})
+	go c.readLoop()
+
+	const flood = 100
+	floodDone := make(chan struct{})
+	go func() {
+		defer close(floodDone)
+		w := newFrameWriter(guest)
+		for i := 0; i < flood; i++ {
+			if err := w.write(&Frame{ID: fmt.Sprintf("f%d", i), Op: OpControl, Action: ControlMapList}); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Exactly maxConcurrentControls handlers may run; a 9th must never
+	// start while these are blocked, no matter how many frames arrive.
+	for i := 0; i < maxConcurrentControls; i++ {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d handlers admitted", i)
+		}
+	}
+	<-floodDone
+	select {
+	case <-entered:
+		t.Fatal("a 9th handler started over the cap")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	// Once the guest reads, at most cap+refusals responses ever arrive;
+	// everything else was dropped, not queued.
+	close(release)
+	got := 0
+	r := bufio.NewReaderSize(guest, 64<<10)
+	guest.SetReadDeadline(time.Now().Add(10 * time.Second))
+	for {
+		var f Frame
+		if err := readFrame(r, &f); err != nil {
+			break
+		}
+		got++
+		if got > maxConcurrentControls+maxConcurrentControlRefusals {
+			t.Fatalf("received %d responses, want at most %d", got, maxConcurrentControls+maxConcurrentControlRefusals)
+		}
+	}
+	if got == 0 {
+		t.Fatal("no responses arrived")
+	}
+
+	// The channel is not wedged: a fresh round-trip succeeds.
+	if err := newFrameWriter(guest).write(&Frame{ID: "ok1", Op: OpControl, Action: ControlMapList}); err != nil {
+		t.Fatal(err)
+	}
+	var f Frame
+	guest.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err := readFrame(r, &f); err != nil || f.Op != OpResult || f.ID != "ok1" {
+		t.Fatalf("post-flood control: %v %+v", err, f)
+	}
 }
