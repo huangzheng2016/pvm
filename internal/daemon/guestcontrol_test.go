@@ -1259,3 +1259,98 @@ func TestCloneInheritMapsHostPortValidation(t *testing.T) {
 		t.Fatalf("plain add with host_port 0: %v %v", m, err)
 	}
 }
+
+// A failed create whose membership cleanup times out must not spawn
+// anything that can later delete a same-named VM: the membership is
+// preserved, the same create succeeds on retry, and its
+// membership/maps/relay stay untouched.
+func TestFailedCreateCleanupTimeoutSameNameCreateSucceeds(t *testing.T) {
+	s, _, _ := newMapTestServer(t)
+
+	// A fake qemu-img: the create variant fails, the working variant
+	// touches the overlay and reports a 10G virtual size.
+	fakeImg := func(failCreate bool) string {
+		t.Helper()
+		createBody := `for last; do :; done
+    touch "$last"`
+		if failCreate {
+			createBody = "exit 1"
+		}
+		script := `#!/bin/sh
+case "$1" in
+  create)
+    ` + createBody + `
+    ;;
+  info)
+    echo '{"virtual-size": 10737418240}'
+    ;;
+  resize)
+    ;;
+esac
+exit 0
+`
+		path := filepath.Join(t.TempDir(), "qemu-img")
+		if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	s.TC = &qemu.Toolchain{Img: fakeImg(true)}
+	if err := os.MkdirAll(s.P.Images, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	base := filepath.Join(s.P.Images, "ubuntu-26.04-arm64.qcow2")
+	if err := os.WriteFile(base, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	old := rollbackLockTimeout
+	rollbackLockTimeout = 200 * time.Millisecond
+	defer func() { rollbackLockTimeout = old }()
+
+	// Hold the gate so the membership cleanup times out.
+	s.mapMu.Lock(context.Background())
+
+	body := `{"name":"dev9","image":"ubuntu:26.04","user":"pvm","cpus":1,"mem_mb":256,"disk_gb":1,"start":false}`
+	rec := httptest.NewRecorder()
+	s.handleCreate(rec, httptest.NewRequest("POST", "/v1/vms", strings.NewReader(body)))
+	if rec.Code != 500 || !strings.Contains(rec.Body.String(), "retry the same create") {
+		t.Fatalf("create = %d %s, want retryable cleanup error", rec.Code, rec.Body.String())
+	}
+	// The membership is preserved for the retry; the partial dir is gone.
+	if cl := s.Clusters.Get(1); cl.VMs["dev9"] == nil {
+		t.Fatal("membership must survive the cleanup timeout")
+	}
+	if _, err := os.Stat(s.P.VMDir("dev9")); err == nil {
+		t.Fatal("failed create must not leave a partial dir")
+	}
+	s.mapMu.Unlock()
+
+	// The same create now succeeds and keeps the membership.
+	s.TC = &qemu.Toolchain{Img: fakeImg(false)}
+	rec = httptest.NewRecorder()
+	s.handleCreate(rec, httptest.NewRequest("POST", "/v1/vms", strings.NewReader(body)))
+	if rec.Code != 201 {
+		t.Fatalf("retry create = %d %s, want 201", rec.Code, rec.Body.String())
+	}
+	if cl := s.Clusters.Get(1); cl.VMs["dev9"] == nil {
+		t.Fatal("membership must exist after the successful retry")
+	}
+
+	// Its map and relay are never touched by any stale task.
+	port := freePort(t, "tcp")
+	m, err := s.Clusters.AddMap(1, "dev9", s.Clusters.Get(1).VMs["dev9"].IP, port, 80, "tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.relays.Ensure("tcp", port, m.PoolPort); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(300 * time.Millisecond) // longer than the cleanup budget
+	if cl := s.Clusters.Get(1); cl.VMs["dev9"] == nil || len(cl.Maps) != 1 {
+		t.Fatalf("membership and maps must stay: %+v", cl)
+	}
+	if err := portFree("tcp", port); err == nil {
+		t.Fatal("relay must stay bound")
+	}
+}

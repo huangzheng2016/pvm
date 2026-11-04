@@ -36,7 +36,7 @@ func newMapTestServer(t *testing.T) (*Server, *vm.Spec, *vm.Spec) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{P: p, Clusters: st, relays: newRelaySet(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}, mapMu: newMapGate()}
+	s := &Server{P: p, Clusters: st, relays: newRelaySet(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}, prog: map[string][]StageEvent{}, mapMu: newMapGate()}
 	t.Cleanup(func() {
 		s.relays.mu.Lock()
 		defer s.relays.mu.Unlock()

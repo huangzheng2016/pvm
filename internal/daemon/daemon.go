@@ -430,7 +430,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	createStart := time.Now()
 	if err := vm.Create(s.P, s.TC, spec, s.SSHPub); err != nil {
-		s.removeVMWithRetry(cl.ID, req.Name)
+		if lerr := s.removeVMMember(cl.ID, req.Name); lerr != nil {
+			writeErr(w, 500, fmt.Errorf("create failed (%v) and membership cleanup is incomplete (%v); retry the same create to finish", err, lerr))
+			return
+		}
 		writeErr(w, 500, err)
 		return
 	}

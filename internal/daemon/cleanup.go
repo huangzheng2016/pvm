@@ -2,8 +2,6 @@ package daemon
 
 import (
 	"context"
-	"log"
-	"time"
 
 	"github.com/huangzheng2016/pvm/internal/cluster"
 )
@@ -24,35 +22,21 @@ func (s *Server) removeVMMapsLocked(clusterID int, name string) {
 	s.Clusters.RemoveVM(clusterID, name)
 }
 
-// removeVMWithRetry drops a cluster membership under the gate. On lock
-// timeout it keeps retrying in the background (bounded) so a failed
-// create never silently leaves an orphan member.
-func (s *Server) removeVMWithRetry(clusterID int, name string) {
+// removeVMMember drops a cluster membership under the gate with the
+// rollback budget. On timeout it removes nothing and returns the lock
+// error: the caller surfaces a retryable error, and the same create or
+// clone completes the cleanup later (AddVM is idempotent for an
+// existing member). No background work is spawned — an async remover
+// could otherwise delete a later same-named VM's state.
+func (s *Server) removeVMMember(clusterID int, name string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), rollbackLockTimeout)
-	err := s.mapMu.Lock(ctx)
-	cancel()
-	if err == nil {
-		s.Clusters.RemoveVM(clusterID, name)
-		s.mapMu.Unlock()
-		return
+	defer cancel()
+	if err := s.mapMu.Lock(ctx); err != nil {
+		return err
 	}
-	log.Printf("cluster %d: remove %s: map lock: %v; retrying in background", clusterID, name, err)
-	go func() {
-		for i := 0; i < 60; i++ {
-			time.Sleep(5 * time.Second)
-			ctx, cancel := context.WithTimeout(context.Background(), rollbackLockTimeout)
-			if err := s.mapMu.Lock(ctx); err == nil {
-				s.Clusters.RemoveVM(clusterID, name)
-				s.mapMu.Unlock()
-				cancel()
-				log.Printf("cluster %d: removed %s after retry", clusterID, name)
-				return
-			} else {
-				cancel()
-			}
-		}
-		log.Printf("cluster %d: giving up removing %s after retries; remove it manually", clusterID, name)
-	}()
+	defer s.mapMu.Unlock()
+	s.Clusters.RemoveVM(clusterID, name)
+	return nil
 }
 
 // Close resources before the cluster forgets the VM so no port remains

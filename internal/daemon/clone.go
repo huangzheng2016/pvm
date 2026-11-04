@@ -86,19 +86,31 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
-	cleanup := func() {
-		s.removeVMWithRetry(cl.ID, req.NewName)
+	cleanup := func() error {
+		err := s.removeVMMember(cl.ID, req.NewName)
+		// The partial disk is untracked: always safe to remove, and the
+		// retry needs the directory gone.
 		_ = vm.Delete(s.P, req.NewName)
+		if err != nil {
+			return fmt.Errorf("membership cleanup incomplete (%v); retry the same clone to finish", err)
+		}
+		return nil
 	}
 
 	spec := vm.CloneSpec(src, req.NewName, vnet.IP, vnet.MAC)
 	if err := vm.CloneDisk(s.P, s.TC, src, spec); err != nil {
-		cleanup()
+		if cerr := cleanup(); cerr != nil {
+			writeErr(w, 500, fmt.Errorf("clone failed (%v) and %v", err, cerr))
+			return
+		}
 		writeErr(w, 500, err)
 		return
 	}
 	if err := spec.Save(s.P); err != nil {
-		cleanup()
+		if cerr := cleanup(); cerr != nil {
+			writeErr(w, 500, fmt.Errorf("clone failed (%v) and %v", err, cerr))
+			return
+		}
 		writeErr(w, 500, err)
 		return
 	}
