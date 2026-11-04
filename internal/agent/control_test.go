@@ -524,14 +524,11 @@ func TestControlConcurrencyLimit(t *testing.T) {
 }
 
 func TestControlHandlerDeadline(t *testing.T) {
-	old := controlHandlerTimeout
-	controlHandlerTimeout = 100 * time.Millisecond
-	defer func() { controlHandlerTimeout = old }()
-
-	srv, _ := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
+	srv, c := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	})
+	c.ctrlHandlerTimeout = 100 * time.Millisecond
 	start := time.Now()
 	_, err := srv.Control(ControlMapList, nil, 20*time.Second)
 	if err == nil || !strings.Contains(err.Error(), "deadline") {
@@ -662,5 +659,67 @@ func TestControlFloodBoundedWithoutReading(t *testing.T) {
 	guest.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if err := readFrame(r, &f); err != nil || f.Op != OpResult || f.ID != "ok1" {
 		t.Fatalf("post-flood control: %v %+v", err, f)
+	}
+}
+
+// A guest that never reads responses must have its connection torn
+// down after the write deadline: the frameWriter latches the first
+// error, so keeping the client would poison every later write. The
+// redialed client (what the daemon's watcher builds) works immediately.
+func TestControlWriteTimeoutKillsClientAndRedialWorks(t *testing.T) {
+	host, guest := net.Pipe()
+	c := &Client{
+		conn:             host,
+		w:                newFrameWriter(host),
+		r:                bufioReader(host),
+		pending:          map[string]chan Frame{},
+		done:             make(chan struct{}),
+		ctrlWriteTimeout: 100 * time.Millisecond,
+	}
+	c.HandleControl(func(ctx context.Context, req *Frame) ([]byte, error) {
+		return []byte(`{"ok":true}`), nil
+	})
+	go c.readLoop()
+
+	// The guest sends a request and never reads the response.
+	if err := newFrameWriter(guest).write(&Frame{ID: "w1", Op: OpControl, Action: ControlMapList}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !c.Closed() && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !c.Closed() {
+		t.Fatal("client not marked dead after the response write timed out")
+	}
+	// The guest observes the teardown.
+	guest.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := guest.Read(make([]byte, 1)); err == nil {
+		t.Fatal("guest should see the connection closed")
+	}
+	guest.Close()
+
+	// The redialed client works immediately.
+	host2, guest2 := net.Pipe()
+	defer host2.Close()
+	defer guest2.Close()
+	c2 := &Client{
+		conn:    host2,
+		w:       newFrameWriter(host2),
+		r:       bufioReader(host2),
+		pending: map[string]chan Frame{},
+		done:    make(chan struct{}),
+	}
+	c2.HandleControl(func(ctx context.Context, req *Frame) ([]byte, error) {
+		return []byte(`{"ok":true}`), nil
+	})
+	go c2.readLoop()
+	if err := newFrameWriter(guest2).write(&Frame{ID: "r1", Op: OpControl, Action: ControlMapList}); err != nil {
+		t.Fatal(err)
+	}
+	var f Frame
+	guest2.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if err := readFrame(bufio.NewReaderSize(guest2, 64<<10), &f); err != nil || f.Op != OpResult {
+		t.Fatalf("redialed control: %v %+v", err, f)
 	}
 }

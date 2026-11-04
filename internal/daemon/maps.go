@@ -56,9 +56,11 @@ func (s *Server) handleMapAdd(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, m)
 }
 
-// rollbackPushTimeout bounds the restore push after a failed map push:
-// the rollback must complete even when the caller's context is done.
-const rollbackPushTimeout = 30 * time.Second
+// rollbackPushTimeout bounds restore/cleanup pushes that run inside the
+// mapMu critical section: they must complete even when the caller's
+// context is done, but a hung ssh must not hold the lock forever. It
+// is a variable so tests can shorten it.
+var rollbackPushTimeout = 30 * time.Second
 
 // rollbackPush re-pushes restored state with its own bounded context,
 // independent of the (possibly cancelled) caller context.
@@ -66,6 +68,15 @@ func rollbackPush(push func(context.Context, int) error, clusterID int) error {
 	ctx, cancel := context.WithTimeout(context.Background(), rollbackPushTimeout)
 	defer cancel()
 	return push(ctx, clusterID)
+}
+
+// pushBounded runs a gateway config push with its own timeout so a hung
+// ssh cannot hold mapMu forever. For call sites without an injectable
+// push function.
+func (s *Server) pushBounded(clusterID int) error {
+	ctx, cancel := context.WithTimeout(context.Background(), rollbackPushTimeout)
+	defer cancel()
+	return s.pushGatewayConfigCtx(ctx, clusterID)
 }
 
 // addMap validates and installs a host->guest port mapping for spec,
@@ -76,6 +87,12 @@ func rollbackPush(push func(context.Context, int) error, clusterID int) error {
 func (s *Server) addMap(ctx context.Context, spec *vm.Spec, hostPort, guestPort int, proto string, push func(context.Context, int) error) (*cluster.PortMap, int, error) {
 	if spec.Role == "gateway" || spec.ClusterID == 0 {
 		return nil, 400, fmt.Errorf("vm %s is not a cluster vm", spec.Name)
+	}
+	// The VM must still be a cluster member: a delete/rollback that ran
+	// after the caller loaded the spec must not be re-entered by a new
+	// map for a removed VM.
+	if cl := s.Clusters.Get(spec.ClusterID); cl == nil || cl.VMs[spec.Name] == nil {
+		return nil, 404, fmt.Errorf("vm %s is not a cluster member", spec.Name)
 	}
 	if proto == "" {
 		proto = "tcp"
@@ -167,7 +184,7 @@ func (s *Server) handleMapRemove(w http.ResponseWriter, r *http.Request) {
 			for _, m := range cl.Maps {
 				_ = s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort)
 			}
-			_ = s.pushGatewayConfig(cl.ID)
+			_ = s.pushBounded(cl.ID)
 		}
 	}
 	s.relays.Remove(proto, port)
@@ -191,15 +208,6 @@ func (s *Server) handleMapRemove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"removed": port})
-}
-
-func freeLoopbackPort(proto string) (int, error) {
-	for p := 18080; p < 18080+2000; p++ {
-		if portFree(proto, p) == nil {
-			return p, nil
-		}
-	}
-	return 0, fmt.Errorf("no free loopback port")
 }
 
 func portFree(proto string, port int) error {

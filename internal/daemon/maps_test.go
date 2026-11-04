@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/huangzheng2016/pvm/internal/agent"
@@ -73,15 +74,25 @@ func newMapTestServer(t *testing.T) (*Server, *vm.Spec, *vm.Spec) {
 
 func okPush(ctx context.Context, clusterID int) error { return nil }
 
-// freePort reserves nothing but returns a currently-free loopback port,
-// so parallel test runs never collide on fixed ports.
+// testPorts remembers ports already handed out in this test process:
+// freeLoopbackPort's check-then-close can otherwise return the same
+// port twice in a row, and a plain retry loop would spin on it.
+var testPorts sync.Map // int -> bool
+
+// freePort returns a currently-free loopback port never before handed
+// out in this process, so parallel test runs never collide.
 func freePort(t *testing.T, proto string) int {
 	t.Helper()
-	port, err := freeLoopbackPort(proto)
-	if err != nil {
-		t.Fatal(err)
+	for p := 18080; p < 18080+2000; p++ {
+		if _, taken := testPorts.LoadOrStore(p, true); taken {
+			continue
+		}
+		if portFree(proto, p) == nil {
+			return p
+		}
 	}
-	return port
+	t.Fatal("no free test port")
+	return 0
 }
 
 func TestHandleMapAddValidation(t *testing.T) {

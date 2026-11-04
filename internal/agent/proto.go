@@ -87,11 +87,18 @@ func (fw *frameWriter) write(f *Frame) error {
 		return err
 	}
 	data = append(data, '\n')
-	if _, err := fw.w.Write(data); err == nil {
-		err = fw.w.Flush()
+	if _, err := fw.w.Write(data); err != nil {
+		fw.err = err
+		return err
 	}
-	fw.err = err
-	return err
+	// Flush failures must latch too: a swallowed flush error leaves the
+	// caller thinking the frame landed and poisons nothing, while the
+	// sticky writer keeps "succeeding" on a dead channel.
+	if err := fw.w.Flush(); err != nil {
+		fw.err = err
+		return err
+	}
+	return nil
 }
 
 func readFrame(r *bufio.Reader, f *Frame) error {

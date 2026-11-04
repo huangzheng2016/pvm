@@ -31,6 +31,11 @@ type Client struct {
 	busySem chan struct{}
 	closed  bool
 
+	// Per-client timeout overrides (zero = package default); tests
+	// shorten them without racing leaked goroutines on shared vars.
+	ctrlHandlerTimeout time.Duration
+	ctrlWriteTimeout   time.Duration
+
 	done     chan struct{} // closed on connection loss or Close
 	doneOnce sync.Once
 }
@@ -133,19 +138,47 @@ func (c *Client) dispatchControl(f *Frame) {
 	default:
 		resp.Op, resp.Payload, resp.Error = c.runControl(h, f)
 	}
-	c.writeWithDeadline(&resp, time.Now().Add(controlWriteTimeout))
+	if err := c.writeWithDeadline(&resp, time.Now().Add(c.writeTimeout())); err != nil {
+		c.kill(err)
+	}
 }
 
 func (c *Client) writeControlBusy(f *Frame) {
 	defer func() { <-c.busySem }()
-	c.writeWithDeadline(&Frame{ID: f.ID, Error: "control busy"}, time.Now().Add(controlBusyWriteTimeout))
+	if err := c.writeWithDeadline(&Frame{ID: f.ID, Error: "control busy"}, time.Now().Add(controlBusyWriteTimeout)); err != nil {
+		c.kill(err)
+	}
+}
+
+func (c *Client) handlerTimeout() time.Duration {
+	if c.ctrlHandlerTimeout > 0 {
+		return c.ctrlHandlerTimeout
+	}
+	return controlHandlerTimeout
+}
+
+func (c *Client) writeTimeout() time.Duration {
+	if c.ctrlWriteTimeout > 0 {
+		return c.ctrlWriteTimeout
+	}
+	return controlWriteTimeout
+}
+
+// kill tears the connection down after a failed control write: the
+// frameWriter latches the first error, so the channel stays poisoned
+// even if the peer resumes reading — closing it marks the client dead
+// (waking the daemon's watcher to redial a fresh one) and unblocks
+// every pending call.
+func (c *Client) kill(err error) {
+	c.failAll(err)
+	c.conn.Close()
 }
 
 // runControl executes the handler under an overall deadline that is
 // also cancelled when the connection drops, so abandoned requests stop
 // consuming host resources.
 func (c *Client) runControl(h ControlHandler, f *Frame) (string, json.RawMessage, string) {
-	ctx, cancel := context.WithTimeout(context.Background(), controlHandlerTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), c.handlerTimeout())
 	defer cancel()
 	if c.done != nil {
 		go func() {

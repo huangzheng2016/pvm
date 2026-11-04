@@ -29,7 +29,8 @@ const maxConcurrentControls = 8
 const maxConcurrentControlRefusals = 2
 
 // controlWriteTimeout bounds a control response write so a guest that
-// stopped reading cannot pin dispatch goroutines on the wire.
+// stopped reading cannot pin dispatch goroutines on the wire; the
+// failed write then kills the connection.
 const controlWriteTimeout = 10 * time.Second
 
 // controlBusyWriteTimeout bounds a "control busy" refusal write.
@@ -42,9 +43,8 @@ const controlCallTimeout = 30 * time.Second
 
 // controlHandlerTimeout bounds one host-side control handler: the guest
 // broker gives up at controlCallTimeout, so the host stops earlier and
-// its error still reaches the guest. It is a variable so tests can
-// shorten it.
-var controlHandlerTimeout = 25 * time.Second
+// its error still reaches the guest.
+const controlHandlerTimeout = 25 * time.Second
 
 // Control actions a guest may request; the host rejects anything else.
 const (

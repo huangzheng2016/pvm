@@ -113,11 +113,11 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.mapMu.Lock()
-		for _, pm := range added {
-			s.relays.Remove(pm.Proto, pm.HostPort)
-		}
-		s.Clusters.RemoveVM(cl.ID, spec.Name)
-		_ = s.pushGatewayConfig(cl.ID)
+		// Clean up from the latest store, not just `added`: a map
+		// committed for the clone after the snapshot must not orphan
+		// its relay.
+		s.removeVMMapsLocked(cl.ID, spec.Name)
+		_ = s.pushBounded(cl.ID)
 		s.mapMu.Unlock()
 		_ = s.instance(spec).Stop()
 		s.removeLink(cl, spec.Name)
@@ -156,7 +156,7 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 			added = append(added, pm)
 		}
 		if len(added) > 0 {
-			if err := s.pushGatewayConfig(cl.ID); err != nil {
+			if err := s.pushBounded(cl.ID); err != nil {
 				return 500, fmt.Errorf("clone created but gateway config push failed: %w", err)
 			}
 		}

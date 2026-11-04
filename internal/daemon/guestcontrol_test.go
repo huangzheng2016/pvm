@@ -18,6 +18,7 @@ import (
 	"github.com/huangzheng2016/pvm/internal/agent"
 	"github.com/huangzheng2016/pvm/internal/cluster"
 	"github.com/huangzheng2016/pvm/internal/qemu"
+	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
 func TestGuestMapListScoped(t *testing.T) {
@@ -708,4 +709,193 @@ func TestGuestRemoveInterleavesWithHostMapPaths(t *testing.T) {
 			t.Fatalf("iter %d: relay outlives the map", i)
 		}
 	}
+}
+
+// Recovery must restore relays from the latest store, not a snapshot
+// taken before the lock: a map removed after the snapshot but before
+// the restore must stay unbound, or its port later forwards another
+// VM's traffic.
+func TestRecoverRelaysUsesLatestStore(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	portKept := freePort(t, "tcp")
+	portRemoved := freePort(t, "tcp")
+	if _, err := s.Clusters.AddMap(dev1.ClusterID, "dev1", dev1.IP, portKept, 80, "tcp"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Clusters.AddMap(dev1.ClusterID, "dev1", dev1.IP, portRemoved, 81, "tcp"); err != nil {
+		t.Fatal(err)
+	}
+
+	// recovery is blocked on mapMu; the remove commits first (store
+	// mutex only), so the restore must observe it.
+	s.mapMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.recoverRelays()
+	}()
+	if _, err := s.Clusters.RemoveMap(dev1.ClusterID, portRemoved, "tcp"); err != nil {
+		t.Fatal(err)
+	}
+	s.mapMu.Unlock()
+	<-done
+
+	if err := portFree("tcp", portRemoved); err != nil {
+		t.Fatal("recover re-bound a removed map's port")
+	}
+	if err := portFree("tcp", portKept); err == nil {
+		t.Fatal("recover failed to bind a live map's port")
+	}
+}
+
+// addMap must re-verify cluster membership so a delete/rollback that
+// already removed the VM cannot be re-entered by a late map.
+func TestAddMapRequiresClusterMembership(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	port := freePort(t, "tcp")
+	s.mapMu.Lock()
+	s.Clusters.RemoveVM(dev1.ClusterID, "dev1")
+	s.mapMu.Unlock()
+
+	_, code, err := s.addMap(context.Background(), dev1, port, 80, "tcp", okPush)
+	if err == nil || code != 404 || !strings.Contains(err.Error(), "not a cluster member") {
+		t.Fatalf("add for removed vm = %d %v, want 404 membership", code, err)
+	}
+	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 0 {
+		t.Fatalf("no map may be created for a removed vm: %+v", got)
+	}
+}
+
+// Relay cleanup for a removed VM must read the latest store: a map
+// committed after the caller's snapshot still gets its relay removed.
+func TestRemoveVMMapsLockedUsesLatestStore(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	port1 := freePort(t, "tcp")
+	port2 := freePort(t, "tcp")
+	m1, err := s.Clusters.AddMap(dev1.ClusterID, "dev1", dev1.IP, port1, 80, "tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.relays.Ensure("tcp", port1, m1.PoolPort); err != nil {
+		t.Fatal(err)
+	}
+	// The caller's snapshot predates the second map.
+	cl := s.Clusters.Get(dev1.ClusterID)
+	m2, err := s.Clusters.AddMap(dev1.ClusterID, "dev1", dev1.IP, port2, 81, "tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.relays.Ensure("tcp", port2, m2.PoolPort); err != nil {
+		t.Fatal(err)
+	}
+
+	s.mapMu.Lock()
+	s.removeVMMapsLocked(cl.ID, "dev1")
+	s.mapMu.Unlock()
+
+	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 0 {
+		t.Fatalf("maps remain after removal: %+v", got)
+	}
+	if err := portFree("tcp", port1); err != nil {
+		t.Fatal("relay for the snapshot map survives")
+	}
+	if err := portFree("tcp", port2); err != nil {
+		t.Fatal("relay for the post-snapshot map survives")
+	}
+}
+
+// A real host delete racing a map add must leave no map and no relay
+// for the deleted VM, in either order.
+func TestDeleteInterleavesWithAdd(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	port := freePort(t, "tcp")
+	for i := 0; i < 10; i++ {
+		if _, _, err := s.addMap(context.Background(), dev1, port, 80, "tcp", okPush); err != nil {
+			t.Fatal(err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest("DELETE", "/v1/vms/dev1", nil)
+			req.SetPathValue("name", "dev1")
+			s.handleDelete(httptest.NewRecorder(), req)
+		}()
+		go func() {
+			defer wg.Done()
+			s.addMap(context.Background(), dev1, port, 80, "tcp", okPush)
+		}()
+		wg.Wait()
+
+		for _, cl := range s.Clusters.List() {
+			for _, m := range cl.Maps {
+				if m.VM == "dev1" {
+					t.Fatalf("iter %d: map for deleted vm survives: %+v", i, m)
+				}
+			}
+			if cl.VMs["dev1"] != nil {
+				t.Fatalf("iter %d: deleted vm still a member", i)
+			}
+		}
+		if err := portFree("tcp", port); err != nil {
+			t.Fatalf("iter %d: relay for deleted vm's map survives", i)
+		}
+
+		// Recreate dev1 for the next round.
+		vnet, err := s.Clusters.AddVM(dev1.ClusterID, "dev1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		dev1.IP = vnet.IP
+		if err := os.MkdirAll(s.P.VMDir("dev1"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := dev1.Save(s.P); err != nil {
+			t.Fatal(err)
+		}
+		s.mu.Lock()
+		s.vms["dev1"] = dev1
+		s.mu.Unlock()
+	}
+}
+
+// pushBounded must give up on its own when the push gate never opens,
+// so a hung ssh cannot hold mapMu forever.
+func TestPushBoundedReleasesOnTimeout(t *testing.T) {
+	s := newPushTestServer(t)
+	cl, err := s.Clusters.Ensure(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw := &vm.Spec{Name: cl.Gateway, Role: "gateway", User: "pvmgw"}
+	if err := os.MkdirAll(s.P.VMDir(gw.Name), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Save(s.P); err != nil {
+		t.Fatal(err)
+	}
+
+	old := rollbackPushTimeout
+	rollbackPushTimeout = 100 * time.Millisecond
+	defer func() { rollbackPushTimeout = old }()
+
+	started := make(chan struct{})
+	hold := make(chan struct{})
+	go func() {
+		_ = s.renderGatewayConfigLocked(context.Background(), 1, func([]byte) error {
+			close(started)
+			<-hold
+			return nil
+		})
+	}()
+	<-started
+	begin := time.Now()
+	err = s.pushBounded(1)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("pushBounded = %v, want context.DeadlineExceeded", err)
+	}
+	if time.Since(begin) > 5*time.Second {
+		t.Fatal("pushBounded outlived its bound")
+	}
+	close(hold)
 }

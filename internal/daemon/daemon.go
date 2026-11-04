@@ -446,8 +446,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 			s.mapMu.Lock()
 			s.closeVMResources(spec.Name, cl)
 			s.removeLink(cl, spec.Name)
-			s.Clusters.RemoveVM(cl.ID, spec.Name)
-			_ = s.pushGatewayConfig(cl.ID)
+			_ = s.pushBounded(cl.ID)
 			s.mapMu.Unlock()
 			_ = vm.Delete(s.P, spec.Name)
 			s.mu.Lock()
@@ -693,8 +692,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	s.closeVMResources(name, cl)
 	if cl != nil {
 		s.removeLink(cl, name)
-		s.Clusters.RemoveVM(cl.ID, name)
-		if err := s.pushGatewayConfig(cl.ID); err != nil {
+		if err := s.pushBounded(cl.ID); err != nil {
 			log.Printf("delete %s: gateway config push failed: %v", name, err)
 		}
 	}
@@ -764,6 +762,11 @@ func (s *Server) recoverClusters() {
 			log.Printf("recover cluster %d: %v", cl.ID, err)
 			continue
 		}
+		// Restore relays from the CURRENT store inside mapMu: a snapshot
+		// taken earlier could rebind a port whose map was just removed,
+		// and the stale relay would later forward another VM's traffic.
+		s.recoverRelays()
+		var running []*vm.Spec
 		for _, vn := range cl.VMs {
 			spec, err := s.getSpec(vn.Name)
 			if err != nil {
@@ -773,22 +776,33 @@ func (s *Server) recoverClusters() {
 				if err := s.ensureLink(cl, vn.Name); err != nil {
 					log.Printf("recover link %s: %v", vn.Name, err)
 				}
-				// The guest agent survives a daemon restart (systemd
-				// unit); re-establish the control connection for VMs
-				// that stayed up.
-				s.ensureControlWatcher(spec)
+				running = append(running, spec)
 			}
 		}
-		s.mapMu.Lock()
+		// Control for this cluster opens only after its relays match
+		// the store, so guests cannot observe half-recovered state.
+		for _, spec := range running {
+			s.ensureControlWatcher(spec)
+		}
+		go s.deployClusterAgent(cl)
+	}
+	s.ready.Store(healthy)
+}
+
+// recoverRelays re-establishes relays for exactly what the store holds
+// at lock time: a remove that committed before the lock must not see
+// its port rebound, or the stale relay later forwards another VM's
+// traffic once the pool port is reused.
+func (s *Server) recoverRelays() {
+	s.mapMu.Lock()
+	defer s.mapMu.Unlock()
+	for _, cl := range s.Clusters.List() {
 		for _, m := range cl.Maps {
 			if err := s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort); err != nil {
 				log.Printf("recover relay %s/%d: %v", m.Proto, m.HostPort, err)
 			}
 		}
-		s.mapMu.Unlock()
-		go s.deployClusterAgent(cl)
 	}
-	s.ready.Store(healthy)
 }
 
 func Run(p *paths.Paths, srv *Server) error {

@@ -193,7 +193,7 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err)
 			return
 		}
-		if err := s.pushGatewayConfig(spec.ClusterID); err != nil {
+		if err := s.pushBounded(spec.ClusterID); err != nil {
 			writeErr(w, 500, err)
 			return
 		}
@@ -243,7 +243,7 @@ func (s *Server) handleDesktopStop(w http.ResponseWriter, r *http.Request) {
 				_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
 			}
 		}
-		_ = s.pushGatewayConfig(spec.ClusterID)
+		_ = s.pushBounded(spec.ClusterID)
 	}
 	_ = os.Remove(s.desktopPath(name))
 	writeJSON(w, 200, map[string]any{"stopped": name})
