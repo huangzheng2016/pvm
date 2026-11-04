@@ -11,8 +11,29 @@ cd "$SCRIPT_DIR/.."
 rm -f internal/assets/packed/gateway-linux-* internal/assets/packed/agent-linux-*
 
 echo "== guest binaries ($PVM_HOSTARCH)"
-CGO_ENABLED=0 GOOS=linux GOARCH="$PVM_HOSTARCH" go build -trimpath -ldflags='-s -w' -o "internal/assets/packed/gateway-linux-$PVM_HOSTARCH" ./cmd/gateway
-CGO_ENABLED=0 GOOS=linux GOARCH="$PVM_HOSTARCH" go build -trimpath -ldflags='-s -w' -o "internal/assets/packed/agent-linux-$PVM_HOSTARCH" ./cmd/pvm
+PVM_GARBLE_VERSION=v0.17.0
+PVM_GARBLE_SEED=cHZtZ3Vlc3Q=
+if ! command -v garble >/dev/null 2>&1; then
+  echo "error: garble $PVM_GARBLE_VERSION is required: go install mvdan.cc/garble@$PVM_GARBLE_VERSION" >&2
+  exit 1
+fi
+garble_version=$(garble version)
+garble_first_line=${garble_version%%$'\n'*}
+if [ "$garble_first_line" != "mvdan.cc/garble $PVM_GARBLE_VERSION" ]; then
+  echo "error: found $garble_first_line; install mvdan.cc/garble@$PVM_GARBLE_VERSION" >&2
+  exit 1
+fi
+CGO_ENABLED=0 GOOS=linux GOARCH="$PVM_HOSTARCH" go build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o "internal/assets/packed/gateway-linux-$PVM_HOSTARCH" ./cmd/gateway
+CGO_ENABLED=0 GOOS=linux GOARCH="$PVM_HOSTARCH" garble -tiny -seed="$PVM_GARBLE_SEED" build -trimpath -buildvcs=false -ldflags='-s -w -buildid=' -o "internal/assets/packed/agent-linux-$PVM_HOSTARCH" ./cmd/agent
+agent_bin="internal/assets/packed/agent-linux-$PVM_HOSTARCH"
+if ! go version -m "$agent_bin" >/dev/null 2>&1; then
+  echo "error: cannot read guest Go metadata" >&2
+  exit 1
+fi
+if { strings "$agent_bin"; go version -m "$agent_bin"; } | grep -Ei 'github\.com/huangzheng2016|huangzheng' >/dev/null; then
+  echo "error: obfuscated guest contains repository identifiers" >&2
+  exit 1
+fi
 
 echo "== assetpack"
 go run ./cmd/assetpack
