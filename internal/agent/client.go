@@ -17,6 +17,9 @@ import (
 // can distinguish it from in-guest command failures and fall back.
 var ErrUnreachable = errors.New("agent channel unreachable")
 
+// A full 16-request burst must fit even before the workers get scheduled.
+const maxQueuedControls = 2 * maxConcurrentControls
+
 type Client struct {
 	sock string
 	conn net.Conn
@@ -24,12 +27,13 @@ type Client struct {
 	wmu  sync.Mutex
 	r    *bufio.Reader
 
-	mu      sync.Mutex
-	pending map[string]chan Frame
-	control ControlHandler
-	ctrlSem chan struct{}
-	busySem chan struct{}
-	closed  bool
+	mu        sync.Mutex
+	pending   map[string]chan Frame
+	control   ControlHandler
+	ctrlQueue chan Frame
+	busySem   chan struct{}
+	ctrlWG    sync.WaitGroup
+	closed    bool
 
 	// Per-client timeout overrides (zero = package default); tests
 	// shorten them without racing leaked goroutines on shared vars.
@@ -66,15 +70,11 @@ func (c *Client) readLoop() {
 			return
 		}
 		if f.Op == OpControl {
-			// Bounded admission BEFORE any goroutine spawns: the
-			// semaphore caps running handlers, a smaller one caps
-			// in-flight refusals, and past both, frames are dropped
-			// (the guest's own request timeout is the backstop) — a
-			// flooding guest cannot accumulate host goroutines.
-			ctrlSem, busySem := c.controlSems()
+			// Admission never waits for a handler or a response write. The
+			// queue and refusal semaphore bound all control-related work.
+			queue, busySem := c.controlState()
 			select {
-			case ctrlSem <- struct{}{}:
-				go c.dispatchControl(&f)
+			case queue <- f:
 			default:
 				select {
 				case busySem <- struct{}{}:
@@ -108,24 +108,45 @@ func (c *Client) HandleControl(h ControlHandler) {
 	c.control = h
 }
 
-// controlSems lazily creates the admission semaphores (tests construct
+// controlState lazily starts a fixed worker pool (tests construct
 // Clients directly).
-func (c *Client) controlSems() (chan struct{}, chan struct{}) {
+func (c *Client) controlState() (chan Frame, chan struct{}) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.ctrlSem == nil {
-		c.ctrlSem = make(chan struct{}, maxConcurrentControls)
+	if c.done == nil {
+		c.done = make(chan struct{})
+	}
+	if c.ctrlQueue == nil {
+		c.ctrlQueue = make(chan Frame, maxQueuedControls)
+		c.ctrlWG.Add(maxConcurrentControls)
+		for i := 0; i < maxConcurrentControls; i++ {
+			go c.controlWorker(c.ctrlQueue, c.done)
+		}
 	}
 	if c.busySem == nil {
 		c.busySem = make(chan struct{}, maxConcurrentControlRefusals)
 	}
-	return c.ctrlSem, c.busySem
+	return c.ctrlQueue, c.busySem
 }
 
-// dispatchControl runs an admitted control request; the semaphore slot
-// is released when the response write completes or times out.
+func (c *Client) controlWorker(queue <-chan Frame, done <-chan struct{}) {
+	defer c.ctrlWG.Done()
+	for {
+		select {
+		case <-done:
+			return
+		case f := <-queue:
+			select {
+			case <-done:
+				return
+			default:
+			}
+			c.dispatchControl(&f)
+		}
+	}
+}
+
 func (c *Client) dispatchControl(f *Frame) {
-	defer func() { <-c.ctrlSem }()
 	c.mu.Lock()
 	h := c.control
 	c.mu.Unlock()
@@ -201,8 +222,14 @@ func (c *Client) runControl(h ControlHandler, f *Frame) (string, json.RawMessage
 }
 
 func (c *Client) signalDone() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.signalDoneLocked()
+}
+
+func (c *Client) signalDoneLocked() {
 	if c.done == nil {
-		return
+		c.done = make(chan struct{})
 	}
 	c.doneOnce.Do(func() { close(c.done) })
 }
@@ -211,7 +238,7 @@ func (c *Client) failAll(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.closed = true
-	c.signalDone()
+	c.signalDoneLocked()
 	for id, ch := range c.pending {
 		delete(c.pending, id)
 		ch <- Frame{ID: id, Error: fmt.Sprintf("%v: %v", ErrUnreachable, err)}

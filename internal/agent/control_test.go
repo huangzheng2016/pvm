@@ -73,9 +73,12 @@ func TestControlSessionDropFailsPending(t *testing.T) {
 	srv := NewServer()
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(guest) }()
-	c := &Client{conn: host, w: newFrameWriter(host), r: bufioReader(host), pending: map[string]chan Frame{}}
+	c := &Client{conn: host, w: newFrameWriter(host), r: bufioReader(host), pending: map[string]chan Frame{}, done: make(chan struct{})}
+	started := make(chan struct{}, 1)
 	c.HandleControl(func(ctx context.Context, req *Frame) ([]byte, error) {
-		select {} // never answer
+		started <- struct{}{}
+		<-ctx.Done()
+		return nil, ctx.Err()
 	})
 	go c.readLoop()
 	waitSession(t, srv)
@@ -85,8 +88,11 @@ func TestControlSessionDropFailsPending(t *testing.T) {
 		_, err := srv.Control(ControlMapList, nil, time.Minute)
 		errCh <- err
 	}()
-	// Let the request reach the handler, then kill the host side.
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not start")
+	}
 	host.Close()
 	select {
 	case err := <-errCh:
@@ -97,6 +103,7 @@ func TestControlSessionDropFailsPending(t *testing.T) {
 		t.Fatal("pending control was not failed on disconnect")
 	}
 	<-done
+	waitControlWorkers(t, c)
 }
 
 func TestControlReconnect(t *testing.T) {
@@ -461,7 +468,10 @@ func waitBroker(t *testing.T, sock string) {
 }
 
 func TestControlConcurrencyLimit(t *testing.T) {
-	entered := make(chan struct{}, maxConcurrentControls+4)
+	accepted := maxConcurrentControls + maxQueuedControls
+	const extra = 3
+	total := accepted + extra
+	entered := make(chan struct{}, total)
 	release := make(chan struct{})
 	srv, _ := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
 		entered <- struct{}{}
@@ -469,13 +479,11 @@ func TestControlConcurrencyLimit(t *testing.T) {
 		return []byte(`{}`), nil
 	})
 
-	// 8 handlers run; of the excess, at most maxConcurrentControlRefusals
-	// get a busy refusal, the rest are dropped (and see their own
-	// timeout — the guest-side backstop).
-	const extra = 3
+	// Eight handlers run and another maxQueuedControls wait in the queue.
+	// Only requests beyond that fixed capacity may be refused or dropped.
 	var wg sync.WaitGroup
-	errs := make(chan error, maxConcurrentControls+extra)
-	for i := 0; i < maxConcurrentControls+extra; i++ {
+	errs := make(chan error, total)
+	for i := 0; i < total; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -484,7 +492,7 @@ func TestControlConcurrencyLimit(t *testing.T) {
 		}()
 	}
 	// While the first maxConcurrentControls handlers are blocked, the
-	// refusals must come back without queueing.
+	// overflow refusals must come back without queueing.
 	busy := 0
 	for busy < maxConcurrentControlRefusals {
 		select {
@@ -512,11 +520,8 @@ func TestControlConcurrencyLimit(t *testing.T) {
 			busy++
 		}
 	}
-	// Exactly 8 handlers ran; every excess request got either a busy
-	// refusal or was dropped (busy slots free as refusals drain, so the
-	// split between the two is timing-dependent).
-	if done != maxConcurrentControls {
-		t.Fatalf("done = %d, want %d", done, maxConcurrentControls)
+	if done != accepted {
+		t.Fatalf("done = %d, want %d", done, accepted)
 	}
 	if busy+dropped != extra {
 		t.Fatalf("busy = %d, dropped = %d; want %d excess accounted", busy, dropped, extra)
@@ -544,6 +549,7 @@ func TestControlDisconnectCancelsHandler(t *testing.T) {
 	srv := NewServer()
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- srv.Serve(guest) }()
+	handlerStarted := make(chan struct{}, 1)
 	handlerDone := make(chan error, 1)
 	c := &Client{
 		conn:    host,
@@ -553,6 +559,7 @@ func TestControlDisconnectCancelsHandler(t *testing.T) {
 		done:    make(chan struct{}),
 	}
 	c.HandleControl(func(ctx context.Context, req *Frame) ([]byte, error) {
+		handlerStarted <- struct{}{}
 		<-ctx.Done() // cancelled by the disconnect, not by the deadline
 		handlerDone <- ctx.Err()
 		return nil, ctx.Err()
@@ -565,8 +572,12 @@ func TestControlDisconnectCancelsHandler(t *testing.T) {
 		_, err := srv.Control(ControlMapList, nil, time.Minute)
 		errCh <- err
 	}()
-	time.Sleep(100 * time.Millisecond) // let the handler start
-	c.Close()                          // connection drops
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not start")
+	}
+	c.Close()
 	select {
 	case err := <-handlerDone:
 		if !errors.Is(err, context.Canceled) {
@@ -577,12 +588,84 @@ func TestControlDisconnectCancelsHandler(t *testing.T) {
 	}
 	<-errCh
 	<-serveDone
+	waitControlWorkers(t, c)
+}
+
+func TestControlDisconnectFailsPendingAndStopsWorkers(t *testing.T) {
+	host, guest := net.Pipe()
+	srv := NewServer()
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- srv.Serve(guest) }()
+	c := &Client{
+		conn:    host,
+		w:       newFrameWriter(host),
+		r:       bufioReader(host),
+		pending: map[string]chan Frame{},
+		done:    make(chan struct{}),
+	}
+	defer c.Close()
+	total := maxConcurrentControls + maxQueuedControls
+	started := make(chan struct{}, total)
+	var calls atomic.Int32
+	c.HandleControl(func(ctx context.Context, req *Frame) ([]byte, error) {
+		calls.Add(1)
+		started <- struct{}{}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	go c.readLoop()
+	waitSession(t, srv)
+
+	errs := make(chan error, total)
+	for i := 0; i < maxConcurrentControls; i++ {
+		go func() {
+			_, err := srv.Control(ControlMapList, nil, time.Minute)
+			errs <- err
+		}()
+	}
+	for i := 0; i < maxConcurrentControls; i++ {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d handlers started", i)
+		}
+	}
+	for i := maxConcurrentControls; i < total; i++ {
+		go func() {
+			_, err := srv.Control(ControlMapList, nil, time.Minute)
+			errs <- err
+		}()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(c.ctrlQueue) != maxQueuedControls && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := len(c.ctrlQueue); got != maxQueuedControls {
+		t.Fatalf("queued = %d, want %d", got, maxQueuedControls)
+	}
+
+	c.Close()
+	for i := 0; i < total; i++ {
+		select {
+		case err := <-errs:
+			if err == nil || !strings.Contains(err.Error(), "host session ended") {
+				t.Fatalf("pending control error = %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("pending control was not failed on disconnect")
+		}
+	}
+	<-serveDone
+	waitControlWorkers(t, c)
+	if got := calls.Load(); got != maxConcurrentControls {
+		t.Fatalf("handler calls = %d, want only the %d running requests", got, maxConcurrentControls)
+	}
 }
 
 // A guest that floods control frames without ever reading responses
-// must not accumulate host goroutines: admission caps running handlers
-// and refusal writers, the rest are dropped, and the channel keeps
-// working once the guest resumes reading.
+// must not accumulate host goroutines: fixed workers, a bounded queue,
+// and bounded refusal writers cap the work. The channel keeps working
+// once the guest resumes reading.
 func TestControlFloodBoundedWithoutReading(t *testing.T) {
 	host, guest := net.Pipe()
 	defer host.Close()
@@ -594,29 +677,41 @@ func TestControlFloodBoundedWithoutReading(t *testing.T) {
 		pending: map[string]chan Frame{},
 		done:    make(chan struct{}),
 	}
-	entered := make(chan struct{}, 1024)
+	const flood = 100
+	entered := make(chan struct{}, flood)
 	release := make(chan struct{})
+	var active, maxActive atomic.Int32
 	c.HandleControl(func(ctx context.Context, req *Frame) ([]byte, error) {
+		current := active.Add(1)
+		defer active.Add(-1)
+		for {
+			max := maxActive.Load()
+			if current <= max || maxActive.CompareAndSwap(max, current) {
+				break
+			}
+		}
 		entered <- struct{}{}
-		<-release
-		return []byte(`{}`), nil
+		select {
+		case <-release:
+			return []byte(`{}`), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	})
 	go c.readLoop()
 
-	const flood = 100
-	floodDone := make(chan struct{})
+	floodErr := make(chan error, 1)
 	go func() {
-		defer close(floodDone)
 		w := newFrameWriter(guest)
 		for i := 0; i < flood; i++ {
 			if err := w.write(&Frame{ID: fmt.Sprintf("f%d", i), Op: OpControl, Action: ControlMapList}); err != nil {
+				floodErr <- err
 				return
 			}
 		}
+		floodErr <- nil
 	}()
 
-	// Exactly maxConcurrentControls handlers may run; a 9th must never
-	// start while these are blocked, no matter how many frames arrive.
 	for i := 0; i < maxConcurrentControls; i++ {
 		select {
 		case <-entered:
@@ -624,34 +719,57 @@ func TestControlFloodBoundedWithoutReading(t *testing.T) {
 			t.Fatalf("only %d handlers admitted", i)
 		}
 	}
-	<-floodDone
-	select {
-	case <-entered:
-		t.Fatal("a 9th handler started over the cap")
-	case <-time.After(200 * time.Millisecond):
+	if err := <-floodErr; err != nil {
+		t.Fatalf("flood write: %v", err)
+	}
+	// Reading this non-control barrier means every earlier control frame
+	// has completed admission while the queue and refusal writers are full.
+	if err := newFrameWriter(guest).write(&Frame{ID: "barrier", Op: OpPing}); err != nil {
+		t.Fatalf("flood barrier: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for (len(c.ctrlQueue) != maxQueuedControls || len(c.busySem) != maxConcurrentControlRefusals) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := len(c.ctrlQueue); got != maxQueuedControls {
+		t.Fatalf("queued = %d, want %d", got, maxQueuedControls)
+	}
+	if got := len(c.busySem); got != maxConcurrentControlRefusals {
+		t.Fatalf("refusal writers = %d, want %d", got, maxConcurrentControlRefusals)
+	}
+	if got := maxActive.Load(); got != maxConcurrentControls {
+		t.Fatalf("concurrent handlers = %d, want %d", got, maxConcurrentControls)
 	}
 
-	// Once the guest reads, at most cap+refusals responses ever arrive;
-	// everything else was dropped, not queued.
+	accepted := maxConcurrentControls + maxQueuedControls
+	expected := accepted + maxConcurrentControlRefusals
 	close(release)
-	got := 0
 	r := bufio.NewReaderSize(guest, 64<<10)
-	guest.SetReadDeadline(time.Now().Add(10 * time.Second))
-	for {
+	results, busy := 0, 0
+	for i := 0; i < expected; i++ {
 		var f Frame
+		guest.SetReadDeadline(time.Now().Add(5 * time.Second))
 		if err := readFrame(r, &f); err != nil {
-			break
+			t.Fatalf("read response %d/%d: %v", i+1, expected, err)
 		}
-		got++
-		if got > maxConcurrentControls+maxConcurrentControlRefusals {
-			t.Fatalf("received %d responses, want at most %d", got, maxConcurrentControls+maxConcurrentControlRefusals)
+		switch {
+		case f.Op == OpResult:
+			results++
+		case f.Error == "control busy":
+			busy++
+		default:
+			t.Fatalf("unexpected flood response: %+v", f)
 		}
 	}
-	if got == 0 {
-		t.Fatal("no responses arrived")
+	if results != accepted || busy != maxConcurrentControlRefusals {
+		t.Fatalf("results = %d, busy = %d; want %d and %d", results, busy, accepted, maxConcurrentControlRefusals)
+	}
+	if got := maxActive.Load(); got != maxConcurrentControls {
+		t.Fatalf("peak concurrent handlers = %d, want %d", got, maxConcurrentControls)
 	}
 
-	// The channel is not wedged: a fresh round-trip succeeds.
+	// The next frame must answer a fresh request, not an extra queued or
+	// refused flood request.
 	if err := newFrameWriter(guest).write(&Frame{ID: "ok1", Op: OpControl, Action: ControlMapList}); err != nil {
 		t.Fatal(err)
 	}
@@ -660,6 +778,8 @@ func TestControlFloodBoundedWithoutReading(t *testing.T) {
 	if err := readFrame(r, &f); err != nil || f.Op != OpResult || f.ID != "ok1" {
 		t.Fatalf("post-flood control: %v %+v", err, f)
 	}
+	c.Close()
+	waitControlWorkers(t, c)
 }
 
 // A guest that never reads responses must have its connection torn
@@ -698,6 +818,7 @@ func TestControlWriteTimeoutKillsClientAndRedialWorks(t *testing.T) {
 		t.Fatal("guest should see the connection closed")
 	}
 	guest.Close()
+	waitControlWorkers(t, c)
 
 	// The redialed client works immediately.
 	host2, guest2 := net.Pipe()
@@ -721,5 +842,21 @@ func TestControlWriteTimeoutKillsClientAndRedialWorks(t *testing.T) {
 	guest2.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if err := readFrame(bufio.NewReaderSize(guest2, 64<<10), &f); err != nil || f.Op != OpResult {
 		t.Fatalf("redialed control: %v %+v", err, f)
+	}
+	c2.Close()
+	waitControlWorkers(t, c2)
+}
+
+func waitControlWorkers(t *testing.T, c *Client) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		c.ctrlWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("control workers did not exit")
 	}
 }
