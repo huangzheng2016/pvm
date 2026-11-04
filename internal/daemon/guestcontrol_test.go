@@ -17,6 +17,7 @@ import (
 
 	"github.com/huangzheng2016/pvm/internal/agent"
 	"github.com/huangzheng2016/pvm/internal/cluster"
+	"github.com/huangzheng2016/pvm/internal/native"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
@@ -579,7 +580,7 @@ func TestMapMutationSerializedConcurrent(t *testing.T) {
 }
 
 // A push that really blocks until the request context fires must
-// unblock at the deadline, roll back with a fresh bounded context, and
+// unblock on cancellation, roll back with a fresh bounded context, and
 // release mapMu for the next operation.
 func TestGuestMapRemoveBlockingPushCancelReleasesLock(t *testing.T) {
 	s, dev1, _ := newMapTestServer(t)
@@ -588,6 +589,8 @@ func TestGuestMapRemoveBlockingPushCancelReleasesLock(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	pushes := 0
 	push := func(ctx context.Context, clusterID int) error {
 		pushes++
@@ -596,12 +599,11 @@ func TestGuestMapRemoveBlockingPushCancelReleasesLock(t *testing.T) {
 			// be allowed to complete.
 			return nil
 		}
+		cancel()
 		<-ctx.Done() // a genuinely stuck push, as a hung ssh would be
 		return ctx.Err()
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
 	rmReq, _ := json.Marshal(agent.MapRemoveRequest{HostPort: port, Proto: "tcp"})
 	start := time.Now()
 	_, err := s.guestMapRemove(ctx, "dev1", rmReq, push)
@@ -609,7 +611,7 @@ func TestGuestMapRemoveBlockingPushCancelReleasesLock(t *testing.T) {
 		t.Fatalf("remove = %v, want rolled-back error", err)
 	}
 	if time.Since(start) > 5*time.Second {
-		t.Fatal("the deadline did not unblock the push")
+		t.Fatal("cancellation did not unblock the push")
 	}
 	if pushes != 2 {
 		t.Fatalf("push calls = %d, want blocking push + rollback re-push", pushes)
@@ -1299,7 +1301,7 @@ exit 0
 	if err := os.MkdirAll(s.P.Images, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	base := filepath.Join(s.P.Images, "ubuntu-26.04-arm64.qcow2")
+	base := filepath.Join(s.P.Images, fmt.Sprintf("ubuntu-26.04-%s.qcow2", native.Arch))
 	if err := os.WriteFile(base, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
