@@ -1,6 +1,7 @@
 package exit
 
 import (
+	"fmt"
 	"net"
 	"net/netip"
 	"sync"
@@ -65,7 +66,7 @@ func TestUDPSessionTablePutIfAbsent(t *testing.T) {
 
 	full := newUDPSessionTable(time.Hour)
 	for i := 0; i < udpMaxSessions; i++ {
-		f := udpFlow{srcIP: "10.99.0.2", srcPort: uint16(i), dstIP: "1.1.1.1", dstPort: 53}
+		f := udpFlow{srcIP: fmt.Sprintf("203.0.113.%d", i/maxFlowsPerPeer+1), srcPort: uint16(i), dstIP: "1.1.1.1", dstPort: 53}
 		if !full.putIfAbsent(f, &udpSession{flow: f, lastActive: time.Now()}) {
 			t.Fatalf("putIfAbsent %d below cap rejected", i)
 		}

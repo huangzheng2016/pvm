@@ -28,6 +28,14 @@ func NormalizeMountProfile(profile string) (string, error) {
 // ValidateSpec rejects spec/mount fields that would inject into guest
 // shell (runcmd, ssh argv) or break cloud-init.
 func ValidateSpec(spec *Spec, mounts []GuestMount) error {
+	if err := ValidateShareMode(spec.ShareMode); err != nil {
+		return err
+	}
+	if spec.SSHKeyName != "" {
+		if err := ValidateName(spec.SSHKeyName); err != nil {
+			return fmt.Errorf("invalid ssh key name: %w", err)
+		}
+	}
 	if !userRe.MatchString(spec.User) {
 		return fmt.Errorf("invalid user %q: must match %s", spec.User, userRe)
 	}
@@ -46,4 +54,13 @@ func ValidateSpec(spec *Spec, mounts []GuestMount) error {
 		return fmt.Errorf("invalid git name %q: no $, backquote, backslash or newlines", spec.GitName)
 	}
 	return nil
+}
+
+func ValidateShareMode(mode string) error {
+	switch mode {
+	case "", ShareNone, SharePrivate, ShareGlobal:
+		return nil
+	default:
+		return fmt.Errorf("invalid share mode %q: must be none, private or global", mode)
+	}
 }

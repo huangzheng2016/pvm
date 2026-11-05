@@ -2,78 +2,17 @@ package exit
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
 
-// Suggested timezone detection for the exit-agent: the goal is the IANA
-// zone matching the VPS's *public* geography, so clients routed via this
-// exit can align their environment.
-//
-// Order: ipinfo.io (cached to <stateDir>/tz.json) -> cache -> system
-// timezone -> "" (client treats as UTC).
+// DetectSuggestedTZ uses only local configuration. Starting an exit must not
+// contact a third party merely to choose a timezone.
+var systemTZFn = systemTZ
 
-var (
-	ipinfoURL  = "https://ipinfo.io/json"
-	httpClient = &http.Client{Timeout: httpTimeout}
-	// stubs for tests
-	ipinfoLookup = defaultIPInfoLookup
-	systemTZFn   = systemTZ
-)
-
-func DetectSuggestedTZ(stateDir string) string {
-	cachePath := filepath.Join(stateDir, "tz.json")
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second) //nolint:staticcheck // bounded by httpTimeout too
-	defer cancel()
-	if tz, err := ipinfoLookup(ctx); err == nil && tz != "" {
-		_ = os.MkdirAll(stateDir, 0o700)
-		b, _ := json.Marshal(map[string]string{"tz": tz})
-		_ = os.WriteFile(cachePath, b, 0o600)
-		return tz
-	}
-	if tz := tzFromCache(cachePath); tz != "" {
-		return tz
-	}
-	return systemTZFn()
-}
-
-func defaultIPInfoLookup(ctx context.Context) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", ipinfoURL, nil)
-	if err != nil {
-		return "", err
-	}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	var v struct {
-		Timezone string `json:"timezone"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-		return "", err
-	}
-	return v.Timezone, nil
-}
-
-func tzFromCache(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	var v struct {
-		TZ string `json:"tz"`
-	}
-	if err := json.Unmarshal(b, &v); err != nil {
-		return ""
-	}
-	return v.TZ
-}
+func DetectSuggestedTZ(_ string) string { return systemTZFn() }
 
 // systemTZ resolves the VPS's own zone: /etc/localtime symlink, then
 // timedatectl (bounded), then /etc/timezone text.

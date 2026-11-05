@@ -24,8 +24,6 @@ type BakeOptions struct {
 	P         *paths.Paths
 	TC        *qemu.Toolchain
 	Accel     qemu.Accel
-	SSHKey    string
-	SSHPub    string
 	Out       io.Writer // progress log
 	KeepVM    bool      // keep the build VM for debugging
 	BuildCPUs int
@@ -107,6 +105,10 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 		return nil, fmt.Errorf("base image is in use by another download or build; retry: %w", err)
 	}
 	defer baseLock.Unlock()
+	cat, err := loadGoldenCatalog(o.P.Images)
+	if err != nil {
+		return nil, err
+	}
 
 	cpus, mem, disk := o.BuildCPUs, o.BuildMem, o.BuildDisk
 	if cpus == 0 {
@@ -129,12 +131,13 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 	name := fmt.Sprintf("bake-%s-%s", nameStem, strconv.FormatInt(time.Now().UnixNano(), 36))
 	spec := &vm.Spec{
 		Name: name, Image: o.Spec, User: "baker",
-		GuestUID: os.Getuid(),
-		CPUs:     cpus, MemMB: mem, DiskGB: disk,
+		ShareMode: vm.ShareNone,
+		GuestUID:  os.Getuid(),
+		CPUs:      cpus, MemMB: mem, DiskGB: disk,
 		SSHPort: port, BaseDisk: base,
 	}
 	fmt.Fprintf(o.Out, "creating build vm %s (base %s)\n", name, ref.FileName())
-	if err := vm.Create(o.P, o.TC, spec, o.SSHPub); err != nil {
+	if err := vm.Create(o.P, o.TC, spec); err != nil {
 		return nil, err
 	}
 	inst := &qemu.Instance{
@@ -161,7 +164,7 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 		return nil, fmt.Errorf("start build vm: %w", err)
 	}
 
-	r := &sshRunner{key: o.SSHKey, port: port, user: spec.User}
+	r := &sshRunner{key: spec.SSHKeyPath(o.P), port: port, user: spec.User}
 	fmt.Fprintf(o.Out, "waiting for ssh (cloud-init first boot)...\n")
 	if err := waitSSH(r, 10*time.Minute); err != nil {
 		return nil, err
@@ -219,10 +222,6 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 	}
 
 	digest, err := fileSHA256(base)
-	if err != nil {
-		return nil, err
-	}
-	cat, err := loadGoldenCatalog(o.P.Images)
 	if err != nil {
 		return nil, err
 	}

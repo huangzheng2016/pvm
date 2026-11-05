@@ -94,12 +94,51 @@ func TestCloneDiskUsesActiveRestoreDisk(t *testing.T) {
 	if err := os.WriteFile(src.Seed(p), []byte("seed"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := CloneDisk(p, &qemu.Toolchain{Img: img}, src, dst); err != nil {
+	if _, err := CloneDisk(p, &qemu.Toolchain{Img: img}, src, dst); err != nil {
 		t.Fatal(err)
 	}
 	run(diskIO, "-f", "qcow2", "-c", "read -P 0x5a 0 4k", dst.Disk(p))
 	run(img, "compare", "-f", "qcow2", "-F", "qcow2", snap.Restore, dst.Disk(p))
 	if _, err := os.Stat(filepath.Join(p.VMDir(dst.Name), "seed.img")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCloneDiskDoesNotOwnExistingDestination(t *testing.T) {
+	p := paths.New(t.TempDir())
+	src, dst := &Spec{Name: "dev1"}, &Spec{Name: "dev2"}
+	for _, name := range []string{src.Name, dst.Name} {
+		if err := os.MkdirAll(p.VMDir(name), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(src.Disk(p), []byte("mock"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(p.VMDir(dst.Name), "user-data")
+	if err := os.WriteFile(marker, []byte("keep"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	created, err := CloneDisk(p, &qemu.Toolchain{}, src, dst)
+	if err == nil || created {
+		t.Fatalf("existing destination claimed: created=%v err=%v", created, err)
+	}
+	if data, err := os.ReadFile(marker); err != nil || string(data) != "keep" {
+		t.Fatalf("existing data changed: %q %v", data, err)
+	}
+}
+
+func TestCloneDiskReportsOwnershipAfterConvertFailure(t *testing.T) {
+	p := paths.New(t.TempDir())
+	src, dst := &Spec{Name: "dev1"}, &Spec{Name: "dev2"}
+	if err := os.MkdirAll(p.VMDir(src.Name), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src.Disk(p), []byte("mock"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	created, err := CloneDisk(p, &qemu.Toolchain{Img: filepath.Join(t.TempDir(), "missing-qemu-img")}, src, dst)
+	if err == nil || !created {
+		t.Fatalf("partial clone ownership missing: created=%v err=%v", created, err)
 	}
 }

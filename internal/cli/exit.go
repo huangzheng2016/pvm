@@ -21,7 +21,8 @@ import (
 func CmdExitAgent(args []string) int {
 	fs := newFlagSet("exit-agent", "--token <tok> [--listen :18443] [--transport both|udp|tcp]")
 	listen := fs.String("listen", ":18443", "control plane TLS listen address")
-	token := fs.String("token", "", "bearer token for the control plane (required)")
+	token := fs.String("token", "", "bearer token (prefer --token-file to avoid process arguments)")
+	tokenFile := fs.String("token-file", "", "private file containing the control token")
 	state := fs.String("state", "/var/lib/pvm-exit", "state directory (cert, wg key, peers)")
 	pub := fs.String("public-endpoint", "", "host[:port] announced to clients (default: derive from request)")
 	transports := fs.String("transport", "both", "udp | tcp | both")
@@ -32,7 +33,8 @@ func CmdExitAgent(args []string) int {
 	udpPort := fs.Int("udp-port", 18443, "wireguard UDP port")
 	tcpPort := fs.Int("tcp-port", 18444, "wireguard TCP port")
 	verbose := fs.Bool("v", false, "verbose wireguard logging")
-	dcAllow := fs.String("domain-allow-cidr", "", "comma-separated CIDRs the domain-connect service may dial despite being private/link-local (e.g. 10.0.0.0/8)")
+	tz := fs.String("timezone", "", "suggested IANA timezone (default: local system timezone; no remote lookup)")
+	dcAllow := fs.String("domain-allow-cidr", "", "comma-separated private/link-local CIDRs allowed for exit traffic (e.g. 10.0.0.0/8)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -44,8 +46,13 @@ func CmdExitAgent(args []string) int {
 		fmt.Println(b)
 		return 0
 	}
+	value, err := loadToken(*token, *tokenFile)
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	*token = value
 	if *token == "" {
-		return fatalf("--token is required")
+		return fatalf("--token or --token-file is required")
 	}
 	srv, err := exit.NewServer(exit.ServerConfig{
 		Listen:         *listen,
@@ -60,6 +67,7 @@ func CmdExitAgent(args []string) int {
 		SubnetBase:     *subnetBase,
 		DomainAllow:    splitCSV(*dcAllow),
 		Verbose:        *verbose,
+		SuggestedTZ:    *tz,
 	})
 	if err != nil {
 		return fatalf("exit-agent: %v", err)
@@ -116,7 +124,8 @@ func exitsDir() (string, error) {
 func exitAdd(args []string) int {
 	fs := newFlagSet("exit add", "<name> --server host:port --token <tok> [--transport auto|udp|tcp] [--tz TZ] [--locale L]")
 	server := fs.String("server", "", "control plane host:port")
-	token := fs.String("token", "", "control plane token")
+	token := fs.String("token", "", "control plane token (prefer --token-file)")
+	tokenFile := fs.String("token-file", "", "private file containing the control token")
 	transport := fs.String("transport", "auto", "auto | udp | tcp (auto probes both and picks the fastest)")
 	samples := fs.Int("samples", 3, "speed samples per transport when probing (averaged)")
 	fpExpect := fs.String("fingerprint", "", "expected server cert fingerprint (out-of-band; aborts on mismatch instead of blind TOFU)")
@@ -139,6 +148,11 @@ func exitAdd(args []string) int {
 		}
 		name = fs.Arg(0)
 	}
+	value, err := loadToken(*token, *tokenFile)
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	*token = value
 	if name == "" || *server == "" || *token == "" {
 		fs.Usage()
 		return 2

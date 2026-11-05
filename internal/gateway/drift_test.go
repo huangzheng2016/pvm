@@ -27,7 +27,7 @@ func TestEnsureTunnelRoute(t *testing.T) {
 	if !log.has("add", "fwmark", "153", "lookup", "100", "pref", "100") {
 		t.Fatalf("missing fwmark repair: %v", log.calls)
 	}
-	if !log.has("add", "to", "203.0.113.1/32", "lookup", "main", "pref", "40") {
+	if !log.has("add", "to", "203.0.113.1/32", "iif lo", "fwmark 0", "lookup", "main", "pref", "40") {
 		t.Fatalf("missing endpoint bypass repair: %v", log.calls)
 	}
 }

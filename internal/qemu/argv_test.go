@@ -296,6 +296,14 @@ func TestBuildArgsCommaPathsWithQEMU(t *testing.T) {
 	l.Close()
 	sshPort, _ := strconv.Atoi(port)
 	cfg := &VMConfig{CPUs: 1, MemMB: 128, DiskPath: disk, SeedPath: seed, VarsPath: vars, QMPSock: filepath.Join(dir, "q.sock"), SerialSock: filepath.Join(dir, "s.sock"), AgentSock: filepath.Join(dir, "a.sock"), ConsoleLog: filepath.Join(dir, "console.log"), ShareDir: dir, Accel: AccelTCG, Network: Network{Mode: NetSlirp, SSHHostPort: sshPort}}
+
+	cfg.MountDir = filepath.Join(dir, "mounts")
+	for slot := 1; slot <= MaxExtraMounts; slot++ {
+		if err := os.MkdirAll(filepath.Join(cfg.MountDir, "slot"+strconv.Itoa(slot)), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg.ExtraMounts = []Mount{{Tag: "pvm0", HostPath: filepath.Join(cfg.MountDir, "slot1"), ReadOnly: true}}
 	args, err := BuildArgs(tc, cfg)
 	if err != nil {
 		t.Fatal(err)

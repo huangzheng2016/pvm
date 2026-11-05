@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/huangzheng2016/pvm/internal/native"
 )
@@ -49,13 +50,12 @@ func (p *Paths) Ensure() error {
 			return err
 		}
 	}
-	// The share dir is exported into guests via 9p security_model=none:
-	// guests see host mode bits as-is, so it must be world-traversable
-	// for non-root guest users.
+	// Guests see host mode bits through 9p. Create a traversable global
+	// share, but do not rewrite permissions of an existing user directory.
 	if err := os.MkdirAll(p.Share, 0o755); err != nil {
 		return err
 	}
-	return os.Chmod(p.Share, 0o755)
+	return nil
 }
 
 func (p *Paths) ConfigFile() string       { return filepath.Join(p.Home, "config.yaml") }
@@ -80,4 +80,34 @@ func (p *Paths) AgentSock(name string) string {
 
 func (p *Paths) AgentBin() string {
 	return filepath.Join(p.Runtime, native.GuestBinary("agent"))
+}
+
+func (p *Paths) VMSSHKey(name string) string { return filepath.Join(p.Keys, "vms", name, "id_ed25519") }
+func (p *Paths) VMShare(name string) string  { return filepath.Join(p.VMDir(name), "share") }
+
+func checkPrivateDir(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("pvm state directory must be a directory, not a symlink or file")
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Uid != uint32(os.Getuid()) {
+		return fmt.Errorf("pvm state directory is owned by another user; restore ownership before continuing")
+	}
+	if info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("pvm state directory is accessible to other users; restrict its permissions to 0700 before continuing")
+	}
+	return nil
+}
+
+// CheckPermissions diagnoses existing state directories without changing user-selected paths.
+func (p *Paths) CheckPermissions() error {
+	for _, d := range []string{p.Home, p.Images, p.VMs, p.Clusters, p.Keys, p.Run, p.Runtime} {
+		if err := checkPrivateDir(d); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -81,3 +81,46 @@ func TestEnsurePreservesOrphanPublicKey(t *testing.T) {
 		t.Fatal("replacement private key created")
 	}
 }
+
+func TestEnsureRejectsExposedPrivateKeyWithoutChangingIt(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "id_ed25519")
+	if _, err := Ensure(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(keyPath, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Ensure(keyPath); err == nil {
+		t.Fatal("exposed private key accepted")
+	}
+	after, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) || info.Mode().Perm() != 0644 {
+		t.Fatal("existing key was silently changed")
+	}
+}
+
+func TestEnsureRejectsPrivateKeySymlink(t *testing.T) {
+	dir := t.TempDir()
+	original := filepath.Join(dir, "original")
+	if _, err := Ensure(original); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "linked")
+	if err := os.Symlink(original, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Ensure(link); err == nil {
+		t.Fatal("symlinked key accepted")
+	}
+}

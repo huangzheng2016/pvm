@@ -34,9 +34,9 @@ type ServerConfig struct {
 	NAT            string // auto | nft | iptables | userspace
 	TunPrefix      string // OS TUN name prefix (default "pvmexit")
 	SubnetBase     int    // tunnel subnet octet, 10.<base>.0.0/16 + 10.<base+1>.0.0/16 (default 99)
-	// DomainAllow lists CIDRs the domain-connect service may dial even
-	// though they fall inside blocked private/link-local space.
+	// DomainAllow permits otherwise blocked destinations across all egress protocols.
 	DomainAllow []string
+	SuggestedTZ string // optional explicit IANA timezone; default is local system configuration
 	Verbose     bool
 
 	// TunFactory overrides OS TUN creation (tests); when set, system
@@ -89,6 +89,7 @@ type Server struct {
 	sugTZ       string // suggested client timezone (enroll response)
 	nat         natBackend
 	dcAllow     []*net.IPNet
+	localIPs    []net.IP
 	tr          map[string]*transportRT
 	http        *http.Server
 	ln          net.Listener
@@ -140,13 +141,39 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 			s.Close()
 		}
 	}()
-	s.sugTZ = DetectSuggestedTZ(cfg.StateDir)
+	s.sugTZ = cfg.SuggestedTZ
+	if s.sugTZ != "" {
+		if _, err := time.LoadLocation(s.sugTZ); err != nil {
+			return nil, fmt.Errorf("timezone: %w", err)
+		}
+	} else {
+		s.sugTZ = DetectSuggestedTZ(cfg.StateDir)
+	}
 	for _, c := range cfg.DomainAllow {
 		_, n, err := net.ParseCIDR(c)
 		if err != nil {
 			return nil, fmt.Errorf("--domain-allow-cidr %q: %w", c, err)
 		}
+		if n.IP.To4() == nil {
+			return nil, fmt.Errorf("--domain-allow-cidr must be IPv4")
+		}
 		s.dcAllow = append(s.dcAllow, n)
+	}
+
+	s.localIPs, err = localEgressIPs()
+	if err != nil {
+		return nil, fmt.Errorf("enumerate local egress addresses: %w", err)
+	}
+	switch b := s.nat.(type) {
+	case nftBackend:
+		b.allow = s.dcAllow
+		s.nat = b
+	case iptablesBackend:
+		b.allow = s.dcAllow
+		s.nat = b
+	case *userspaceBackend:
+		b.allow = s.dcAllow
+		b.localIPs = s.localIPs
 	}
 
 	base := cfg.SubnetBase
@@ -290,7 +317,7 @@ func (s *Server) Start() (string, error) {
 	}
 
 	// domain-connect listeners, one per tunnel NIC server address
-	dc := newDCServer(s.dcAllow)
+	dc := newDCServer(s.dcAllow, s.localIPs...)
 	s.dc = dc
 	for _, t := range s.tr {
 		dcAddr := net.JoinHostPort(t.serverIP, itoa(DomainConnectPort))

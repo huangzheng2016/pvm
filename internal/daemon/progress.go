@@ -19,6 +19,9 @@ type StageEvent struct {
 func (s *Server) stage(vmName, stage, detail string) {
 	s.progMu.Lock()
 	defer s.progMu.Unlock()
+	if s.prog == nil {
+		s.prog = make(map[string][]StageEvent)
+	}
 	ev := StageEvent{Stage: stage, Detail: detail, At: time.Now()}
 	evs := append(s.prog[vmName], ev)
 	if len(evs) > 64 {
@@ -35,14 +38,48 @@ func (s *Server) stages(vmName string) []StageEvent {
 
 func (s *Server) resetStages(vmName string) {
 	s.progMu.Lock()
+	if task := s.installTasks[vmName]; task != nil {
+		task.cancel()
+		delete(s.installTasks, vmName)
+	}
 	delete(s.prog, vmName)
+	if s.progSeq == nil {
+		s.progSeq = make(map[string]uint64)
+	}
+	s.progSeq[vmName]++
 	s.progMu.Unlock()
 }
 
+func (s *Server) progressGeneration(name string) uint64 {
+	s.progMu.Lock()
+	defer s.progMu.Unlock()
+	return s.progSeq[name]
+}
+
+func (s *Server) stageIfCurrent(name string, seq uint64, stage, detail string) {
+	s.progMu.Lock()
+	defer s.progMu.Unlock()
+	if s.progSeq[name] != seq {
+		return
+	}
+	if s.prog == nil {
+		s.prog = make(map[string][]StageEvent)
+	}
+	events := append(s.prog[name], StageEvent{Stage: stage, Detail: detail, At: time.Now()})
+	if len(events) > 64 {
+		events = events[len(events)-64:]
+	}
+	s.prog[name] = events
+}
+
 func (s *Server) vmReady(vmName string) bool {
-	for _, ev := range s.stages(vmName) {
-		if ev.Stage == "ready" {
+	events := s.stages(vmName)
+	for i := len(events) - 1; i >= 0; i-- {
+		switch events[i].Stage {
+		case "ready":
 			return true
+		case "failed", "provision", "ssh", "agent":
+			return false
 		}
 	}
 	return false

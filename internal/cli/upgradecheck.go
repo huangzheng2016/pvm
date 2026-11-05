@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/buildinfo"
+	"github.com/huangzheng2016/pvm/internal/config"
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/paths"
 )
 
@@ -28,26 +30,34 @@ func MaybeNotifyUpgrade() {
 	if err != nil {
 		return
 	}
+	cfg, err := config.Load(p.ConfigFile())
+	if err != nil || (os.Getenv("PVM_UPDATE_CHECK") != "1" && !cfg.UpdateCheck) {
+		return
+	}
 	cacheFile := filepath.Join(p.Run, "version-check.json")
+	cache := refreshUpgradeCheck(cacheFile, time.Now(), func() (string, error) { return latestReleaseTag(&http.Client{Timeout: 3 * time.Second}) })
+	if cache.Latest != "" && versionNewer(cache.Latest, buildinfo.Version) {
+		fmt.Fprintf(os.Stderr, "pvm %s is available (current %s); run `pvm upgrade` to update\n", cache.Latest, buildinfo.Version)
+	}
+}
+
+func refreshUpgradeCheck(cacheFile string, now time.Time, fetch func() (string, error)) upgradeCheckCache {
 	var cache upgradeCheckCache
 	if data, err := os.ReadFile(cacheFile); err == nil {
 		_ = json.Unmarshal(data, &cache)
 	}
-	if time.Since(cache.CheckedAt) > 24*time.Hour {
-		client := &http.Client{Timeout: 3 * time.Second}
-		latest, err := latestReleaseTag(client)
-		if err != nil {
-			return
+	if now.Sub(cache.CheckedAt) > 24*time.Hour {
+		latest, err := fetch()
+		cache.CheckedAt = now
+		if err == nil {
+			cache.Latest = latest
 		}
-		cache = upgradeCheckCache{CheckedAt: time.Now(), Latest: latest}
 		if data, err := json.Marshal(cache); err == nil {
-			_ = os.MkdirAll(p.Run, 0o700)
-			_ = os.WriteFile(cacheFile, data, 0o600)
+			_ = os.MkdirAll(filepath.Dir(cacheFile), 0o700)
+			_ = fsutil.AtomicWrite(cacheFile, data, 0o600)
 		}
 	}
-	if cache.Latest != "" && versionNewer(cache.Latest, buildinfo.Version) {
-		fmt.Fprintf(os.Stderr, "pvm %s is available (current %s); run `pvm upgrade` to update\n", cache.Latest, buildinfo.Version)
-	}
+	return cache
 }
 
 // A release outranks a pre-release with the same numeric version.

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 
 	"github.com/huangzheng2016/pvm/internal/qemu"
+	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
 type resizeRequest struct {
@@ -27,13 +28,22 @@ func (s *Server) handleResize(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
+	lock := qemu.LockVM(spec.Name)
+	lock.Lock()
+	defer lock.Unlock()
+	spec, err = vm.Load(s.P, spec.Name)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	if req.SizeGB < 1 || req.SizeGB > 4096 {
+		writeErr(w, 400, fmt.Errorf("size must be between 1 and 4096 GiB"))
+		return
+	}
 	if req.SizeGB <= spec.DiskGB {
 		writeErr(w, 400, fmt.Errorf("size %dG must be larger than the current %dG; shrinking is not supported", req.SizeGB, spec.DiskGB))
 		return
 	}
-	lock := qemu.LockVM(spec.Name)
-	lock.Lock()
-	defer lock.Unlock()
 	if st, err := s.instance(spec).Running(); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -43,16 +53,36 @@ func (s *Server) handleResize(w http.ResponseWriter, r *http.Request) {
 	}
 	vmDir := s.P.VMDir(spec.Name)
 	disk := qemu.ActiveDisk(vmDir, spec.Disk(s.P))
-	out, err := exec.Command(s.TC.Img, "resize", disk, fmt.Sprintf("%dG", req.SizeGB)).CombinedOutput()
+	out, err := exec.Command(s.TC.Img, "info", "--output=json", disk).CombinedOutput()
 	if err != nil {
-		writeErr(w, 500, fmt.Errorf("qemu-img resize: %v\n%s", err, out))
+		writeErr(w, 500, fmt.Errorf("inspect active disk: %v\n%s", err, out))
 		return
+	}
+	var info struct {
+		VirtualSize int64 `json:"virtual-size"`
+	}
+	if err := json.Unmarshal(out, &info); err != nil || info.VirtualSize <= 0 {
+		writeErr(w, 500, fmt.Errorf("invalid active disk size response"))
+		return
+	}
+	requestedBytes := int64(req.SizeGB) << 30
+	if requestedBytes < info.VirtualSize {
+		writeErr(w, 400, fmt.Errorf("active disk is already larger than %dG; shrinking is not supported", req.SizeGB))
+		return
+	}
+	if requestedBytes > info.VirtualSize {
+		out, err = exec.Command(s.TC.Img, "resize", disk, fmt.Sprintf("%dG", req.SizeGB)).CombinedOutput()
+		if err != nil {
+			writeErr(w, 500, fmt.Errorf("qemu-img resize: %v\n%s", err, out))
+			return
+		}
 	}
 	spec.DiskGB = req.SizeGB
 	if err := spec.Save(s.P); err != nil {
-		writeErr(w, 500, fmt.Errorf("disk resized but spec save failed: %v", err))
+		writeErr(w, 500, fmt.Errorf("disk resized but spec save failed: %v; fix state storage and retry `pvm resize %s %d` before starting the VM", err, spec.Name, req.SizeGB))
 		return
 	}
+	s.cacheSpec(spec)
 	writeJSON(w, 200, map[string]any{
 		"vm":      spec.Name,
 		"disk_gb": req.SizeGB,

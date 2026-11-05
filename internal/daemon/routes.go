@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -52,6 +53,8 @@ func (s *Server) handleDefaultRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
 	if _, err := s.Clusters.Ensure(cluster.DefaultClusterID); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -62,9 +65,9 @@ func (s *Server) handleDefaultRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.pushGatewayConfig(cluster.DefaultClusterID); err != nil {
-		_ = s.Clusters.SetDefaultExit(cluster.DefaultClusterID, previous.DefaultExit)
-		_ = s.pushGatewayConfig(cluster.DefaultClusterID)
-		writeErr(w, 500, fmt.Errorf("default route rolled back after gateway push failed: %w", err))
+		writeErr(w, 500, rollbackRoute("default route", err, func() error {
+			return s.Clusters.SetDefaultExit(cluster.DefaultClusterID, previous.DefaultExit)
+		}, func() error { return s.pushGatewayConfig(cluster.DefaultClusterID) }))
 		return
 	}
 	via := req.Via
@@ -109,6 +112,8 @@ func (s *Server) handleRouteAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
 	if _, err := s.Clusters.Ensure(cluster.DefaultClusterID); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -120,9 +125,9 @@ func (s *Server) handleRouteAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.pushGatewayConfig(cluster.DefaultClusterID); err != nil {
-		_ = s.Clusters.SetRules(cluster.DefaultClusterID, previous.Rules)
-		_ = s.pushGatewayConfig(cluster.DefaultClusterID)
-		writeErr(w, 500, fmt.Errorf("rule rolled back after gateway push failed: %w", err))
+		writeErr(w, 500, rollbackRoute("rule", err, func() error {
+			return s.Clusters.SetRules(cluster.DefaultClusterID, previous.Rules)
+		}, func() error { return s.pushGatewayConfig(cluster.DefaultClusterID) }))
 		return
 	}
 	writeJSON(w, 201, map[string]any{"index": idx, "rule": rule})
@@ -134,18 +139,34 @@ func (s *Server) handleRouteRemove(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, fmt.Errorf("bad index"))
 		return
 	}
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
 	previous := s.Clusters.Get(cluster.DefaultClusterID)
 	if err := s.Clusters.RemoveRule(cluster.DefaultClusterID, idx); err != nil {
 		writeErr(w, 404, err)
 		return
 	}
 	if err := s.pushGatewayConfig(cluster.DefaultClusterID); err != nil {
-		_ = s.Clusters.SetRules(cluster.DefaultClusterID, previous.Rules)
-		_ = s.pushGatewayConfig(cluster.DefaultClusterID)
-		writeErr(w, 500, fmt.Errorf("rule removal rolled back after gateway push failed: %w", err))
+		writeErr(w, 500, rollbackRoute("rule removal", err, func() error {
+			return s.Clusters.SetRules(cluster.DefaultClusterID, previous.Rules)
+		}, func() error { return s.pushGatewayConfig(cluster.DefaultClusterID) }))
 		return
 	}
 	writeJSON(w, 200, map[string]any{"removed": idx})
+}
+
+// The caller holds routeMu across the initial state change, gateway push,
+// and compensation so a stale snapshot cannot erase another route update.
+func rollbackRoute(label string, cause error, restore, push func() error) error {
+	if err := restore(); err != nil {
+		return errors.Join(fmt.Errorf("%s gateway push failed: %w", label, cause),
+			fmt.Errorf("rollback save failed; inspect `pvm route ls` and retry the route command: %w", err))
+	}
+	if err := push(); err != nil {
+		return errors.Join(fmt.Errorf("%s state rolled back after gateway push failed: %w", label, cause),
+			fmt.Errorf("rollback config push failed; fix the gateway and retry the route command: %w", err))
+	}
+	return fmt.Errorf("%s rolled back after gateway push failed: %w", label, cause)
 }
 
 type vmRouteRequest struct {
@@ -175,6 +196,8 @@ func (s *Server) handleVMRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	s.cancelAgentInstall(name)
+	defer s.resumeAgentInstallIfRunning(name)
 	lock := qemu.LockVM(name)
 	lock.Lock()
 	defer lock.Unlock()
@@ -186,9 +209,11 @@ func (s *Server) handleVMRoute(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
 	previousExit := ""
-	if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
-		previousExit = cl.VMExits[spec.Name]
+	if cl := s.Clusters.Get(fresh.ClusterID); cl != nil {
+		previousExit = cl.VMExits[fresh.Name]
 	}
 	ops := vmRouteOps{
 		running: func() (bool, error) {
@@ -228,7 +253,7 @@ type vmRouteOps struct {
 // it once the new config is pushed: the guest re-converges DHCP/NAT only
 // across a reboot, so a live switch would leave it on the old exit. A
 // failed push rolls the route back to previousExit, and every failure
-// path restores the original run state and names the next command.
+// path names the next command. A failed rollback leaves the VM stopped.
 func (s *Server) switchVMRoute(spec *vm.Spec, via, previousExit string, ops vmRouteOps) (note string, restarted bool, err error) {
 	wasRunning, err := ops.running()
 	if err != nil {
@@ -252,17 +277,20 @@ func (s *Server) switchVMRoute(spec *vm.Spec, via, previousExit string, ops vmRo
 		return "", false, err
 	}
 	if err := ops.push(); err != nil {
-		_ = ops.setExit(previousExit)
-		rbErr := ops.push()
-		msg := fmt.Sprintf("vm route rolled back to %s after gateway push failed: %v", routeExitLabel(previousExit), err)
 		next := fmt.Sprintf("fix the gateway and retry `pvm route %s --via %s`", spec.Name, routeExitLabel(via))
-		if rbErr != nil {
-			next = fmt.Sprintf("the rollback config push also failed (%v); check `pvm ls` and retry `pvm route %s --via %s`", rbErr, spec.Name, routeExitLabel(via))
+		if rbErr := ops.setExit(previousExit); rbErr != nil {
+			return "", false, errors.Join(fmt.Errorf("gateway push failed: %w", err),
+				fmt.Errorf("route rollback save failed; VM remains stopped; %s: %w", next, rbErr))
 		}
+		if rbErr := ops.push(); rbErr != nil {
+			return "", false, errors.Join(fmt.Errorf("gateway push failed: %w", err),
+				fmt.Errorf("route state rolled back to %s, but rollback config push failed; VM remains stopped; %s: %w", routeExitLabel(previousExit), next, rbErr))
+		}
+		rollbackErr := fmt.Errorf("vm route rolled back to %s after gateway push failed; %s: %w", routeExitLabel(previousExit), next, err)
 		if rerr := restore(); rerr != nil {
-			next = fmt.Sprintf("restarting %s failed: %v; run `pvm start %s` first", spec.Name, rerr, spec.Name)
+			return "", false, errors.Join(rollbackErr, fmt.Errorf("restarting %s failed; run `pvm start %s`: %w", spec.Name, spec.Name, rerr))
 		}
-		return "", false, fmt.Errorf("%s; %s", msg, next)
+		return "", false, rollbackErr
 	}
 	if wasRunning {
 		if err := ops.start(); err != nil {
@@ -321,7 +349,7 @@ func (s *Server) handleDNSList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err)
 		return
 	}
-	out, err := s.sshRun(gw, "cat /run/pvm/fakeip.json 2>/dev/null || echo {}")
+	out, err := s.sshRun(gw, "sudo cat /run/pvm/fakeip.json")
 	if err != nil {
 		writeErr(w, 500, fmt.Errorf("read gateway fake-ip table: %v\n%s", err, out))
 		return

@@ -4,5 +4,5 @@ package assets
 
 import "embed"
 
-//go:embed all:packed
+//go:embed packed/manifest.json packed/*.zst
 var packed embed.FS

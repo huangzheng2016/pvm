@@ -15,6 +15,7 @@ const MaxExtraMounts = 13
 type Mount struct {
 	Tag      string
 	HostPath string
+	ReadOnly bool
 }
 
 // VirtFSSlot returns the stable PCI slot and fsdev number for a mount tag.
@@ -71,7 +72,8 @@ type VMConfig struct {
 	// be hot-added later (pcie.0 itself does not support hotplug).
 	// Gateway VMs get one port per possible cluster VM IP octet.
 	HotplugPorts int
-	ShareDir     string // default ~/.pvm/share mounted at /share
+	ShareDir     string // selected host directory mounted at /share
+	NoShare      bool
 	MountDir     string // daemon-controlled symlinks for dynamic mount backends
 	ExtraMounts  []Mount
 	Accel        Accel
@@ -207,6 +209,13 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 		fs[slot] = m
 	}
 	for i, m := range fs {
+		if i == 0 && c.NoShare {
+			continue
+		}
+		readOnly := "off"
+		if m.ReadOnly {
+			readOnly = "on"
+		}
 		id := VirtFSID(i)
 		rp := VirtFSRootPort(i)
 		// security_model=none: server does all host I/O as the qemu
@@ -217,7 +226,7 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 		// retargets the backend symlink before hot-adding the front-end.
 		args = append(args,
 			"-device", fmt.Sprintf("pcie-root-port,id=%s,bus=pcie.0,addr=0x%x,chassis=%d", rp, 0x10+i, 128+i),
-			"-fsdev", fmt.Sprintf("local,id=%s,path=%s,security_model=none", id, keyval(m.HostPath)),
+			"-fsdev", fmt.Sprintf("local,id=%s,path=%s,security_model=none,readonly=%s", id, keyval(m.HostPath), readOnly),
 		)
 		if m.Tag != "" && !c.NoVirtFSDevices {
 			args = append(args,

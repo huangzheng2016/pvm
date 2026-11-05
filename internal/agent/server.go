@@ -17,12 +17,20 @@ import (
 	"github.com/huangzheng2016/pvm/internal/buildinfo"
 )
 
+const maxConcurrentExecs = 128
+
+type execSession struct {
+	stdin     chan Frame
+	outputAck chan struct{}
+	cancel    context.CancelFunc
+}
+
 type Server struct {
 	Version string
 
 	started time.Time
 	mu      sync.Mutex // guards execs
-	execs   map[string]chan Frame
+	execs   map[string]*execSession
 
 	ctrlMu       sync.Mutex // guards ctrlPending and the session write
 	ctrlPending  map[string]chan Frame
@@ -34,7 +42,7 @@ func NewServer() *Server {
 	return &Server{
 		Version:     buildinfo.Version,
 		started:     time.Now(),
-		execs:       map[string]chan Frame{},
+		execs:       map[string]*execSession{},
 		ctrlPending: map[string]chan Frame{},
 	}
 }
@@ -128,20 +136,51 @@ func (s *Server) Serve(rw io.ReadWriteCloser) error {
 				Hostname: host, UptimeS: int64(time.Since(s.started).Seconds()),
 			})
 		case OpExec:
-			// Register the stdin channel before spawning so early
-			// stdin frames are queued, not dropped.
-			ch := s.track(f.ID)
+			ctx, cancel := context.WithCancel(serveCtx)
+			session := &execSession{stdin: make(chan Frame, 2), outputAck: make(chan struct{}, 2), cancel: cancel}
+			s.mu.Lock()
+			_, duplicate := s.execs[f.ID]
+			admitted := !duplicate && len(s.execs) < maxConcurrentExecs
+			if admitted {
+				s.execs[f.ID] = session
+			}
+			s.mu.Unlock()
+			if !admitted {
+				cancel()
+				if duplicate {
+					return fmt.Errorf("duplicate exec id %s", f.ID)
+				}
+				write(&Frame{ID: f.ID, Error: "exec capacity exceeded"})
+				continue
+			}
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				defer cancel()
 				defer s.untrack(f.ID)
-				s.runExec(serveCtx, &f, ch, write)
+				s.runExec(ctx, &f, session, write)
 			}()
-		case OpStdin:
-			if ch := s.stdinOf(f.ID); ch != nil {
+		case OpStdin, OpOutputAck, OpCancel:
+			s.mu.Lock()
+			session := s.execs[f.ID]
+			s.mu.Unlock()
+			if session == nil {
+				continue
+			}
+			switch f.Op {
+			case OpCancel:
+				session.cancel()
+			case OpOutputAck:
 				select {
-				case ch <- f:
-				default: // exec gone or flooded; drop
+				case session.outputAck <- struct{}{}:
+				default:
+				}
+			case OpStdin:
+				select {
+				case session.stdin <- f:
+				default:
+					session.cancel()
+					write(&Frame{ID: f.ID, Error: "stdin flow-control window exceeded"})
 				}
 			}
 		default:
@@ -150,30 +189,10 @@ func (s *Server) Serve(rw io.ReadWriteCloser) error {
 	}
 }
 
-func (s *Server) track(id string) chan Frame {
-	ch := make(chan Frame, 64)
-	s.mu.Lock()
-	s.execs[id] = ch
-	s.mu.Unlock()
-	return ch
-}
-
 func (s *Server) untrack(id string) {
 	s.mu.Lock()
-	if ch, ok := s.execs[id]; ok {
-		delete(s.execs, id)
-		close(ch)
-	}
+	delete(s.execs, id)
 	s.mu.Unlock()
-}
-
-func (s *Server) stdinOf(id string) chan Frame {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if ch, ok := s.execs[id]; ok {
-		return ch
-	}
-	return nil
 }
 
 // deliverControl routes a result/error frame to its pending control
@@ -245,7 +264,7 @@ func (s *Server) untrackControl(id string) {
 	s.ctrlMu.Unlock()
 }
 
-func (s *Server) runExec(serveCtx context.Context, f *Frame, stdinCh <-chan Frame, write func(*Frame) error) {
+func (s *Server) runExec(serveCtx context.Context, f *Frame, session *execSession, write func(*Frame) error) {
 	if len(f.Cmd) == 0 {
 		write(&Frame{ID: f.ID, Error: "exec with empty cmd"})
 		return
@@ -259,9 +278,6 @@ func (s *Server) runExec(serveCtx context.Context, f *Frame, stdinCh <-chan Fram
 	cmd := exec.CommandContext(ctx, f.Cmd[0], f.Cmd[1:]...)
 	// own process group so a timeout kills the whole tree
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
 
 	stdinW, err := cmd.StdinPipe()
 	if err != nil {
@@ -278,6 +294,15 @@ func (s *Server) runExec(serveCtx context.Context, f *Frame, stdinCh <-chan Fram
 		write(&Frame{ID: f.ID, Error: err.Error()})
 		return
 	}
+	cmd.Cancel = func() error {
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		// Descendants can retain these pipes while cancellation races with fork.
+		// Closing our ends lets Wait reap the leader without waiting for EOF.
+		stdinW.Close()
+		stdout.Close()
+		stderr.Close()
+		return err
+	}
 	if err := cmd.Start(); err != nil {
 		write(&Frame{ID: f.ID, Error: err.Error()})
 		return
@@ -293,22 +318,31 @@ func (s *Server) runExec(serveCtx context.Context, f *Frame, stdinCh <-chan Fram
 		defer inWg.Done()
 		for {
 			select {
-			case f, ok := <-stdinCh:
+			case f, ok := <-session.stdin:
 				if !ok {
 					return
 				}
 				if f.EOF {
 					stdinW.Close()
+					write(&Frame{ID: f.ID, Op: OpStdinAck})
 					return
 				}
 				data, err := base64.StdEncoding.DecodeString(f.DataB64)
 				if err != nil {
-					continue
+					session.cancel()
+					write(&Frame{ID: f.ID, Error: "invalid stdin encoding"})
+					return
 				}
 				if _, err := stdinW.Write(data); err != nil {
 					return // process gone; Wait closes the pipe
 				}
+				if err := write(&Frame{ID: f.ID, Op: OpStdinAck}); err != nil {
+					session.cancel()
+					return
+				}
 			case <-stop:
+				return
+			case <-ctx.Done():
 				return
 			}
 		}
@@ -326,7 +360,15 @@ func (s *Server) runExec(serveCtx context.Context, f *Frame, stdinCh <-chan Fram
 			for {
 				n, err := src.Read(buf)
 				if n > 0 {
-					write(&Frame{ID: f.ID, Stream: stream, DataB64: base64.StdEncoding.EncodeToString(buf[:n])})
+					if err := write(&Frame{ID: f.ID, Stream: stream, DataB64: base64.StdEncoding.EncodeToString(buf[:n])}); err != nil {
+						session.cancel()
+						return
+					}
+					select {
+					case <-session.outputAck:
+					case <-ctx.Done():
+						return
+					}
 				}
 				if err != nil {
 					return
@@ -343,7 +385,12 @@ func (s *Server) runExec(serveCtx context.Context, f *Frame, stdinCh <-chan Fram
 	// for timeouts.
 	cp.Wait()
 	err = cmd.Wait()
-	close(stop) // untrack (which closes stdinCh) runs only after we return
+	if ctx.Err() != nil {
+		// A child created concurrently with the first group signal may survive
+		// it. The reaped leader can no longer create additional children.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	close(stop)
 	stdinW.Close()
 	inWg.Wait()
 

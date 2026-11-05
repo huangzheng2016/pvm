@@ -21,11 +21,11 @@ var ErrUnreachable = errors.New("agent channel unreachable")
 const maxQueuedControls = 2 * maxConcurrentControls
 
 type Client struct {
-	sock string
-	conn net.Conn
-	w    *frameWriter
-	wmu  sync.Mutex
-	r    *bufio.Reader
+	sock      string
+	conn      net.Conn
+	w         *frameWriter
+	writeGate chan struct{}
+	r         *bufio.Reader
 
 	mu        sync.Mutex
 	pending   map[string]chan Frame
@@ -46,7 +46,13 @@ type Client struct {
 
 // DialSock connects to the agent channel at a unix socket path.
 func DialSock(sock string) (*Client, error) {
-	conn, err := net.DialTimeout("unix", sock, 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return DialSockContext(ctx, sock)
+}
+
+func DialSockContext(ctx context.Context, sock string) (*Client, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", sock)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}
@@ -85,16 +91,27 @@ func (c *Client) readLoop() {
 			continue
 		}
 		c.mu.Lock()
-		ch := c.pending[f.ID]
-		if f.Done || f.Error != "" {
-			delete(c.pending, f.ID)
+		key := f.ID
+		if f.Op == OpStdinAck {
+			key += "/stdin"
+		}
+		ch := c.pending[key]
+		terminal := f.Done || f.Error != "" || f.Op == OpPong
+		if terminal {
+			delete(c.pending, key)
+		}
+		overflow := false
+		if ch != nil {
+			select {
+			case ch <- f:
+			default:
+				overflow = true
+			}
 		}
 		c.mu.Unlock()
-		if ch != nil {
-			ch <- f
-			if f.Done || f.Error != "" {
-				close(ch)
-			}
+		if overflow {
+			c.kill(errors.New("agent response flow-control window exceeded"))
+			return
 		}
 	}
 }
@@ -241,8 +258,17 @@ func (c *Client) failAll(err error) {
 	c.signalDoneLocked()
 	for id, ch := range c.pending {
 		delete(c.pending, id)
+		// No sender closes response channels. A terminal error replaces queued
+		// data on transport loss and never waits for a consumer.
+	drain:
+		for {
+			select {
+			case <-ch:
+			default:
+				break drain
+			}
+		}
 		ch <- Frame{ID: id, Error: fmt.Sprintf("%v: %v", ErrUnreachable, err)}
-		close(ch)
 	}
 }
 
@@ -254,28 +280,66 @@ func (c *Client) write(f *Frame) error {
 // may stall on a peer that stopped reading; the deadline is cleared
 // afterwards so stream writes are unaffected.
 func (c *Client) writeWithDeadline(f *Frame, dl time.Time) error {
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
+	if dl.IsZero() {
+		dl = time.Now().Add(30 * time.Second)
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), dl)
+	defer cancel()
+	return c.writeContext(ctx, f)
+}
+
+func (c *Client) writeContext(ctx context.Context, f *Frame) error {
+	c.mu.Lock()
+	if c.writeGate == nil {
+		c.writeGate = make(chan struct{}, 1)
+	}
+	gate := c.writeGate
+	c.mu.Unlock()
+	select {
+	case gate <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-gate }()
 	c.mu.Lock()
 	closed := c.closed
 	c.mu.Unlock()
 	if closed {
 		return ErrUnreachable
 	}
-	if !dl.IsZero() {
-		c.conn.SetWriteDeadline(dl)
-		defer c.conn.SetWriteDeadline(time.Time{})
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	if err := c.w.write(f); err != nil {
+	dl := time.Now().Add(30 * time.Second)
+	if deadline, ok := ctx.Deadline(); ok && deadline.Before(dl) {
+		dl = deadline
+	}
+	c.conn.SetWriteDeadline(dl)
+	cancelled := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() { c.conn.SetWriteDeadline(time.Now()); close(cancelled) })
+	err := c.w.write(f)
+	if !stop() {
+		<-cancelled
+	}
+	c.conn.SetWriteDeadline(time.Time{})
+	if err != nil {
+		c.kill(err)
 		return fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}
 	return nil
 }
 
 func (c *Client) Ping() (*Frame, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return c.PingContext(ctx)
+}
+
+func (c *Client) PingContext(ctx context.Context) (*Frame, error) {
 	id := newID()
 	ch := c.register(id)
-	if err := c.write(&Frame{ID: id, Op: OpPing}); err != nil {
+	defer c.unregister(id)
+	if err := c.writeContext(ctx, &Frame{ID: id, Op: OpPing}); err != nil {
 		return nil, err
 	}
 	select {
@@ -284,8 +348,8 @@ func (c *Client) Ping() (*Frame, error) {
 			return nil, errors.New(f.Error)
 		}
 		return &f, nil
-	case <-time.After(10 * time.Second):
-		return nil, fmt.Errorf("%w: ping timeout", ErrUnreachable)
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -314,67 +378,110 @@ func (c *Client) Exec(cmd []string, stdin io.Reader, stdout, stderr io.Writer, t
 
 // In-guest spawn failures are plain errors; transport failures wrap ErrUnreachable.
 func (c *Client) ExecStream(cmd []string, stdin io.Reader, timeoutS int, onFrame func(*Frame)) (*ExecResult, error) {
+	return c.ExecStreamContext(context.Background(), cmd, stdin, timeoutS, onFrame)
+}
+
+func (c *Client) ExecStreamContext(ctx context.Context, cmd []string, stdin io.Reader, timeoutS int, onFrame func(*Frame)) (*ExecResult, error) {
 	if len(cmd) == 0 {
 		return nil, fmt.Errorf("empty cmd")
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	id := newID()
 	ch := c.register(id)
-	if err := c.write(&Frame{ID: id, Op: OpExec, Cmd: cmd, TimeoutS: timeoutS}); err != nil {
+	ack := c.register(id + "/stdin")
+	defer c.unregister(id)
+	defer c.unregister(id + "/stdin")
+	if err := c.writeContext(ctx, &Frame{ID: id, Op: OpExec, Cmd: cmd, TimeoutS: timeoutS}); err != nil {
 		return nil, err
 	}
-	if stdin != nil {
-		go c.execStdin(id, stdin)
-	}
-
-	res := &ExecResult{ExitCode: -1}
-	for f := range ch {
-		fr := f
-		switch {
-		case fr.Error != "":
-			return nil, errors.New(fr.Error)
-		case fr.Done:
-			res.ExitCode = fr.ExitCode
+	completed := false
+	defer func() {
+		if !completed {
+			go func() {
+				if err := c.writeWithDeadline(&Frame{ID: id, Op: OpCancel}, time.Now().Add(time.Second)); err != nil {
+					// If cancellation cannot be delivered, ending the session
+					// is the only way to guarantee the guest cancels the exec.
+					c.kill(err)
+				}
+			}()
+		}
+	}()
+	go c.execStdin(ctx, id, stdin, ack)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case fr := <-ch:
+			if fr.Error != "" {
+				return nil, errors.New(fr.Error)
+			}
 			if onFrame != nil {
 				onFrame(&fr)
 			}
-			return res, nil
-		default:
-			if onFrame != nil {
-				onFrame(&fr)
+			if fr.Done {
+				completed = true
+				return &ExecResult{ExitCode: fr.ExitCode}, nil
+			}
+			if fr.Stream != "" {
+				if err := c.writeContext(ctx, &Frame{ID: id, Op: OpOutputAck}); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
-	return nil, fmt.Errorf("%w: channel closed mid-exec", ErrUnreachable)
 }
 
-// execStdin streams r to an in-flight exec as stdin frames, then sends
-// the EOF frame.
-func (c *Client) execStdin(id string, r io.Reader) {
+func (c *Client) execStdin(ctx context.Context, id string, r io.Reader, ack <-chan Frame) {
 	buf := make([]byte, 32<<10)
 	for {
-		n, err := r.Read(buf)
+		if ctx.Err() != nil {
+			return
+		}
+		n, err := 0, io.EOF
+		if r != nil {
+			n, err = r.Read(buf)
+		}
 		if n > 0 {
-			if werr := c.write(&Frame{ID: id, Op: OpStdin, DataB64: base64.StdEncoding.EncodeToString(buf[:n])}); werr != nil {
+			if c.writeContext(ctx, &Frame{ID: id, Op: OpStdin, DataB64: base64.StdEncoding.EncodeToString(buf[:n])}) != nil {
+				return
+			}
+			select {
+			case f := <-ack:
+				if f.Error != "" {
+					return
+				}
+			case <-ctx.Done():
 				return
 			}
 		}
 		if err != nil {
-			c.write(&Frame{ID: id, Op: OpStdin, EOF: true})
+			c.writeContext(ctx, &Frame{ID: id, Op: OpStdin, EOF: true})
 			return
 		}
 	}
 }
 
+func (c *Client) unregister(id string) {
+	c.mu.Lock()
+	delete(c.pending, id)
+	c.mu.Unlock()
+}
+
 func (c *Client) register(id string) chan Frame {
 	ch := make(chan Frame, 64)
 	c.mu.Lock()
-	c.pending[id] = ch
+	if c.closed {
+		ch <- Frame{ID: id, Error: ErrUnreachable.Error()}
+	} else {
+		c.pending[id] = ch
+	}
 	c.mu.Unlock()
 	return ch
 }
 
 func (c *Client) Close() error {
-	c.signalDone()
+	c.failAll(net.ErrClosed)
 	return c.conn.Close()
 }
 

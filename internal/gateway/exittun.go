@@ -271,14 +271,6 @@ func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, 
 	for _, c := range directCIDRs {
 		wantBypass[c] = true
 	}
-	for _, t := range m.tuns {
-		t.mu.RLock()
-		server := t.server
-		t.mu.RUnlock()
-		if server != "" {
-			wantBypass[server+"/32"] = true
-		}
-	}
 	// runtime-learned bypass IPs survive config syncs; dropping them
 	// mid-TTL reroutes cached direct flows into the tunnel.
 	for _, ips := range m.learned {
@@ -399,8 +391,8 @@ func (m *exitManager) SweepLearned(now time.Time) {
 	}
 }
 
-// BypassList snapshots the current bypass set (direct CIDRs, endpoint
-// /32s and learned direct-domain IPs) for the nft full-table render.
+// BypassList snapshots direct CIDRs, learned direct-domain IPs and the
+// slirp return route. NFT separately restricts slirp to mapped replies.
 func (m *exitManager) BypassList() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -670,10 +662,11 @@ persistent_keepalive_interval=25
 		dev.Close()
 		return fmt.Errorf("fwmark rule: %w", err)
 	}
-	// the outer endpoint packets must never enter the tunnel
+	// Only locally originated, unmarked outer transport packets bypass policy.
+	// Forwarded VM traffic and marked relays to the same address keep their exit.
 	if server != "" {
-		ipRuleCmd("del", "to", server+"/32", "lookup", "main")
-		if err := ipRuleCmd("add", "to", server+"/32", "lookup", "main", "pref", strconv.Itoa(rulePrefEndpoint)); err != nil {
+		ipRuleCmd("del", "to", server+"/32", "iif", "lo", "fwmark", "0", "lookup", "main")
+		if err := ipRuleCmd("add", "to", server+"/32", "iif", "lo", "fwmark", "0", "lookup", "main", "pref", strconv.Itoa(rulePrefEndpoint)); err != nil {
 			log.Printf("exit %s: endpoint host rule: %v", t.name, err)
 		}
 	}
@@ -727,7 +720,7 @@ func (m *exitManager) ensureTunnelRoute(t *exitTunnel) error {
 		return err
 	}
 	if t.server != "" {
-		if err := ipRuleCmd("add", "to", t.server+"/32", "lookup", "main", "pref", strconv.Itoa(rulePrefEndpoint)); err != nil {
+		if err := ipRuleCmd("add", "to", t.server+"/32", "iif", "lo", "fwmark", "0", "lookup", "main", "pref", strconv.Itoa(rulePrefEndpoint)); err != nil {
 			log.Printf("exit %s: endpoint host rule: %v", t.name, err)
 		}
 	}
@@ -835,7 +828,7 @@ func (m *exitManager) cleanupDevice(t *exitTunnel) {
 	// drop the anti-loop host rule too; leaving it pins a stale VPS IP
 	// to the main table after the tunnel is gone.
 	if t.server != "" {
-		ipRuleCmd("del", "to", t.server+"/32", "lookup", "main")
+		ipRuleCmd("del", "to", t.server+"/32", "iif", "lo", "fwmark", "0", "lookup", "main")
 	}
 	if dev != nil {
 		dev.Close()
@@ -916,6 +909,7 @@ type ipRuleShowEntry struct {
 	Dst      string `json:"dst"`
 	DstLen   *int   `json:"dstlen"`
 	Fwmark   string `json:"fwmark"`
+	IIF      string `json:"iif"`
 	Table    string `json:"table"`
 }
 
@@ -944,6 +938,7 @@ type policyRule struct {
 	src    string // "all" for to/fwmark rules
 	dst    string
 	fwmark string // canonical hex
+	iif    string
 }
 
 func newPolicyRule(sel []string, table string, pref int) policyRule {
@@ -954,6 +949,8 @@ func newPolicyRule(sel []string, table string, pref int) policyRule {
 			r.src = normRuleCIDR(sel[i+1])
 		case "to":
 			r.dst = normRuleCIDR(sel[i+1])
+		case "iif":
+			r.iif = sel[i+1]
 		case "fwmark":
 			r.fwmark = normRuleFwmark(sel[i+1])
 		}
@@ -1007,7 +1004,7 @@ func (r policyRule) matchesSelector(e ipRuleShowEntry) bool {
 	if src == "" {
 		src = "all"
 	}
-	return src == r.src && normRuleCIDR(e.Dst, e.DstLen) == r.dst && normRuleFwmark(e.Fwmark) == r.fwmark
+	return src == r.src && normRuleCIDR(e.Dst, e.DstLen) == r.dst && normRuleFwmark(e.Fwmark) == r.fwmark && e.IIF == r.iif
 }
 
 // desiredPolicyRulesLocked is the full set of policy rules the current
@@ -1047,7 +1044,7 @@ func (m *exitManager) desiredPolicyRulesLocked() []policyRule {
 		table := strconv.Itoa(ruleTableBase + t.idx)
 		out = append(out, newPolicyRule([]string{"fwmark", strconv.Itoa(fwMarkBase + t.idx)}, table, rulePrefFwmark))
 		if server != "" {
-			out = append(out, newPolicyRule([]string{"to", server + "/32"}, "main", rulePrefEndpoint))
+			out = append(out, newPolicyRule([]string{"to", server + "/32", "iif", "lo", "fwmark", "0"}, "main", rulePrefEndpoint))
 		}
 	}
 	return out
@@ -1065,6 +1062,32 @@ func (m *exitManager) reconcileActualRulesLocked() {
 		log.Printf("exit: rule drift check: %v", err)
 		return
 	}
+	// Unscoped endpoint exceptions admit forwarded traffic. Remove only
+	// these exact owned selectors; explicit direct bypasses remain configured.
+	endpoints := map[string]bool{}
+	for _, t := range m.tuns {
+		t.mu.RLock()
+		if t.server != "" {
+			endpoints[t.server+"/32"] = true
+		}
+		t.mu.RUnlock()
+	}
+	kept := entries[:0]
+	for _, e := range entries {
+		dst := normRuleCIDR(e.Dst, e.DstLen)
+		oldEndpoint := e.Priority == rulePrefEndpoint || (e.Priority == rulePrefBypass && !m.bypass[dst])
+		if endpoints[dst] && oldEndpoint && e.Table == "main" && (e.Src == "" || e.Src == "all") && e.IIF == "" && e.Fwmark == "" {
+			// A zero mask selects the unmarked rule, excluding the replacement
+			// fwmark=0 rule whose mask is all bits.
+			if err := ipRuleCmd("del", "to", dst, "fwmark", "0/0", "lookup", "main", "pref", strconv.Itoa(e.Priority)); err != nil {
+				log.Printf("exit: remove unscoped endpoint rule: %v", err)
+			} else {
+				continue
+			}
+		}
+		kept = append(kept, e)
+	}
+	entries = kept
 	for _, want := range m.desiredPolicyRulesLocked() {
 		correct := false
 		var wrongTables []string

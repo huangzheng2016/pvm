@@ -178,7 +178,10 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) (retErr error) {
 	// 9p/VirtFS blocks migration; hot-unplug the shares while the guest
 	// is still running so it can complete the PCI hot-unplug. The guest
 	// already lazily unmounted them via ssh (daemon side).
-	slots := []int{0}
+	var slots []int
+	if !in.Cfg.NoShare {
+		slots = append(slots, 0)
+	}
 	for _, m := range in.Cfg.ExtraMounts {
 		slot, err := VirtFSSlot(m.Tag)
 		if err != nil {
@@ -395,7 +398,10 @@ func (in *Instance) WaitRestored(vmDir string) error {
 // restore argv; the fresh hotplug event lets the guest enumerate them
 // naturally (a pci rescan does not).
 func (in *Instance) reattachShares(q *QMP) error {
-	tags := []string{"pvmshare"}
+	var tags []string
+	if !in.Cfg.NoShare {
+		tags = append(tags, "pvmshare")
+	}
 	for _, m := range in.Cfg.ExtraMounts {
 		tags = append(tags, m.Tag)
 	}

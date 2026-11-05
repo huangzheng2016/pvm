@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log"
 	"os"
@@ -177,14 +178,15 @@ func (s *Server) createGatewayVM(cl *cluster.Cluster) (*vm.Spec, error) {
 	spec := &vm.Spec{
 		Name: cl.Gateway, Image: imgSpec, Role: "gateway",
 		User: "pvmgw", GuestUID: os.Getuid(),
-		CPUs: 1, MemMB: 512, DiskGB: 10,
+		// Current Ubuntu initramfs decompression exceeds a 512 MiB guest.
+		CPUs: 1, MemMB: 1024, DiskGB: 10,
 		SSHPort: port, BaseDisk: base, ClusterID: cl.ID,
 	}
-	if err := vm.Create(s.P, s.TC, spec, s.SSHPub); err != nil {
+	if err := vm.Create(s.P, s.TC, spec); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
-	s.vms[spec.Name] = spec
+	s.vms[spec.Name] = copySpec(spec)
 	s.mu.Unlock()
 	return spec, nil
 }
@@ -331,7 +333,18 @@ func (s *Server) pushGatewayConfigCtx(ctx context.Context, clusterID int) error 
 			return err
 		}
 		tmp.Close()
-		remote := gatewayRemoteTmp()
+		uploadDir := gatewayRemoteTmp() + ".d"
+		if _, err := s.sshRunCtx(ctx, gwSpec, "mkdir -m 0700 "+shellQuote(uploadDir)); err != nil {
+			return fmt.Errorf("prepare private gateway upload: %w", err)
+		}
+		remote := uploadDir + "/gateway.json"
+		defer func() {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if _, err := s.sshRunCtx(cleanupCtx, gwSpec, "rm -f "+shellQuote(remote)+"; rmdir "+shellQuote(uploadDir)); err != nil {
+				log.Printf("gateway config: private upload cleanup failed: %v", err)
+			}
+		}()
 		if err := s.scpToCtx(ctx, gwSpec, tmp.Name(), remote); err != nil {
 			return err
 		}
@@ -367,13 +380,13 @@ func (s *Server) renderGatewayConfigLocked(ctx context.Context, clusterID int, f
 // gatewayRemoteTmp is the per-push unique scp target on the gateway:
 // two pushes can never scp over each other's half-written file.
 func gatewayRemoteTmp() string {
-	return fmt.Sprintf("/tmp/gateway.json.pvm-%d", time.Now().UnixNano())
+	return "/tmp/gateway.json.pvm-" + rand.Text()
 }
 
 // gatewayInstallCmd atomically moves the freshly uploaded config into
 // place (same-filesystem rename) and cleans up the upload.
 func gatewayInstallCmd(remote string) string {
-	return fmt.Sprintf("sudo install -m 0644 %s /etc/pvm/gateway.json.pvm-new && sudo mv -f /etc/pvm/gateway.json.pvm-new /etc/pvm/gateway.json; rc=$?; rm -f %s; exit $rc", remote, remote)
+	return fmt.Sprintf("sudo install -d -m 0700 -o root -g root /etc/pvm && sudo install -m 0600 -o root -g root %s /etc/pvm/gateway.json.pvm-new && sudo mv -f /etc/pvm/gateway.json.pvm-new /etc/pvm/gateway.json; rc=$?; rm -f %s; exit $rc", remote, remote)
 }
 
 var gatewayRetryAttempts = 60
@@ -405,13 +418,20 @@ func (s *Server) sshBaseArgs(spec *vm.Spec) ([]string, string, error) {
 		"-o", "IdentitiesOnly=yes",
 		"-o", "IdentityAgent=none",
 		"-o", "ForwardAgent=no",
-		"-i", s.P.SSHKey(),
+		"-i", spec.SSHKeyPath(s.P),
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "LogLevel=ERROR",
 		"-o", "ConnectTimeout=5",
 		"-o", "ConnectionAttempts=1",
 		"-o", "BatchMode=yes",
+	}
+	// Identity reset may have installed the clone key before its spec
+	// write failed. Offer that known recovery key only while reset is pending.
+	if spec.IdentityReset && spec.SSHKeyName != spec.Name {
+		if fi, err := os.Stat(s.P.VMSSHKey(spec.Name)); err == nil && fi.Mode().IsRegular() {
+			args = append(args, "-i", s.P.VMSSHKey(spec.Name))
+		}
 	}
 	if spec.Role == "gateway" || spec.ClusterID == 0 {
 		return append(args, "-p", strconv.Itoa(spec.SSHPort)), fmt.Sprintf("%s@127.0.0.1", spec.User), nil
@@ -425,7 +445,7 @@ func (s *Server) sshBaseArgs(spec *vm.Spec) ([]string, string, error) {
 		return nil, "", err
 	}
 	args = append(args, "-o", fmt.Sprintf("ProxyCommand=ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -W %%h:%%p -p %d %s@127.0.0.1",
-		shellQuote(s.P.SSHKey()), gw.SSHPort, gw.User))
+		shellQuote(gw.SSHKeyPath(s.P)), gw.SSHPort, gw.User))
 	return args, fmt.Sprintf("%s@%s", spec.User, spec.IP), nil
 }
 
@@ -434,7 +454,9 @@ func (s *Server) sshBaseArgs(spec *vm.Spec) ([]string, string, error) {
 // and would otherwise corrupt machine-parsed output (json, version
 // strings, region profiles). Failures include stderr for diagnosis.
 func (s *Server) sshRun(spec *vm.Spec, cmd string) (string, error) {
-	return s.sshRunCtx(context.Background(), spec, cmd)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return s.sshRunCtx(ctx, spec, cmd)
 }
 
 // sshRunCtx kills the ssh child when ctx is done, so a cancelled
@@ -445,6 +467,7 @@ func (s *Server) sshRunCtx(ctx context.Context, spec *vm.Spec, cmd string) (stri
 		return "", err
 	}
 	c := exec.CommandContext(ctx, "ssh", append(args, target, cmd)...)
+	c.WaitDelay = 2 * time.Second
 	var stdout, stderr strings.Builder
 	c.Stdout = &stdout
 	c.Stderr = &stderr
@@ -455,7 +478,9 @@ func (s *Server) sshRunCtx(ctx context.Context, spec *vm.Spec, cmd string) (stri
 }
 
 func (s *Server) scpTo(spec *vm.Spec, local, remote string) error {
-	return s.scpToCtx(context.Background(), spec, local, remote)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	return s.scpToCtx(ctx, spec, local, remote)
 }
 
 func (s *Server) scpToCtx(ctx context.Context, spec *vm.Spec, local, remote string) error {
@@ -469,7 +494,9 @@ func (s *Server) scpToCtx(ctx context.Context, spec *vm.Spec, local, remote stri
 		}
 	}
 	args := append(base, local, target+":"+remote)
-	out, err := exec.CommandContext(ctx, "scp", args...).CombinedOutput()
+	c := exec.CommandContext(ctx, "scp", args...)
+	c.WaitDelay = 2 * time.Second
+	out, err := c.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("scp: %v\n%s", err, out)
 	}

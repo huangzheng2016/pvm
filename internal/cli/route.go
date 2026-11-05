@@ -25,6 +25,9 @@ type routeListView struct {
 }
 
 func CmdRoute(args []string) int {
+	if len(args) > 0 && args[0] == "explain" {
+		return cmdRouteExplain(args[1:])
+	}
 	p, err := mustPaths()
 	if err != nil {
 		return fatalf("%v", err)
@@ -176,6 +179,7 @@ func routeAdd(c *daemon.Client, args []string) int {
 func routeUsage() int {
 	fmt.Fprintln(os.Stderr, `usage:
   pvm route ls
+  pvm route explain <vm> <domain-or-ip>
   pvm route add direct|proxy [--domain-suffix|--domain-prefix|--domain-keyword|--cidr] <value> [--via <exit>]
   pvm route add internal [--domain-suffix|--domain-prefix|--domain-keyword] <value> [--dns <host[:port]>]  (no --dns = resolve via host DNS)
   pvm route rm <index>

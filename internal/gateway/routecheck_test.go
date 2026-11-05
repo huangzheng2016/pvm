@@ -64,6 +64,8 @@ func actualRulesFor(m *exitManager) []ipRuleShowEntry {
 				e.Src = strings.TrimSuffix(r.sel[i+1], "/32")
 			case "to":
 				e.Dst = strings.TrimSuffix(r.sel[i+1], "/32")
+			case "iif":
+				e.IIF = r.sel[i+1]
 			case "fwmark":
 				e.Fwmark = normRuleFwmark(r.sel[i+1])
 			}
@@ -91,7 +93,7 @@ func TestRuleDriftAddsMissingRules(t *testing.T) {
 	})
 	m.reconcileActualRulesLocked()
 	for _, want := range [][]string{
-		{"add", "to", "203.0.113.5/32", "lookup", "main", "pref", "40"},
+		{"add", "to", "203.0.113.5/32", "iif", "lo", "fwmark", "0", "lookup", "main", "pref", "40"},
 		{"add", "to", "192.168.1.0/24", "lookup", "main", "pref", "45"},
 		{"add", "to", "10.0.2.0/24", "lookup", "main", "pref", "50"},
 		{"add", "to", "203.0.113.0/24", "lookup", "100", "pref", "60"},
@@ -219,7 +221,6 @@ func TestSyncHealsExternallyDeletedRules(t *testing.T) {
 	for _, want := range [][]string{
 		{"add", "to", "192.168.1.0/24", "lookup", "main", "pref", "45"},
 		{"add", "to", "10.0.2.0/24", "lookup", "main", "pref", "50"},
-		{"add", "to", "203.0.113.5/32", "lookup", "main", "pref", "50"},
 		{"add", "from", "192.168.1.0/24", "lookup", "100", "pref", "103"},
 	} {
 		if !hasCall(log2, want...) {

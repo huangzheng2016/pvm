@@ -22,6 +22,18 @@ import (
 // dialed out. Direct flows use the uplink resolver. Proxied flows use
 // either the exit-agent's domain-connect service or a resolver reached
 // through the tunnel; the host resolver is never used for them.
+const (
+	fakeProxyMaxConnections  = 1024
+	fakeProxyMaxPerVM        = 128
+	fakeProxyMaxPending      = 128
+	fakeProxyMaxPendingPerVM = 16
+)
+
+type proxyAdmission struct {
+	vm      string
+	pending bool
+}
+
 type fakeProxy struct {
 	policy     *gwpolicy.Engine
 	resolver   *net.Resolver
@@ -30,11 +42,15 @@ type fakeProxy struct {
 	dcAddrFor  func(exitName string) (string, bool) // in-tunnel domain-connect addr
 	dnsAddrFor func(exitName string) (string, bool) // in-tunnel resolver for exits without domain-connect
 
-	mu     sync.Mutex
-	ln     *net.TCPListener
-	closed bool
-	wg     sync.WaitGroup
-	conns  map[*trackedConn]struct{} // live relay connections, for route-flip resets
+	mu           sync.Mutex
+	ln           *net.TCPListener
+	closed       bool
+	wg           sync.WaitGroup
+	conns        map[*trackedConn]struct{} // live relay connections, for route-flip resets
+	admissions   map[net.Conn]proxyAdmission
+	perVM        map[string]int
+	pendingPerVM map[string]int
+	pending      int
 }
 
 // trackedConn is one live relayed flow. On a policy hot-swap, flows
@@ -58,11 +74,14 @@ func newFakeProxy(policy *gwpolicy.Engine, upstream string, vmByIP func(net.IP) 
 				return d.DialContext(ctx, "udp", upstream+":53")
 			},
 		},
-		vmByIP:     vmByIP,
-		markFor:    func(string) int { return -1 },
-		dcAddrFor:  func(string) (string, bool) { return "", false },
-		dnsAddrFor: func(string) (string, bool) { return "", false },
-		conns:      map[*trackedConn]struct{}{},
+		vmByIP:       vmByIP,
+		markFor:      func(string) int { return -1 },
+		dcAddrFor:    func(string) (string, bool) { return "", false },
+		dnsAddrFor:   func(string) (string, bool) { return "", false },
+		conns:        map[*trackedConn]struct{}{},
+		admissions:   map[net.Conn]proxyAdmission{},
+		perVM:        map[string]int{},
+		pendingPerVM: map[string]int{},
 	}
 }
 
@@ -148,11 +167,66 @@ func (p *fakeProxy) serve(ln *net.TCPListener) {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
+		vm := conn.RemoteAddr().(*net.TCPAddr).IP.String()
+		if p.vmByIP != nil {
+			if name := p.vmByIP(conn.RemoteAddr().(*net.TCPAddr).IP); name != "" {
+				vm = name
+			}
+		}
+		if !p.admit(conn, vm) {
+			conn.Close()
+			continue
+		}
 		p.wg.Add(1)
 		go func() {
 			defer p.wg.Done()
+			defer p.release(conn)
 			p.handle(conn)
 		}()
+	}
+}
+
+// Admission precedes spawning and DNS/dial work, so slow endpoints cannot
+// exhaust descriptors or goroutines before a flow reaches track.
+func (p *fakeProxy) admit(src net.Conn, vm string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed || len(p.admissions) >= fakeProxyMaxConnections || p.perVM[vm] >= fakeProxyMaxPerVM || p.pending >= fakeProxyMaxPending || p.pendingPerVM[vm] >= fakeProxyMaxPendingPerVM {
+		return false
+	}
+	p.admissions[src] = proxyAdmission{vm: vm, pending: true}
+	p.perVM[vm]++
+	p.pendingPerVM[vm]++
+	p.pending++
+	return true
+}
+
+func (p *fakeProxy) connectedLocked(src net.Conn) {
+	a, ok := p.admissions[src]
+	if !ok || !a.pending {
+		return
+	}
+	a.pending = false
+	p.admissions[src] = a
+	p.pending--
+	p.pendingPerVM[a.vm]--
+	if p.pendingPerVM[a.vm] == 0 {
+		delete(p.pendingPerVM, a.vm)
+	}
+}
+
+func (p *fakeProxy) release(src net.Conn) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	a, ok := p.admissions[src]
+	if !ok {
+		return
+	}
+	p.connectedLocked(src)
+	delete(p.admissions, src)
+	p.perVM[a.vm]--
+	if p.perVM[a.vm] == 0 {
+		delete(p.perVM, a.vm)
 	}
 }
 
@@ -196,6 +270,7 @@ func (p *fakeProxy) track(tc *trackedConn) bool {
 	if dec.Route != tc.route || dec.Exit != tc.exit || (tc.route == gwpolicy.Proxy && p.markFor(tc.exit) < 0) {
 		return false
 	}
+	p.connectedLocked(tc.src)
 	p.conns[tc] = struct{}{}
 	return true
 }
@@ -340,6 +415,9 @@ func (p *fakeProxy) Close() {
 	p.mu.Lock()
 	p.closed = true
 	ln := p.ln
+	for src := range p.admissions {
+		src.Close()
+	}
 	for tc := range p.conns {
 		tc.src.Close()
 		tc.up.Close()

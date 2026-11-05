@@ -16,6 +16,7 @@ import (
 	mdns "github.com/miekg/dns"
 
 	"github.com/huangzheng2016/pvm/internal/exit"
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 	gwdns "github.com/huangzheng2016/pvm/internal/gw/dns"
 	gwpolicy "github.com/huangzheng2016/pvm/internal/gw/policy"
 	"github.com/huangzheng2016/pvm/internal/gw/rules"
@@ -235,27 +236,26 @@ func resolveViaExitTunnel(ctx context.Context, domain, exitName string, mark int
 	return nil, fmt.Errorf("no in-tunnel resolver for %s", exitName)
 }
 
-func (f *fakeDNS) DumpMappings(path string) {
+func (f *fakeDNS) DumpMappings(path string) error {
 	m := f.pool.Snapshot()
 	out := map[string]string{}
 	for dom, ip := range m {
 		out[dom] = ip
 	}
 	data, _ := json.MarshalIndent(out, "", "  ")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err == nil {
-		os.Rename(tmp, path)
-	}
+	return fsutil.AtomicWrite(path, data, 0o600)
 }
 
 // RunDumpLoop refreshes the mapping dump every few seconds until Close.
 func (f *fakeDNS) RunDumpLoop(path string, interval time.Duration) {
 	go func() {
 		for {
-			f.DumpMappings(path)
+			if err := f.DumpMappings(path); err != nil {
+				log.Printf("fake DNS mapping export failed: %v", err)
+			}
 			select {
 			case <-f.done:
 				return

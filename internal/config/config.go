@@ -1,6 +1,9 @@
 package config
 
 import (
+	"bytes"
+	"fmt"
+	"io"
 	"os"
 
 	"gopkg.in/yaml.v3"
@@ -9,7 +12,8 @@ import (
 )
 
 type Config struct {
-	Defaults Defaults `yaml:"defaults"`
+	Defaults    Defaults `yaml:"defaults"`
+	UpdateCheck bool     `yaml:"update_check"`
 }
 
 type Defaults struct {
@@ -31,14 +35,20 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(cfg); err != nil && err != io.EOF {
 		return nil, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, fmt.Errorf("config must contain exactly one YAML document")
 	}
 	if cfg.Defaults.CPUs <= 0 {
 		cfg.Defaults.CPUs = native.HostCPUs()
 	}
 	if cfg.Defaults.MemMB <= 0 {
-		cfg.Defaults.MemMB = native.HostMemMB()
+		cfg.Defaults.MemMB = native.DefaultMemMB()
 	}
 	if cfg.Defaults.DiskGB <= 0 {
 		cfg.Defaults.DiskGB = 20

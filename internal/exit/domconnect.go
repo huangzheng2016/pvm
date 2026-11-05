@@ -138,7 +138,8 @@ func WriteDomainResolve(conn net.Conn, domain string) (net.IP, error) {
 // per-peer relay caps and idle timeouts. Without these the service is
 // an authenticated open proxy able to reach VPS-local services.
 type dcServer struct {
-	allow []*net.IPNet // extra CIDRs exempt from the private-egress block
+	localIPs []net.IP
+	allow    []*net.IPNet // explicit destinations exempt from private and local egress blocks
 	// dial is replaceable in tests; nil uses restrictedDial.
 	dial func(network, address string) (net.Conn, error)
 	// resolve is replaceable in tests; nil uses restrictedResolve.
@@ -150,8 +151,8 @@ type dcServer struct {
 	closed bool
 }
 
-func newDCServer(allow []*net.IPNet) *dcServer {
-	return &dcServer{allow: allow, active: map[string]int{}}
+func newDCServer(allow []*net.IPNet, localIPs ...net.IP) *dcServer {
+	return &dcServer{allow: allow, localIPs: localIPs, active: map[string]int{}}
 }
 
 // serve accepts on ln until it is closed.
@@ -217,31 +218,6 @@ func (d *dcServer) close() {
 	}
 }
 
-// blockedEgressIP reports whether ip may not be dialed by domain-connect:
-// loopback, link-local (incl. cloud metadata 169.254.169.254), RFC1918,
-// multicast/reserved and non-IPv4 addresses.
-func blockedEgressIP(ip net.IP) bool {
-	v4 := ip.To4()
-	if v4 == nil {
-		return true
-	}
-	switch {
-	case v4[0] == 0 || v4[0] >= 224:
-		return true
-	case v4[0] == 127:
-		return true
-	case v4[0] == 169 && v4[1] == 254:
-		return true
-	case v4[0] == 10:
-		return true
-	case v4[0] == 172 && v4[1]&0xf0 == 16:
-		return true
-	case v4[0] == 192 && v4[1] == 168:
-		return true
-	}
-	return false
-}
-
 // validConnectDomain allows only DNS-shaped names, never IP literals
 // (an IP literal would skip the resolve-and-check dial path's domain
 // semantics; private-IP destinations are blocked at dial time anyway).
@@ -279,12 +255,7 @@ func (d *dcServer) restrictedDial(network, address string) (net.Conn, error) {
 			if ip == nil {
 				return fmt.Errorf("unresolved dial address %s", host)
 			}
-			for _, n := range d.allow {
-				if n.Contains(ip) {
-					return nil
-				}
-			}
-			if blockedEgressIP(ip) {
+			if !egressAllowed(ip, d.allow, d.localIPs...) {
 				return fmt.Errorf("egress to %s refused by exit policy", ip)
 			}
 			return nil
@@ -318,14 +289,7 @@ func (d *dcServer) pickResolveIP(ips []net.IP) (net.IP, error) {
 		if v4 == nil {
 			continue
 		}
-		blocked := blockedEgressIP(v4)
-		for _, n := range d.allow {
-			if n.Contains(v4) {
-				blocked = false
-				break
-			}
-		}
-		if !blocked {
+		if egressAllowed(v4, d.allow, d.localIPs...) {
 			return v4, nil
 		}
 	}
@@ -343,7 +307,7 @@ func (d *dcServer) handle(conn net.Conn) {
 		peer = a.IP.String()
 	}
 	if !d.enter(peer) {
-		log.Printf("domain-connect: too many relays from %s, refusing", peer)
+		log.Printf("domain-connect: peer relay limit reached, refusing")
 		return
 	}
 	defer d.leave(peer)
@@ -416,7 +380,6 @@ func (d *dcServer) handle(conn net.Conn) {
 	}
 	defer d.untrack(up)
 	reply(0, "")
-	log.Printf("domain-connect: %s:%d relay established for %s", domain, port, peer)
 	proxyTCP(
 		&idleTimeoutConn{Conn: conn, d: dcIdleTimeout},
 		&idleTimeoutConn{Conn: up, d: dcIdleTimeout},

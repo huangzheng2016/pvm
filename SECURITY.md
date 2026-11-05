@@ -23,7 +23,7 @@ This reduced command surface is not an OS privilege sandbox. The guest agent ser
 
 ## Shared files and cache consistency
 
-All user VMs receive a read-write `/share` backed by the same pvm share directory. Extra mounts use `security_model=none` and `access=any`, with the guest uid aligned to the host uid, and expose host files with the host user's privileges. Shared files can transmit secrets, executable code, and identifiers between VMs. Neither a separate disk nor a fresh hostname makes shared content safe. Mount only data that the guest is allowed to read and change; do not place host SSH keys, git configuration, credentials, or personal files in shared directories.
+New user VMs default to a private read-write `/share` backed by their own VM directory. `--share none` disables that export; `--share global` explicitly uses the common pvm share directory. Existing VMs retain their original share mode; an upgrade does not silently move user files. A clone receives an empty private share; host share contents are not copied with its disk. Bake and gateway VMs export no default host share. Extra mounts use `security_model=none` and `access=any`, with the guest uid aligned to the host uid, and expose host files with the host user's privileges. Global shares and shared extra mounts can transmit secrets, executable code, and identifiers between VMs. `pvm mount --read-only` enforces a read-only QEMU backend as well as the guest mount option; adding or removing one requires a stopped VM. Neither a separate disk nor a fresh hostname makes shared content safe. Mount only data that the guest is allowed to read and change; do not place host SSH keys, git configuration, credentials, or personal files in shared directories.
 
 The `coherent` mount profile uses `cache=none` and preserves the bidirectional-visibility baseline for files actively read and written on both sides. It does not provide multi-writer transaction consistency.
 
@@ -37,13 +37,15 @@ With `readahead`, if the host rewrites or replaces a file while an old guest fil
 - The managed cluster is IPv4-only and drops forwarded IPv6. Exported standard WireGuard client configurations cover IPv4 only; the client must separately disable or contain IPv6.
 - Domain rules affect only resolution through the gateway DNS. Applications with hardcoded DoH can bypass those rules. Blocking known public DoH/DoQ resolver addresses cannot block every encrypted DNS service, and custom HTTPS resolvers may still be reachable through the selected route. pvm does not decrypt HTTPS to classify it.
 - Loopback host port maps are accessible to other processes running on the host.
-- The desktop session has no separate XFCE login and screen locking is disabled; the VNC password is carried in the noVNC URL. `pvm desktop --public` explicitly exposes the desktop to the network, and anyone who can reach that port can attempt the password. Its HTTP/noVNC connection is not TLS-protected by pvm; use a trusted network or an authenticated encrypted tunnel. Desktop URLs contain secrets and must not be shared.
+- The desktop session has no separate XFCE login and screen locking is disabled; the VNC password is carried in the noVNC URL fragment, so it is omitted from the HTTP request, but remains a secret in terminal output and browser history. `pvm desktop --public` explicitly exposes the desktop to the network, and anyone who can reach that port can attempt the password. Its HTTP/noVNC connection is not TLS-protected by pvm; use a trusted network or an authenticated encrypted tunnel. Desktop URLs contain secrets and must not be shared.
 
 Routing policy is a security goal with regression coverage, not a proof that every host/kernel/QEMU configuration is leak-free. Test the actual deployment, including tunnel loss, before relying on it for sensitive traffic.
 
 ## Images and bake
 
-Base downloads are checked against checksums fetched from the distribution over HTTPS. This detects corrupt or inconsistent downloads; pvm does not independently verify a distribution signing key, and trusts the HTTPS endpoint and host trust store. Golden images additionally contain packages installed from the base image's configured repositories. Bake does not turn an untrusted base image into a trusted one. For manual release verification, check a downloaded release archive against the release's `SHA256SUMS` before installing it.
+Base downloads are checked against checksums fetched from the distribution over HTTPS. This detects corrupt or inconsistent downloads; pvm does not independently verify a distribution signing key, and trusts the HTTPS endpoint and host trust store. Golden images additionally contain packages installed from the base image's configured repositories. Bake does not turn an untrusted base image into a trusted one. For independent image signature verification, pass `pvm image fetch --keyring /trusted/distribution.gpg <image>`. This requires `gpgv` and a keyring whose origin and contents you have independently verified; every key in it is trusted. Missing or invalid signatures fail without falling back, including for cached images. No publisher key is downloaded automatically, and signatures do not guarantee image freshness.
+
+The release installer and self-upgrader require `gh attestation verify`, binding the archive to this repository, the release workflow, and the selected tag, in addition to checking `SHA256SUMS`. This trusts GitHub and the authorized workflow; it does not protect against an authorized malicious source change. Downloads without a matching proof are rejected. Installation stages all assets first and retains earlier files. Binary and runtime switches are separate filesystem operations; the first migration of an existing runtime directory to versioned storage is not a cross-path crash-atomic transaction.
 
 A build VM uses host/slirp egress and may use explicitly configured host proxy environment variables. It does not inherit the final VM's selected exit route. Proxy credentials must not be printed by shell tracing and temporary proxy configuration is removed before a successful image is sealed. Failed builds kept with `--keep-vm` can retain credentials and provisioning logs; treat them as sensitive. Removing a file inside qcow2 is not forensic erasure of all backing blocks.
 
@@ -53,9 +55,9 @@ Golden versions are retained as backing images. Do not edit, replace, or remove 
 
 ## Credentials and identity
 
-pvm stores its dedicated host SSH key under the pvm data directory. It does not automatically copy the host's `~/.ssh` or `~/.gitconfig` into guests. Explicit mounts, files placed in `/share`, SSH options, and commands run by the user can still expose host data. Managed SSH, SCP and gateway hops ignore personal SSH configuration, offer only the pvm key, and disable host-agent use and forwarding. Manually invoked SSH can use different options; review its actual command and environment.
+New VMs use separate management SSH keys under the pvm data directory. Existing VMs retain their original key; those using the original shared pvm key expose a stable public-key correlation identifier inside each guest. Clone uses the source management key only to bootstrap its first identity reset, then replaces that authorized pvm key with its own while preserving independently added keys. It does not automatically copy the host's `~/.ssh` or `~/.gitconfig` into guests. Explicit mounts, files placed in `/share`, SSH options, and commands run by the user can still expose host data. Managed SSH, SCP and gateway hops ignore personal SSH configuration, offer only the pvm key, and disable host-agent use and forwarding. Manually invoked SSH can use different options; review its actual command and environment.
 
-The exit control plane uses HTTPS, a bearer token, and certificate fingerprint pinning; the data plane uses WireGuard. Verify the initial fingerprint through a trusted channel: trust-on-first-use alone does not authenticate the first connection. During upgrades, preserve the existing service unit's token and fingerprint, and investigate a certificate fingerprint mismatch rather than blindly pinning the new value.
+The exit control plane uses HTTPS, a bearer token, and certificate fingerprint pinning; the data plane uses WireGuard. Verify the initial fingerprint through a trusted channel: trust-on-first-use alone does not authenticate the first connection. Prefer `--token-file` with an owner-only regular file to avoid bearer tokens in process arguments and shell history. During upgrades, preserve the existing service unit's token and fingerprint, and investigate a certificate fingerprint mismatch rather than blindly pinning the new value.
 
 Exit certificates, WireGuard keys, API tokens, desktop passwords, and snapshots are secrets. Keep the pvm data directory private, back it up securely, and never publish raw configuration files, `wg` private-key output, or full diagnostic dumps. Existing credentials must not be silently replaced when unreadable or inconsistent; investigate and restore the expected files.
 
@@ -63,9 +65,17 @@ WARP registration stores the private key and device token in `~/.pvm/exits/<name
 
 Each exported standard WireGuard client profile and its QR code contain a private key. Use a separate profile for each device and never share one profile across devices. Treat the exported file, terminal scrollback, and QR code as secrets.
 
-A fresh VM initializes OS machine identifiers. Clone regenerates its hostname, machine-id, and SSH host keys on first boot, but copies user files and may preserve application-specific identifiers such as an AI client's random userID, tokens, browser profiles, and cache state. A snapshot restores the same identity and secrets. To avoid copying an existing client enrollment, create a fresh VM or clone before installing the client, then use the application's supported enrollment and credential-management process. Do not assume clone or a MAC/hostname change provides a new application identity. pvm cannot prevent account correlation through OAuth, billing, IP reputation, shared files, or application telemetry.
+A fresh VM initializes OS machine identifiers. Clone preserves the source's effective default exit before any boot and regenerates its hostname, machine-id, management key, and SSH host keys on first boot, but copies user files and may preserve application-specific identifiers such as an AI client's random userID, tokens, browser profiles, and cache state. A snapshot restores the same identity and secrets. To avoid copying an existing client enrollment, create a fresh VM or clone before installing the client, then use the application's supported enrollment and credential-management process. Do not assume clone or a MAC/hostname change provides a new application identity. pvm cannot prevent account correlation through OAuth, billing, IP reputation, shared files, or application telemetry.
 
 Timezone and locale are convenience settings, not evidence of geography or anonymity. Keep application configuration consistent with its supported deployment and the service's terms. pvm cannot guarantee a service's trust score, telemetry behavior, paid features, account separation, or ban outcome.
+
+## Local diagnostics and outbound metadata
+
+Automatic host update checks are disabled by default. `update_check: true` in the host config or `PVM_UPDATE_CHECK=1` enables GitHub requests using host egress; GitHub can see that source address. `PVM_NO_UPDATE_CHECK=1` overrides both. Successes and failures are cached for 24 hours. Exit timezone suggestions use local system settings or explicit `exit-agent --timezone`, without contacting an IP geolocation service.
+
+Successful domain-connect requests are not logged by default. The gateway maintains a root-only fake-IP mapping file for explicit `pvm dns ls` inspection; the command's output contains browsing destinations and must remain private. Gateway configuration containing exit credentials is root-only. `pvm audit --privacy` and `pvm doctor` report configuration and permission issues with identifying values withheld; they do not verify a running guest's traffic.
+
+The VPS exit blocks private, link-local, metadata, multicast and local-host destinations by default across its managed data paths, except its own tunnel probe/control services. `--domain-allow-cidr` explicitly permits matching destinations across those paths, so use narrow entries. Local interface addresses are captured at exit startup; restart the exit after changing its interface addresses. These controls do not isolate mutually hostile peers from all VPS administration risks.
 
 ## Verify a running environment
 
@@ -78,6 +88,9 @@ pvm route ls
 pvm exit ls
 pvm mount ls dev1
 pvm audit dev1
+pvm audit dev1 --privacy
+pvm doctor
+pvm route explain dev1 example.com
 pvm exit test my-exit
 ```
 

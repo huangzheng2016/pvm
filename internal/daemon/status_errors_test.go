@@ -26,7 +26,7 @@ func TestVMListAndStatusReportDamagedSpec(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "vm.json"), []byte("{"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(p, &config.Config{}, &qemu.Toolchain{}, qemu.AccelTCG, "", nil)
+	srv := NewServer(p, &config.Config{}, &qemu.Toolchain{}, qemu.AccelTCG, nil)
 	for _, path := range []string{"/v1/vms", "/v1/status"} {
 		out := httptest.NewRecorder()
 		srv.handler().ServeHTTP(out, httptest.NewRequest("GET", path, nil))
@@ -49,7 +49,7 @@ func TestStoppedVMDoesNotRetainReadyStatus(t *testing.T) {
 	if err := spec.Save(p); err != nil {
 		t.Fatal(err)
 	}
-	srv := NewServer(p, &config.Config{}, &qemu.Toolchain{}, qemu.AccelTCG, "", nil)
+	srv := NewServer(p, &config.Config{}, &qemu.Toolchain{}, qemu.AccelTCG, nil)
 	srv.stage("dev1", "ready", "")
 	out := httptest.NewRecorder()
 	srv.handler().ServeHTTP(out, httptest.NewRequest("GET", "/v1/vms/dev1", nil))
@@ -67,7 +67,7 @@ func TestStoppedVMDoesNotRetainReadyStatus(t *testing.T) {
 
 func TestManagedSSHUsesOnlyDedicatedIdentity(t *testing.T) {
 	p := paths.New(t.TempDir())
-	srv := NewServer(p, &config.Config{}, &qemu.Toolchain{}, qemu.AccelTCG, "", nil)
+	srv := NewServer(p, &config.Config{}, &qemu.Toolchain{}, qemu.AccelTCG, nil)
 	args, _, err := srv.sshBaseArgs(&vm.Spec{Name: "dev1", User: "dev", Role: "gateway", SSHPort: 10022})
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func TestSnapshotExistingArtifactsRejectedBeforeGuestChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	srv := NewServer(p, &config.Config{}, &qemu.Toolchain{}, qemu.AccelTCG, "", nil)
+	srv := NewServer(p, &config.Config{}, &qemu.Toolchain{}, qemu.AccelTCG, nil)
 	out := httptest.NewRecorder()
 	srv.handler().ServeHTTP(out, httptest.NewRequest("POST", "/v1/vms/dev1/snapshot", nil))
 	if out.Code != 409 {

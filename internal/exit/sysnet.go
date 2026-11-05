@@ -2,6 +2,7 @@ package exit
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -28,7 +29,7 @@ func nftTableFor(tunNames []string) string {
 	return nftTable + "_" + prefix
 }
 
-func nftRuleset(tunNames []string, cidrs []string) string {
+func nftRuleset(tunNames []string, cidrs []string, allow ...*net.IPNet) string {
 	var ifSet, cidrSet string
 	if len(tunNames) > 0 {
 		quoted := make([]string, len(tunNames))
@@ -44,9 +45,29 @@ func nftRuleset(tunNames []string, cidrs []string) string {
 	// chain names must avoid nftables keywords (e.g. "fwd" is reserved).
 	var b strings.Builder
 	b.WriteString("table inet " + nftTableFor(tunNames) + " {\n")
+	b.WriteString("  chain pvm_input {\n")
+	b.WriteString("    type filter hook input priority -10; policy accept;\n")
+	for i, name := range tunNames {
+		if i < len(cidrs) {
+			ip := tunnelServerIP(cidrs[i])
+			fmt.Fprintf(&b, "    iifname %q ip daddr %s tcp dport { %d, %d } accept\n", name, ip, DomainConnectPort, SpeedPort)
+			fmt.Fprintf(&b, "    iifname %q ip daddr %s udp dport %d accept\n", name, ip, UDPProbePort)
+			fmt.Fprintf(&b, "    iifname %q ip daddr %s icmp type echo-request accept\n", name, ip)
+		}
+		for _, n := range allow {
+			fmt.Fprintf(&b, "    iifname %q ip daddr %s accept\n", name, n)
+		}
+		fmt.Fprintf(&b, "    iifname %q drop\n", name)
+	}
+	b.WriteString("  }\n")
 	b.WriteString("  chain pvm_forward {\n")
-	b.WriteString("    type filter hook forward priority 0; policy accept;\n")
+	b.WriteString("    type filter hook forward priority -10; policy accept;\n")
 	if ifSet != "" {
+		for _, n := range allow {
+			fmt.Fprintf(&b, "    iifname { %s } ip daddr %s accept\n", ifSet, n)
+		}
+		fmt.Fprintf(&b, "    iifname { %s } ip daddr { %s } drop\n", ifSet, strings.Join(blockedEgressCIDRs, ", "))
+		fmt.Fprintf(&b, "    iifname { %s } meta nfproto ipv6 drop\n", ifSet)
 		fmt.Fprintf(&b, "    iifname { %s } accept\n", ifSet)
 		fmt.Fprintf(&b, "    oifname { %s } ct state { established, related } accept\n", ifSet)
 	}
@@ -65,9 +86,8 @@ func nftRuleset(tunNames []string, cidrs []string) string {
 	return b.String()
 }
 
-func NFTInstall(tunNames []string, cidrs []string) error {
-	_ = NFTRemove(tunNames)
-	return runNFT(nftRuleset(tunNames, cidrs))
+func NFTInstall(tunNames []string, cidrs []string, allow ...*net.IPNet) error {
+	return runNFT("destroy table inet " + nftTableFor(tunNames) + "\n" + nftRuleset(tunNames, cidrs, allow...))
 }
 
 func NFTRemove(tunNames []string) error {

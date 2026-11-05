@@ -5,6 +5,7 @@
 package tunnel
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"golang.zx2c4.com/wireguard/conn"
+	"golang.zx2c4.com/wireguard/device"
 )
 
 // MaxSegmentSize ref: device.MaxSegmentSize
@@ -57,17 +59,45 @@ const (
 	tcpWriteTimeout    = 30 * time.Second
 )
 
-// tcpFirstReadTimeout is the deadline for the first frame (a WG
-// handshake initiation); atomic so tests can shrink it safely.
+// The authentication deadline is absolute: arbitrary frames cannot renew it.
+// Atomic durations let tests shorten deadlines safely.
 var tcpFirstReadTimeoutNs = atomic.Int64{}
+var tcpIdleTimeoutNs = atomic.Int64{}
 
 func firstReadTimeout() time.Duration { return time.Duration(tcpFirstReadTimeoutNs.Load()) }
 
-func init() { tcpFirstReadTimeoutNs.Store(int64(10 * time.Second)) }
+func init() {
+	// Leave room for WireGuard's 10-second authenticated receive keepalive
+	// when a reconnected stream resumes an existing transport session.
+	tcpFirstReadTimeoutNs.Store(int64(30 * time.Second))
+	tcpIdleTimeoutNs.Store(int64(3 * time.Minute))
+}
 
 type tcpConn struct {
-	conn    *net.TCPConn
-	writeMu sync.Mutex
+	conn          *net.TCPConn
+	writeMu       sync.Mutex
+	deadlineMu    sync.Mutex
+	authenticated bool
+	authDeadline  time.Time
+}
+
+// WireGuard retains received endpoints only after authenticating a peer packet.
+// The connection identity prevents an old endpoint from authenticating a new stream.
+type tcpEndpoint struct {
+	conn.Endpoint
+	entry *tcpConn
+}
+
+func (c *tcpConn) readDeadline(authenticate bool) time.Time {
+	c.deadlineMu.Lock()
+	defer c.deadlineMu.Unlock()
+	c.authenticated = c.authenticated || authenticate
+	deadline := time.Now().Add(time.Duration(tcpIdleTimeoutNs.Load()))
+	if !c.authenticated && c.authDeadline.Before(deadline) {
+		deadline = c.authDeadline
+	}
+	_ = c.conn.SetReadDeadline(deadline)
+	return deadline
 }
 
 type reqLen [4]byte
@@ -135,11 +165,10 @@ func (t *TCPBind) handleConn(entry *tcpConn, endpoint conn.Endpoint, closeChan c
 			t.deleteConn(endpoint.DstToString(), entry)
 			entry.conn.Close()
 		}()
-		// the first frame (a WG handshake initiation) must arrive quickly;
-		// afterwards the deadline is lifted and WG keepalives rule.
-		entry.conn.SetReadDeadline(time.Now().Add(firstReadTimeout())) //nolint:errcheck
-		first := true
+		entry.authDeadline = time.Now().Add(firstReadTimeout())
+		endpoint = &tcpEndpoint{Endpoint: endpoint, entry: entry}
 		for {
+			deadline := entry.readDeadline(false)
 			data := t.dataPool.Get().(*recvData)
 			if _, err := io.ReadFull(entry.conn, data.len[:]); err != nil {
 				t.dataPool.Put(data)
@@ -149,7 +178,7 @@ func (t *TCPBind) handleConn(entry *tcpConn, endpoint conn.Endpoint, closeChan c
 			size := l.Len()
 			// A malformed/desynced frame length means the stream is
 			// unrecoverable; tear it down instead of panicking on the slice.
-			if size < 0 || size > len(data.buff) {
+			if size <= 0 || size > len(data.buff) {
 				t.dataPool.Put(data)
 				return
 			}
@@ -162,17 +191,19 @@ func (t *TCPBind) handleConn(entry *tcpConn, endpoint conn.Endpoint, closeChan c
 				t.dataPool.Put(data)
 				continue
 			}
-			if first {
-				entry.conn.SetReadDeadline(time.Time{}) //nolint:errcheck
-				first = false
-			}
 			data.size = size
 			data.endpoint = endpoint
+			timer := time.NewTimer(time.Until(deadline))
 			select {
+			case <-timer.C:
+				t.dataPool.Put(data)
+				return
 			case <-closeChan:
+				timer.Stop()
 				t.dataPool.Put(data)
 				return
 			case recvChan <- data:
+				timer.Stop()
 			}
 		}
 	}()
@@ -341,12 +372,12 @@ func (t *TCPBind) getConn(endpoint conn.Endpoint) (*tcpConn, error) {
 		return c, nil
 	}
 
-	se, ok := endpoint.(*conn.StdNetEndpoint)
-	if !ok {
+	se, err := netip.ParseAddrPort(key)
+	if err != nil {
 		return nil, conn.ErrWrongEndpointType
 	}
 	addr := &net.TCPAddr{
-		IP:   se.DstIP().AsSlice(),
+		IP:   se.Addr().AsSlice(),
 		Port: int(se.Port()),
 	}
 	raw, err := net.DialTimeout("tcp", addr.String(), 15*time.Second)
@@ -410,6 +441,15 @@ func (t *TCPBind) Send(bufs [][]byte, endpoint conn.Endpoint) error {
 	entry.writeMu.Lock()
 	defer entry.writeMu.Unlock()
 	for _, buf := range bufs {
+		// This is trusted device output, not an inbound frame shape check.
+		// Cookie replies do not establish authentication. A response or transport
+		// sent to this received endpoint follows WireGuard peer authentication.
+		if ep, ok := endpoint.(*tcpEndpoint); ok && ep.entry == entry && len(buf) >= 4 {
+			typ := binary.LittleEndian.Uint32(buf)
+			if typ == device.MessageResponseType || typ == device.MessageTransportType {
+				entry.readDeadline(true)
+			}
+		}
 		var l reqLen
 		l.FromLen(len(buf))
 		msg := net.Buffers{l[:], buf}

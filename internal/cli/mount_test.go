@@ -71,9 +71,9 @@ func TestWriteMountTable(t *testing.T) {
 		t.Fatalf("mount table = %q", out.String())
 	}
 	want := [][]string{
-		{"HOST", "GUEST", "PROFILE"},
-		{"/host/a", "/mnt/legacy", "coherent"},
-		{"/host/b", "/mnt/read", "readahead"},
+		{"HOST", "GUEST", "PROFILE", "ACCESS"},
+		{"/host/a", "/mnt/legacy", "coherent", "rw"},
+		{"/host/b", "/mnt/read", "readahead", "rw"},
 	}
 	for i := range want {
 		got := strings.Fields(lines[i])
@@ -107,13 +107,17 @@ func TestMountSendsHostPathResolvedInClientDirectory(t *testing.T) {
 			fmt.Fprint(w, `{"ready":true}`)
 			return
 		}
-		var body map[string]string
+		var body struct {
+			Host     string `json:"host"`
+			Guest    string `json:"guest"`
+			ReadOnly bool   `json:"read_only"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		received <- body["host"]
-		_ = json.NewEncoder(w).Encode(mountView{Host: body["host"], Guest: body["guest"]})
+		received <- body.Host
+		_ = json.NewEncoder(w).Encode(mountView{Host: body.Host, Guest: body.Guest})
 	})}
 	defer server.Close()
 	go server.Serve(ln)

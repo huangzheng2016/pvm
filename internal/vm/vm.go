@@ -11,9 +11,16 @@ import (
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
+	"github.com/huangzheng2016/pvm/internal/keys"
 	"github.com/huangzheng2016/pvm/internal/native"
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/qemu"
+)
+
+const (
+	ShareNone    = "none"
+	SharePrivate = "private"
+	ShareGlobal  = "global"
 )
 
 type Spec struct {
@@ -40,8 +47,10 @@ type Spec struct {
 	IP        string `json:"ip,omitempty"`
 	MAC       string `json:"mac,omitempty"`
 
-	CreatedAt time.Time    `json:"created_at"`
-	Mounts    []GuestMount `json:"mounts,omitempty"`
+	CreatedAt  time.Time    `json:"created_at"`
+	Mounts     []GuestMount `json:"mounts,omitempty"`
+	ShareMode  string       `json:"share_mode,omitempty"`
+	SSHKeyName string       `json:"ssh_key_name,omitempty"`
 
 	// Region/identity profile. TZ/Locale are applied by cloud-init at
 	// first boot; PrevTZ/PrevLocale remember the pre-route values so
@@ -85,6 +94,17 @@ func Load(p *paths.Paths, name string) (*Spec, error) {
 	if err := json.Unmarshal(data, &spec); err != nil {
 		return nil, err
 	}
+	if spec.ShareMode == "" {
+		spec.ShareMode = ShareGlobal
+	}
+	if err := ValidateShareMode(spec.ShareMode); err != nil {
+		return nil, err
+	}
+	if spec.SSHKeyName != "" {
+		if err := ValidateName(spec.SSHKeyName); err != nil {
+			return nil, fmt.Errorf("invalid ssh key name: %w", err)
+		}
+	}
 	return &spec, nil
 }
 
@@ -117,6 +137,23 @@ func (s *Spec) Save(p *paths.Paths) error {
 	return fsutil.AtomicWrite(s.SpecPath(p), data, 0o600)
 }
 
+func (s *Spec) SSHKeyPath(p *paths.Paths) string {
+	if s.SSHKeyName == "" {
+		return p.SSHKey()
+	}
+	return p.VMSSHKey(s.SSHKeyName)
+}
+
+func (s *Spec) SharedDir(p *paths.Paths) string {
+	if s.Role == "gateway" || s.ShareMode == ShareNone {
+		return ""
+	}
+	if s.ShareMode == SharePrivate {
+		return p.VMShare(s.Name)
+	}
+	return p.Share
+}
+
 func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poolBase, poolSize int) qemu.VMConfig {
 	dir := s.dir(p)
 	mountDir := ""
@@ -126,7 +163,7 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 	mounts := make([]qemu.Mount, 0, len(s.Mounts))
 	for _, m := range s.Mounts {
 		slot, _ := qemu.VirtFSSlot(m.Tag)
-		mounts = append(mounts, qemu.Mount{Tag: m.Tag, HostPath: p.MountSlot(s.Name, slot)})
+		mounts = append(mounts, qemu.Mount{Tag: m.Tag, HostPath: p.MountSlot(s.Name, slot), ReadOnly: m.ReadOnly})
 	}
 	var net qemu.Network
 	hotplug := 0
@@ -153,7 +190,8 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 		AgentSock:    p.AgentSock(s.Name),
 		Network:      net,
 		HotplugPorts: hotplug,
-		ShareDir:     p.Share,
+		ShareDir:     s.SharedDir(p),
+		NoShare:      s.SharedDir(p) == "",
 		MountDir:     mountDir,
 		ExtraMounts:  mounts,
 		Accel:        accel,
@@ -165,18 +203,27 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 
 // Create builds the VM directory: overlay disk, UEFI vars, seed ISO,
 // spec file. It does not start the VM.
-func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec, sshPub string) error {
+func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec) error {
 	if err := ValidateName(spec.Name); err != nil {
 		return err
 	}
 	if _, err := os.Stat(spec.BaseDisk); err != nil {
 		return fmt.Errorf("base image %s not found; run `pvm image fetch %s`", spec.BaseDisk, spec.Image)
 	}
+	if spec.ShareMode == "" {
+		spec.ShareMode = SharePrivate
+	}
+	if spec.Role == "gateway" {
+		spec.ShareMode = ShareNone
+	}
+	if err := ValidateShareMode(spec.ShareMode); err != nil {
+		return err
+	}
 	dir := spec.dir(p)
 	if _, err := os.Stat(dir); err == nil {
 		return fmt.Errorf("vm %q already exists", spec.Name)
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := os.Mkdir(dir, 0o700); err != nil {
 		return err
 	}
 	created := false
@@ -185,6 +232,17 @@ func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec, sshPub string) error
 			os.RemoveAll(dir)
 		}
 	}()
+
+	if spec.ShareMode == SharePrivate {
+		if err := os.Mkdir(p.VMShare(spec.Name), 0o755); err != nil {
+			return err
+		}
+	}
+	spec.SSHKeyName = spec.Name
+	sshPub, err := keys.Ensure(spec.SSHKeyPath(p))
+	if err != nil {
+		return fmt.Errorf("prepare VM SSH key: %w", err)
+	}
 
 	overlay := spec.Disk(p)
 	out, err := exec.Command(tc.Img, "create", "-f", "qcow2", "-b", spec.BaseDisk, "-F", "qcow2", overlay).CombinedOutput()

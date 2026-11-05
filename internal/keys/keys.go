@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"golang.org/x/crypto/ssh"
@@ -18,6 +19,12 @@ import (
 
 func Ensure(keyPath string) (pubAuthorized string, err error) {
 	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+		return "", err
+	}
+	if err := checkPrivatePath(filepath.Dir(keyPath), true); err != nil {
+		return "", err
+	}
+	if err := CheckPermissions(keyPath); err != nil {
 		return "", err
 	}
 	lock, err := fsutil.TryLock(keyPath + ".lock")
@@ -75,4 +82,37 @@ func Ensure(keyPath string) (pubAuthorized string, err error) {
 		return "", fmt.Errorf("write public key: %w", err)
 	}
 	return pubLine, nil
+}
+
+// CheckPermissions rejects exposed or foreign-owned private keys without changing them.
+func CheckPermissions(path string) error {
+	return checkPrivatePath(path, false)
+}
+
+func checkPrivatePath(path string, directory bool) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) && !directory {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect SSH key permissions: %w", err)
+	}
+	kind := "private key"
+	if directory {
+		kind = "key directory"
+	}
+	if (directory && !info.IsDir()) || (!directory && !info.Mode().IsRegular()) {
+		return fmt.Errorf("SSH %s has an unsafe file type; symlinks are not permitted", kind)
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Uid != uint32(os.Getuid()) {
+		return fmt.Errorf("SSH %s is owned by another user; restore ownership before continuing", kind)
+	}
+	mask := os.FileMode(0o077)
+	if directory {
+		mask = 0o022
+	}
+	if info.Mode().Perm()&mask != 0 {
+		return fmt.Errorf("SSH %s is accessible to other users; restrict permissions before continuing", kind)
+	}
+	return nil
 }

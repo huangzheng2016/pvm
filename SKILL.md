@@ -18,7 +18,7 @@ pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, l
 - If pvm is on PATH, use `pvm ...`; inside the repo, use `./pvm ...` from the repo root.
 - Run `pvm daemon status` first to confirm the daemon is healthy; `pvm list` shows existing VMs.
   - If the status shows `warning: N vm(s) running under tcg fallback`, the host's hardware accelerator is unavailable (on macOS this means Hypervisor.framework is wedged after long uptime — reboot the Mac to restore full speed). VMs work meanwhile, just slowly.
-- On first use, `pvm image list` shows cached base and golden images. `pvm create` can fetch a missing base and build a missing golden; this first run is much slower. Use `pvm image fetch <distro:version>` and `pvm image build <distro:version>` to prepare them explicitly. Fetch rechecks the distribution checksum; `--force` re-downloads.
+- On first use, `pvm image list` shows cached base and golden images. `pvm create` can fetch a missing base and build a missing golden; this first run is much slower. Use `pvm image fetch <distro:version>` and `pvm image build <distro:version>` to prepare them explicitly. Fetch rechecks the distribution checksum; `--force` re-downloads. `--keyring /trusted/distribution.gpg` requires `gpgv` and verifies signed checksums with only that explicitly trusted keyring, including cached images.
 - Example exits: `my-exit` (WireGuard over UDP) and `my-exit-tcp` (WireGuard over TCP). Run `pvm exit ls` to see the names configured on the current host and do not re-add an existing name.
 - The `pvm-exit-agent.service` on the VPS must stay running. Never stop it unless you are deliberately testing the kill-switch or upgrading.
 
@@ -28,11 +28,11 @@ pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, l
 - **Exit providers**: pvm exit-agent (`udp` default / `tcp` fallback) or Cloudflare WARP (`udp` only); see `pvm exit add-warp` below
 - **exit-agent NAT backend**: `auto` (probe) / `nft` / `iptables` / `userspace` (no root; ICMP requires ping-socket permission)
 - **Route targets**: `direct` (host egress) or an exit name such as `my-exit`
-- **create flags**: `--image`, `--distro`, `--version`, `--name`, `--user`, `--cpus`, `--mem`, `--disk`, `--tz`, `--locale`, `--git-email`, `--git-name`, `--smbios-spoof`, `--no-start`, `--no-wait`
+- **create flags**: `--image`, `--distro`, `--version`, `--name`, `--user`, `--cpus`, `--mem`, `--disk`, `--tz`, `--locale`, `--git-email`, `--git-name`, `--smbios-spoof`, `--share private|global|none`, `--no-start`, `--no-wait`
 
 ### Directory mounts (pvm mount and /share)
 
-- Every VM mounts the host's `~/.pvm/share` at `/share` (9p, **bidirectional read-write**, including subdirectories). Drop files there for quick exchange - zero configuration. `/share` always uses the `coherent` profile.
+- New VMs mount their private `~/.pvm/vms/<name>/share` at `/share` (9p, bidirectional read-write). `--share none` disables it; `--share global` explicitly selects `~/.pvm/share`. Existing VMs keep their recorded behavior. Bake and gateway VMs do not expose host shares. `/share` uses the `coherent` profile.
 - Manage extra mounts dynamically on a running VM; no reboot or recreate is needed:
   ```bash
   pvm mount dev1 ~/work/proj:/home/dev/proj
@@ -40,7 +40,7 @@ pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, l
   pvm mount ls dev1
   pvm mount rm dev1 /home/dev/proj
   ```
-- `pvm mount` hot-plugs the 9p device, mounts it in the guest, and persists the configuration and profile in the guest's fstab and VM spec. `pvm mount rm` unmounts and detaches it without deleting host files. Add and remove require the VM to be running and SSH-ready; up to 13 extra mounts are supported. A VM started by an older pvm version needs one restart to reserve the dynamic slots. Clones inherit mount profiles, and `pvm mount ls` displays them.
+- `pvm mount` hot-plugs the 9p device, mounts it in the guest, and persists the configuration and profile in the guest's fstab and VM spec. `pvm mount rm` unmounts and detaches it without deleting host files. Read-write add and remove require the VM to be running and SSH-ready; `--read-only` mounts enforce QEMU backend restrictions and require the VM stopped for add/remove, then apply at startup; up to 13 extra mounts are supported. A VM started by an older pvm version needs one restart to reserve the dynamic slots. Clones inherit mount profiles, and `pvm mount ls` displays them.
 - Mounts are virtio-9p. Good for source trees and documents; not for high-IOPS database directories. Extra mounts are managed only by `pvm mount`, not at create time.
 - **Mount profiles**:
   - `coherent` is the default for `/share`, new extra mounts, and old specs with no profile. It uses `cache=none,msize=262144` and is intended for files actively read and written on both sides.
@@ -62,9 +62,9 @@ pvm ssh dev1 'whoami && ls /share'
 ```
 
 - Always pass `--user` explicitly. Interactive create prompts when it is omitted; non-interactive create rejects a missing `--user` instead of silently choosing one.
-- create follows progress by default (image, disk, boot, cloud-init stages); `--no-wait` returns immediately.
+- create follows progress by default (image, disk, boot, cloud-init and agent readiness); `--no-wait` returns immediately.
 - Golden images come with Docker, common dev tools, and a native XFCE desktop (TigerVNC + noVNC) preinstalled. User VMs get a virtio-gpu display device by default (`/dev/dri` in the guest); gateway and build VMs stay headless.
-- SSH uses a pvm-dedicated keypair, no password. `pvm ssh dev1` opens an interactive shell; when both local stdin/stdout are terminals, `pvm ssh dev1 codex` and other interactive commands also get a TTY automatically. Use `pvm ssh -t dev1 <cmd>` to force one or `-T` to disable it. SSH remote commands run through the user's login shell, loading `~/.profile`, Bash login files, or `~/.zprofile`; TTY commands also request interactive mode so `.bashrc`/`.zshrc` follow the shell's normal startup rules. When SSH is unreachable the virtio-serial agent channel takes over automatically (or use `pvm exec dev1 <cmd...>` explicitly - it needs no network).
+- New VMs use per-VM pvm management keypairs, no password; existing VMs retain their original key. `pvm ssh dev1` opens an interactive shell; when both local stdin/stdout are terminals, `pvm ssh dev1 codex` and other interactive commands also get a TTY automatically. Use `pvm ssh -t dev1 <cmd>` to force one or `-T` to disable it. SSH remote commands run through the user's login shell, loading `~/.profile`, Bash login files, or `~/.zprofile`; TTY commands also request interactive mode so `.bashrc`/`.zshrc` follow the shell's normal startup rules. When SSH is unreachable the virtio-serial agent channel takes over automatically (or use `pvm exec dev1 <cmd...>` explicitly - it needs no network).
 - create/start pushes the VM's IP/MAC mapping to the gateway DHCP **synchronously** before booting (new VMs are reachable immediately); if the gateway is unreachable, start fails instead of booting a network-less VM.
 - Cluster addressing: VMs live in `100.99.<cluster>.0/24` (CGNAT space), the gateway is `100.99.<cluster>.1`.
 
@@ -78,7 +78,7 @@ pvm audit dev1
 pvm exit test my-exit
 ```
 
-- The region profile automatically switches the VM's timezone/locale to the exit region (`en_US.UTF-8`, applied over SSH — skipped if the VM's SSH is down; rerun `pvm route` to retry). `pvm audit` is read-only: it reports route, TCP, UDP, ICMP, DNS, IPv6, timezone, and locale without starting/stopping the VM or blocking startup.
+- The region profile switches the VM's timezone/locale to the explicitly configured exit profile or its local-system timezone suggestion (`en_US.UTF-8`, applied over SSH — skipped if the VM's SSH is down; rerun `pvm route` to retry). `pvm audit` is read-only: it reports route, TCP, UDP, ICMP, DNS, IPv6, timezone, and locale without starting/stopping the VM or blocking startup.
 - Restore host egress: `pvm route dev1 --via direct`.
 - **Fail-closed**: when the exit tunnel is down, VMs bound to it lose all networking. Networking recovers when the VPS service is back.
 - Switching `--via` stops the VM first, applies the new route, then starts it again if it was running. A VM that was already stopped is not started automatically.
@@ -95,17 +95,17 @@ pvm route default --via direct      # back to host egress for unmatched VMs
 pvm route ls                     # shows rules, per-VM routes, and the cluster default
 ```
 
-- Priority: per-VM route > routing rules > cluster default > direct.
-- A VM with an explicit `--via direct` keeps host egress even when a cluster default exit is set.
+- Priority: built-in internal suffixes > explicit domain rules > explicit CIDR rules > per-VM default > cluster default > direct.
+- A VM with an explicit `--via direct` uses host egress for unmatched traffic even when a cluster default exit is set; explicit rules still take precedence.
 - Same fail-closed semantics as per-VM routes: if the default tunnel dies, every VM following it goes offline.
 
 ### 4. Browser desktop (native XFCE)
 
 ```bash
 pvm desktop dev1
-# prints http://127.0.0.1:<port>/vnc.html?password=... — open in a browser, no login page
+# prints http://127.0.0.1:<port>/vnc.html#password=... — open in a browser, no login page
 pvm desktop dev1 --public
-# optional: listen on 0.0.0.0 so another device can use http://<host-ip>:<port>/vnc.html?password=...
+# optional: listen on 0.0.0.0 so another device can use http://<host-ip>:<port>/vnc.html#password=...
 pvm desktop dev1 --stop
 ```
 
@@ -159,9 +159,9 @@ pvm clone dev1 dev2             # source VM must be stopped; --no-start clones w
 ```
 
 - `pvm rm` double-checks: interactively type y to confirm; **non-interactive/scripts must pass `-y` (or `--force`)** or the command refuses.
-- `pvm start` and starting clones wait for guest provisioning before returning; pass `--no-wait` when you only want to boot QEMU and will poll readiness yourself.
-- clone inherits mounts, CPU/memory, user, timezone, SMBIOS, and the GPU device; exit routes are not inherited; port maps are not inherited by default but can be interactively carried over with new ports (`--inherit-ports` / `--no-inherit-ports`).
-- On first boot a clone regenerates its hostname, machine-id, and SSH host keys.
+- `pvm start` and starting clones wait for guest provisioning and the agent before returning; pass `--no-wait` when you only want to boot QEMU and will poll readiness yourself.
+- clone inherits mounts, CPU/memory, user, timezone, SMBIOS, and the GPU device; the effective default exit is explicitly inherited before boot; port maps are not inherited by default but can be interactively carried over with new ports (`--inherit-ports` / `--no-inherit-ports`).
+- On first boot a clone regenerates its hostname, machine-id, SSH host keys, and management key. Other authorized keys and application identities remain copied. A private `/share` starts empty in the clone; extra mounts still refer to the explicitly configured host sources.
 
 ### 8. Disk capacity and host space
 
@@ -188,6 +188,9 @@ pvm daemon stop && pvm daemon start
 ```
 
 - Snapshots suit machines left unused for days, or a checkpoint before risky operations. Existing snapshot artifacts are not overwritten implicitly. After a restore, the active restore overlay and any `.bak` hold VM data: snapshot removal or another snapshot is refused. Clone the stopped VM to flatten its current disk before creating a new checkpoint; do not manually delete backing files.
+- `pvm doctor`, `pvm audit dev1 --privacy`, and `pvm route explain dev1 example.com` inspect local state without network probes or starting the daemon; output is redacted. Route explanations describe configuration, not observed traffic, and do not resolve DNS.
+- Automatic update checks are off; opt in with `update_check: true` in config.yaml or `PVM_UPDATE_CHECK=1`. `PVM_NO_UPDATE_CHECK=1` overrides either. Failed checks are also cached for 24 hours.
+- Installer and `pvm upgrade` require GitHub CLI (`gh`) for release attestation verification; the installer also requires Python 3. `pvm upgrade --rollback` restores the saved binary and VM recovery plan.
 - Restarting the daemon stops user VMs (the gateway recovers automatically); start them again with `pvm start <name>`. `pvm upgrade` does this restart and restores previously running user VMs automatically; use `--no-restart` only when you want to handle that lifecycle yourself.
 - If the gateway pvm-gw1 spins at high CPU with SSH unreachable for a long time, recover with `pvm stop pvm-gw1 && pvm start pvm-gw1`. Never delete pvm-gw1 (the daemon recreates it, but cluster networking is down and custom state is lost in the meantime).
 - The daemon holds a single-instance lock; on `another pvm daemon is already running`, find the existing daemon instead of spawning a second one.
@@ -197,47 +200,59 @@ pvm daemon stop && pvm daemon start
 
 ### Standard flow: deploy an exit over SSH
 
-pvm release binaries are single files downloaded straight from GitHub Releases (tags publish `pvm_linux_amd64.tar.gz` / `pvm_linux_arm64.tar.gz` plus SHA256SUMS). To deploy a new VPS:
+pvm release binaries are single files from GitHub Releases. Tags publish architecture-specific archives, checksums, and build attestations. Verify provenance before extracting or installing. To deploy a new VPS:
 
 ```bash
-VPS=root@<vps>                                     # target; ssh must be passwordless
-TOKEN=$(openssl rand -hex 24)                      # control-plane token
+VPS=root@vps.example.com
+TAG=v1.0.1
+ASSET=pvm_linux_amd64.tar.gz   # use pvm_linux_arm64.tar.gz for an arm64 VPS
+REPO=huangzheng2016/pvm
+WORK=$(mktemp -d)
+chmod 700 "$WORK"
+trap 'rm -rf "$WORK"' EXIT
 
-# 1. Confirm Linux and the architecture (x86_64 -> amd64, aarch64 -> arm64)
-ssh $VPS 'uname -s; uname -m'
+# Confirm the target before selecting the artifact.
+ssh "$VPS" 'uname -s; uname -m'
+gh release download "$TAG" --repo "$REPO" --pattern "$ASSET" --pattern SHA256SUMS --dir "$WORK"
+gh attestation verify "$WORK/$ASSET" --repo "$REPO" \
+  --signer-workflow "$REPO/.github/workflows/build.yml" \
+  --source-ref "refs/tags/$TAG" --deny-self-hosted-runners
+(cd "$WORK" && grep "  $ASSET$" SHA256SUMS | shasum -a 256 -c -)
+tar -xzf "$WORK/$ASSET" -C "$WORK"
 
-# 2. Download the release binary on the VPS and install it (keep the old one for rollback)
-#    amd64 shown; for arm64 use pvm_linux_arm64.tar.gz instead
-ssh $VPS '[ -f /usr/local/bin/pvm ] && cp /usr/local/bin/pvm /usr/local/bin/pvm.prev || true'
-ssh $VPS 'curl -fsSL https://github.com/huangzheng2016/pvm/releases/latest/download/pvm_linux_amd64.tar.gz | tar xz -C /tmp && install /tmp/pvm /usr/local/bin/pvm'
+REMOTE_DIR=$(ssh "$VPS" 'mktemp -d /tmp/pvm-release.XXXXXX')
+scp "$WORK/pvm" "$VPS:$REMOTE_DIR/pvm"
+ssh "$VPS" "set -e; if [ -f /usr/local/bin/pvm ]; then cp /usr/local/bin/pvm /usr/local/bin/pvm.prev; fi; install -m 0755 '$REMOTE_DIR/pvm' /usr/local/bin/pvm.new; mv /usr/local/bin/pvm.new /usr/local/bin/pvm; rm -r '$REMOTE_DIR'"
 
-# 3. Write and start the systemd unit
-ssh $VPS 'cat > /etc/systemd/system/pvm-exit-agent.service <<EOF
+# Generate a new token only if it does not exist; upgrades preserve it.
+ssh "$VPS" 'set -e
+umask 077
+install -d -m 0700 /etc/pvm-exit
+if [ ! -e /etc/pvm-exit/token ]; then openssl rand -hex 24 > /etc/pvm-exit/token; fi
+test -s /etc/pvm-exit/token
+chmod 0600 /etc/pvm-exit/token
+cat > /etc/systemd/system/pvm-exit-agent.service <<"EOF"
 [Unit]
 Description=pvm exit agent
 After=network-online.target
 Wants=network-online.target
 [Service]
-ExecStart=/usr/local/bin/pvm exit-agent --listen :18443 --token $TOKEN
+ExecStart=/usr/local/bin/pvm exit-agent --listen :18443 --token-file /etc/pvm-exit/token
 Restart=always
 RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
-systemctl daemon-reload && systemctl enable --now pvm-exit-agent'
+systemctl daemon-reload
+systemctl enable --now pvm-exit-agent'
 
-# 4. Confirm the service and read its certificate fingerprint
-ssh $VPS 'systemctl is-active pvm-exit-agent && journalctl -u pvm-exit-agent --since "-30s" --no-pager | grep fingerprint'
-
-# 5. Register locally (--fingerprint uses the value from step 4;
-#    --transport defaults to auto: udp+tcp are probed in parallel (N x 8MB
-#    tunnel downloads, averaged) and the fastest wins, preferring UDP unless
-#    it is below 80% of TCP; --samples N changes the sample count, default 3)
-pvm exit add <name> --server <vps>:18443 --token $TOKEN --fingerprint <sha256-fingerprint>
-
-# 6. Verify
-pvm exit test <name>
-pvm exit test <name> --speed --samples 5
+# Read the initial fingerprint through this authenticated SSH connection.
+# Keep both outputs private. Existing deployments must preserve their pinned fingerprint.
+ssh "$VPS" 'systemctl is-active pvm-exit-agent && journalctl -u pvm-exit-agent --since "-30s" --no-pager | grep fingerprint'
+(umask 077; ssh "$VPS" 'cat /etc/pvm-exit/token' > "$WORK/token")
+pvm exit add my-exit --server vps.example.com:18443 --token-file "$WORK/token" --fingerprint YOUR_CERT_FINGERPRINT
+pvm exit test my-exit
+pvm exit test my-exit --speed --samples 5
 ```
 
 Notes:
@@ -246,6 +261,7 @@ Notes:
 - Both amd64 and arm64 binaries come from GitHub Releases — no local build needed.
 - Speed probes never touch third-party public servers: the exit-agent serves `/speed?bytes=N` (64MB cap) and `/ping` at `.1:18081` on each tunnel NIC, reachable only inside the tunnel. The gateway uses `/ping` as its data-plane health probe.
 - Registrations idle for 24h are reaped by the exit-agent; a gateway returning after sleep re-enrolls automatically with its persisted peer key.
+- Exit timezone suggestions use the local system timezone, or `--timezone`; no geolocation service is contacted. Private/metadata/local-host destinations are blocked unless explicitly permitted by a narrow `--domain-allow-cidr`. Restart after changing VPS interface addresses.
 - exit-agent NAT backends: `nft` / `iptables` / `userspace`; userspace needs no root and forwards TCP/UDP/ICMP. ICMP uses Linux ping sockets, so insufficient socket permission drops only that ICMP flow and never falls back to another egress.
 - Tunnel pools use separate `/16` networks: UDP `10.<base>.0.0/16`, TCP `10.<base+1>.0.0/16` (default base `99`). Set a different `--subnet-base` for multiple agents on one VPS or to avoid VPS-internal networks. A larger pool does not prevent address conflicts. Changing the layout drops stale registrations; expect tunnels to re-enroll.
 

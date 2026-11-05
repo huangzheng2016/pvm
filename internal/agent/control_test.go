@@ -499,12 +499,12 @@ func TestControlConcurrencyLimit(t *testing.T) {
 		<-release
 		return []byte(`{}`), nil
 	})
-	c.wmu.Lock()
+	lockClientWrites(c)
 	locked := true
 	defer func() {
 		releaseHandlers()
 		if locked {
-			c.wmu.Unlock()
+			<-c.writeGate
 		}
 	}()
 
@@ -576,7 +576,7 @@ func TestControlConcurrencyLimit(t *testing.T) {
 	}
 
 	releaseHandlers()
-	c.wmu.Unlock()
+	<-c.writeGate
 	locked = false
 	wg.Wait()
 	close(errs)
@@ -753,12 +753,12 @@ func TestControlFloodBoundedWithoutReading(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	releaseHandlers := func() { releaseOnce.Do(func() { close(release) }) }
-	c.wmu.Lock()
+	lockClientWrites(c)
 	locked := true
 	defer func() {
 		releaseHandlers()
 		if locked {
-			c.wmu.Unlock()
+			<-c.writeGate
 		}
 		c.Close()
 	}()
@@ -820,7 +820,7 @@ func TestControlFloodBoundedWithoutReading(t *testing.T) {
 	accepted := maxConcurrentControls + maxQueuedControls
 	expected := accepted + maxConcurrentControlRefusals
 	releaseHandlers()
-	c.wmu.Unlock()
+	<-c.writeGate
 	locked = false
 	r := bufio.NewReaderSize(guest, 64<<10)
 	results, busy := 0, 0
@@ -937,4 +937,14 @@ func waitControlWorkers(t *testing.T, c *Client) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("control workers did not exit")
 	}
+}
+
+func lockClientWrites(c *Client) {
+	c.mu.Lock()
+	if c.writeGate == nil {
+		c.writeGate = make(chan struct{}, 1)
+	}
+	gate := c.writeGate
+	c.mu.Unlock()
+	gate <- struct{}{}
 }

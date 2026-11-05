@@ -6,6 +6,7 @@ SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 . "$SCRIPT_DIR/lib/native.sh"
 pvm_native_target
 cd "$SCRIPT_DIR/.."
+PVM_VERSION="${PVM_VERSION:-$(cat VERSION)}"
 
 # Remove stale raw/compressed guests from previous builds.
 rm -f internal/assets/packed/gateway-linux-* internal/assets/packed/agent-linux-*

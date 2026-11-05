@@ -1,6 +1,13 @@
 package cli
 
 import (
+	"encoding/json"
+	"github.com/huangzheng2016/pvm/internal/daemon"
+	"github.com/huangzheng2016/pvm/internal/paths"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -98,4 +105,36 @@ func contains(lines []string, sub string) bool {
 		}
 	}
 	return false
+}
+
+func TestFollowProvisionReportsInstallationFailure(t *testing.T) {
+	dir, err := os.MkdirTemp("/tmp", "pvm-progress-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	p := paths.New(dir)
+	if err := os.MkdirAll(filepath.Dir(p.DaemonSock()), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", p.DaemonSock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/vms/dev1/console" {
+			json.NewEncoder(w).Encode(map[string]any{"size": 0, "lines": []string{}})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"spec": map[string]any{"name": "dev1"}, "running": true, "ready": false,
+			"stages": []map[string]string{{"stage": "ssh", "detail": "SSH reachable"}, {"stage": "failed", "detail": "agent installation failed; retry pvm start dev1"}},
+		})
+	})
+	srv := &http.Server{Handler: h}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+	if code := followProvision(daemon.NewClient(p), "dev1", time.Second); code != 1 {
+		t.Fatalf("installation failure returned %d", code)
+	}
 }

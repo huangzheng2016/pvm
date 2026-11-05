@@ -21,13 +21,15 @@ import (
 )
 
 type Ref struct {
-	Distro  string
-	Version string
-	Arch    string // GOARCH
-	URL     string
-	SumsURL string
-	SumFile string // filename inside the sums file
-	SumKind string // sha256 | sha512
+	Distro         string
+	Version        string
+	Arch           string // GOARCH
+	URL            string
+	SumsURL        string
+	SumFile        string // filename inside the sums file
+	SumKind        string // sha256 | sha512
+	SignatureURL   string
+	TrustedKeyring string // explicit local publisher trust anchor; empty keeps HTTPS checksum verification
 }
 
 var ubuntuVersionRE = regexp.MustCompile(`^[0-9]{2}\.[0-9]{2}$`)
@@ -46,7 +48,7 @@ func Resolve(spec string) (*Ref, error) {
 		base := fmt.Sprintf("https://cloud-images.ubuntu.com/releases/%s/release", version)
 		file := fmt.Sprintf("ubuntu-%s-server-cloudimg-%s.img", version, qarch)
 		return &Ref{Distro: distro, Version: version, Arch: native.Arch,
-			URL: base + "/" + file, SumsURL: base + "/SHA256SUMS", SumFile: file, SumKind: "sha256"}, nil
+			URL: base + "/" + file, SumsURL: base + "/SHA256SUMS", SignatureURL: base + "/SHA256SUMS.gpg", SumFile: file, SumKind: "sha256"}, nil
 	case "debian":
 		dir, file, err := debianImagePaths(version, qarch)
 		if err != nil {
@@ -54,7 +56,7 @@ func Resolve(spec string) (*Ref, error) {
 		}
 		base := "https://cloud.debian.org/images/cloud/" + dir
 		return &Ref{Distro: distro, Version: version, Arch: native.Arch,
-			URL: base + "/" + file, SumsURL: base + "/SHA512SUMS", SumFile: file, SumKind: "sha512"}, nil
+			URL: base + "/" + file, SumsURL: base + "/SHA512SUMS", SignatureURL: base + "/SHA512SUMS.sign", SumFile: file, SumKind: "sha512"}, nil
 	}
 	return nil, fmt.Errorf("unknown distro %q (supported: ubuntu, debian)", distro)
 }
@@ -148,6 +150,9 @@ func (s *stallReadCloser) watch() {
 // verification. Returns the final path. A verified cached file is reused
 // unless force is set.
 func Fetch(r *Ref, dir string, progress io.Writer, force ...bool) (string, error) {
+	if _, _, err := signatureConfig(r); err != nil {
+		return "", err
+	}
 	lock, err := fsutil.TryLock(filepath.Join(dir, r.FileName()+".lock"))
 	if err != nil {
 		return "", fmt.Errorf("image is in use by another download or build; retry: %w", err)
@@ -305,6 +310,9 @@ func verifyChecksum(r *Ref, file string) error {
 	}
 	if len(sums) > maxSumsBytes {
 		return fmt.Errorf("checksum list exceeds %d bytes", maxSumsBytes)
+	}
+	if err := verifyChecksumSignature(r, sums); err != nil {
+		return err
 	}
 	var want string
 	for line := range strings.Lines(string(sums)) {

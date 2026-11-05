@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -265,10 +266,10 @@ func desktopURL(st *desktopState, name string) string {
 	if st.Public {
 		host = "0.0.0.0"
 	}
-	// The fragment tags the URL per VM: browsers key the cache on the full
-	// URL, and two VMs serving different noVNC versions on the same
-	// host:port would otherwise poison each other's cached assets.
-	return fmt.Sprintf("http://%s:%d/vnc.html?password=%s&autoconnect=true&resize=scale#%s", host, st.HostPort, st.Password, name)
+	// noVNC accepts fragment settings; fragments are not sent in HTTP
+	// requests. The URL remains secret in browser history and terminal output.
+	fragment := url.Values{"password": {st.Password}, "autoconnect": {"true"}, "resize": {"scale"}, "vm": {name}}
+	return fmt.Sprintf("http://%s:%d/vnc.html#%s", host, st.HostPort, fragment.Encode())
 }
 
 // The bracket trick keeps pgrep from matching the shell running the check.

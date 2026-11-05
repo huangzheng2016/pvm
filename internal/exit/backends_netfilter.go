@@ -2,6 +2,7 @@ package exit
 
 import (
 	"fmt"
+	"net"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -9,7 +10,7 @@ import (
 	"golang.zx2c4.com/wireguard/tun"
 )
 
-type nftBackend struct{}
+type nftBackend struct{ allow []*net.IPNet }
 
 func (nftBackend) name() string { return NATNftables }
 
@@ -17,11 +18,11 @@ func (nftBackend) newTun(tunName string, mtu int) (tun.Device, error) {
 	return netfilterTun(tunName, mtu)
 }
 
-func (nftBackend) setup(tunNames []string, cidrs []string) error {
+func (b nftBackend) setup(tunNames []string, cidrs []string) error {
 	if err := EnableIPForward(); err != nil {
 		return err
 	}
-	return NFTInstall(tunNames, cidrs)
+	return NFTInstall(tunNames, cidrs, b.allow...)
 }
 
 func (nftBackend) cleanup(tunNames []string, _ []string) error {
@@ -36,7 +37,7 @@ func (nftBackend) cleanup(tunNames []string, _ []string) error {
 
 // iptablesBackend installs MASQUERADE + FORWARD accepts, every rule tagged
 // with `-m comment --comment pvm-exit` so cleanup deletes exactly ours.
-type iptablesBackend struct{}
+type iptablesBackend struct{ allow []*net.IPNet }
 
 const iptablesComment = "pvm-exit"
 
@@ -48,13 +49,30 @@ func (iptablesBackend) newTun(tunName string, mtu int) (tun.Device, error) {
 
 // iptablesRules renders the rule set as (table, chain, spec) triples; spec is
 // a space-separated argument list (no quoting inside).
-func iptablesRules(tunNames []string, cidrs []string) [][3]string {
+func iptablesRules(tunNames []string, cidrs []string, allow ...*net.IPNet) [][3]string {
 	var rules [][3]string
 	for _, cidr := range cidrs {
 		rules = append(rules, [3]string{"nat", "POSTROUTING",
 			fmt.Sprintf("-s %s -m comment --comment %s -j MASQUERADE", cidr, iptablesComment)})
 	}
-	for _, name := range tunNames {
+	for i, name := range tunNames {
+		add := func(chain, spec string) {
+			rules = append(rules, [3]string{"filter", chain, fmt.Sprintf("-i %s %s -m comment --comment %s", name, spec, iptablesComment)})
+		}
+		if i < len(cidrs) {
+			ip := tunnelServerIP(cidrs[i])
+			add("INPUT", fmt.Sprintf("-d %s -p tcp -m multiport --dports %d,%d -j ACCEPT", ip, DomainConnectPort, SpeedPort))
+			add("INPUT", fmt.Sprintf("-d %s -p udp --dport %d -j ACCEPT", ip, UDPProbePort))
+			add("INPUT", fmt.Sprintf("-d %s -p icmp --icmp-type echo-request -j ACCEPT", ip))
+		}
+		for _, n := range allow {
+			add("INPUT", fmt.Sprintf("-d %s -j ACCEPT", n))
+			add("FORWARD", fmt.Sprintf("-d %s -j ACCEPT", n))
+		}
+		add("INPUT", "-j DROP")
+		for _, cidr := range blockedEgressCIDRs {
+			add("FORWARD", fmt.Sprintf("-d %s -j DROP", cidr))
+		}
 		rules = append(rules, [3]string{"filter", "FORWARD",
 			fmt.Sprintf("-i %s -m comment --comment %s -j ACCEPT", name, iptablesComment)})
 		rules = append(rules, [3]string{"filter", "FORWARD",
@@ -71,12 +89,14 @@ func runIptables(args ...string) error {
 	return nil
 }
 
-func (iptablesBackend) setup(tunNames []string, cidrs []string) error {
+func (b iptablesBackend) setup(tunNames []string, cidrs []string) error {
 	if err := EnableIPForward(); err != nil {
 		return err
 	}
-	for _, r := range iptablesRules(tunNames, cidrs) {
-		args := append([]string{"-t", r[0], "-A", r[1]}, strings.Fields(r[2])...)
+	rules := iptablesRules(tunNames, cidrs, b.allow...)
+	for i := len(rules) - 1; i >= 0; i-- {
+		r := rules[i]
+		args := append([]string{"-t", r[0], "-I", r[1]}, strings.Fields(r[2])...)
 		if err := runIptables(args...); err != nil {
 			return err
 		}

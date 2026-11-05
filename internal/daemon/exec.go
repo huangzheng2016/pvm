@@ -2,12 +2,13 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/agent"
@@ -55,65 +56,94 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 		stdinRaw = raw
 	}
 
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	w.WriteHeader(200)
-	flush := func() {
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
-		}
-	}
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-
-	// One retry on a stale shared connection (VM rebooted, agent
-	// restarted): drop and redial once before giving up. A hard
-	// deadline (guest timeout + grace) guarantees the handler exits
-	// even if the guest loses a frame.
 	if req.TimeoutS <= 0 {
 		req.TimeoutS = 600
 	}
-	var execErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		ac, err := s.agentClient(name)
-		if err != nil {
-			execErr = err
-			time.Sleep(500 * time.Millisecond)
-			continue
-		}
-		var stdin io.Reader
-		if stdinRaw != nil {
-			stdin = bytes.NewReader(stdinRaw)
-		}
-		sawFrame := false
-		done := make(chan error, 1)
-		go func() {
-			_, err := ac.ExecStream(req.Cmd, stdin, req.TimeoutS, func(f *agent.Frame) {
-				sawFrame = true
-				enc.Encode(f)
-				flush()
-			})
-			done <- err
-		}()
-		select {
-		case execErr = <-done:
-		case <-time.After(time.Duration(req.TimeoutS)*time.Second + 60*time.Second):
-			execErr = fmt.Errorf("exec hard deadline exceeded")
-			s.dropAgent(name, ac) // unblocks the goroutine via closed conn
-			<-done
-		}
-		if execErr == nil {
-			return
-		}
-		// Only a failure before any frame came back is retried: once the
-		// guest may have started executing, a replay would run the command
-		// twice. Hard deadlines always fall into that no-retry class.
-		if !errors.Is(execErr, agent.ErrUnreachable) || sawFrame {
-			break
-		}
-		s.dropAgent(name, ac)
+	if req.TimeoutS > int((time.Duration(1<<63-1)-time.Minute)/time.Second) {
+		writeErr(w, 400, fmt.Errorf("timeout_s is too large"))
+		return
 	}
-	if execErr != nil {
-		enc.Encode(map[string]any{"error": execErr.Error()})
-		flush()
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(req.TimeoutS)*time.Second+time.Minute)
+	defer cancel()
+	ac, err := s.agentClientContext(ctx, name)
+	if err != nil {
+		writeErr(w, 502, err)
+		return
+	}
+	var stdin io.Reader
+	if stdinRaw != nil {
+		stdin = bytes.NewReader(stdinRaw)
+	}
+	// Once dispatched, a command may have run even when no frame arrives.
+	// Never replay it after a transport failure.
+	streamExecResponse(ctx, w, func(ctx context.Context, onFrame func(*agent.Frame) error) error {
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+		var frameErr error
+		_, err := ac.ExecStreamContext(ctx, req.Cmd, stdin, req.TimeoutS, func(f *agent.Frame) {
+			if frameErr == nil {
+				frameErr = onFrame(f)
+				if frameErr != nil {
+					cancel()
+				}
+			}
+		})
+		if frameErr != nil {
+			return frameErr
+		}
+		if err != nil {
+			return fmt.Errorf("exec result unknown; command was not retried: %w", err)
+		}
+		return nil
+	})
+}
+
+func streamExecResponse(ctx context.Context, w http.ResponseWriter, execute func(context.Context, func(*agent.Frame) error) error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	rc := http.NewResponseController(w)
+	// Interrupt a blocked HTTP write when its request is cancelled.
+	var deadlineMu sync.Mutex
+	stopped := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(stopped)
+		deadlineMu.Lock()
+		defer deadlineMu.Unlock()
+		_ = rc.SetWriteDeadline(time.Now())
+	})
+	defer func() {
+		if !stop() {
+			<-stopped
+		}
+		_ = rc.SetWriteDeadline(time.Time{})
+	}()
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	write := func(value any) error {
+		deadlineMu.Lock()
+		if err := ctx.Err(); err != nil {
+			deadlineMu.Unlock()
+			return err
+		}
+		deadline := time.Now().Add(15 * time.Second)
+		if limit, ok := ctx.Deadline(); ok && limit.Before(deadline) {
+			deadline = limit
+		}
+		_ = rc.SetWriteDeadline(deadline)
+		deadlineMu.Unlock()
+		if err := enc.Encode(value); err != nil {
+			cancel()
+			return err
+		}
+		if err := rc.Flush(); err != nil && err != http.ErrNotSupported {
+			cancel()
+			return err
+		}
+		return nil
+	}
+	if err := execute(ctx, func(f *agent.Frame) error { return write(f) }); err != nil && ctx.Err() == nil {
+		_ = write(map[string]any{"error": err.Error()})
 	}
 }

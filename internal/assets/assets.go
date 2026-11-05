@@ -35,6 +35,9 @@ func Unpack(dir string) error {
 	if err := json.Unmarshal(data, &entries); err != nil {
 		return err
 	}
+	if err := validateManifest(entries); err != nil {
+		return err
+	}
 	dec, err := zstd.NewReader(nil)
 	if err != nil {
 		return err
@@ -76,4 +79,25 @@ func Unpack(dir string) error {
 func sha256Hex(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
+}
+
+func validateManifest(entries []manifestEntry) error {
+	required := map[string]bool{native.GuestBinary("agent"): false, native.GuestBinary("gateway"): false}
+	for _, entry := range entries {
+		seen, ok := required[entry.Path]
+		if !ok || seen {
+			return fmt.Errorf("unexpected or duplicate embedded asset %q", entry.Path)
+		}
+		digest, err := hex.DecodeString(entry.SHA256)
+		if err != nil || len(digest) != sha256.Size || entry.Mode != 0o755 {
+			return fmt.Errorf("invalid embedded asset metadata for %q", entry.Path)
+		}
+		required[entry.Path] = true
+	}
+	for name, present := range required {
+		if !present {
+			return fmt.Errorf("missing required embedded asset %q", name)
+		}
+	}
+	return nil
 }

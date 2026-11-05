@@ -424,10 +424,9 @@ func TestSpeedConnHeadWritesHeaders(t *testing.T) {
 }
 
 func TestExitStateDirectoryLockLifecycle(t *testing.T) {
-	oldLookup, oldSystem := ipinfoLookup, systemTZFn
-	ipinfoLookup = func(context.Context) (string, error) { return "", fmt.Errorf("offline") }
+	oldSystem := systemTZFn
 	systemTZFn = func() string { return "" }
-	defer func() { ipinfoLookup = oldLookup; systemTZFn = oldSystem }()
+	defer func() { systemTZFn = oldSystem }()
 	cfg := ServerConfig{Token: "YOUR_TOKEN", StateDir: t.TempDir(), NAT: NATUserspace}
 	const count = 8
 	start := make(chan struct{})
@@ -464,10 +463,9 @@ func TestExitStateDirectoryLockLifecycle(t *testing.T) {
 }
 
 func TestExitConstructionFailureReleasesStateLock(t *testing.T) {
-	oldLookup, oldSystem := ipinfoLookup, systemTZFn
-	ipinfoLookup = func(context.Context) (string, error) { return "", fmt.Errorf("offline") }
+	oldSystem := systemTZFn
 	systemTZFn = func() string { return "" }
-	defer func() { ipinfoLookup = oldLookup; systemTZFn = oldSystem }()
+	defer func() { systemTZFn = oldSystem }()
 	cfg := ServerConfig{Token: "YOUR_TOKEN", StateDir: t.TempDir(), NAT: NATUserspace, SubnetBase: 999}
 	if s, err := NewServer(cfg); err == nil {
 		s.Close()

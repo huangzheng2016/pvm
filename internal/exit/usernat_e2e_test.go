@@ -16,11 +16,12 @@ import (
 func startUserspaceServer(t *testing.T, transports string) *Server {
 	t.Helper()
 	return startTestServer(t, ServerConfig{
-		Listen:     "127.0.0.1:0",
-		Token:      "test-token",
-		StateDir:   t.TempDir(),
-		Transports: transports,
-		NAT:        NATUserspace,
+		Listen:      "127.0.0.1:0",
+		Token:       "test-token",
+		StateDir:    t.TempDir(),
+		Transports:  transports,
+		NAT:         NATUserspace,
+		DomainAllow: []string{hostLANIPv4(t) + "/32"},
 	})
 }
 
@@ -41,10 +42,11 @@ func hostLANIPv4(t *testing.T) string {
 	return ""
 }
 
-// udpEchoOS runs a UDP echo server on the host (all interfaces).
+// gVisor needs a non-loopback target; only local-host traffic is answered.
 func udpEchoOS(t *testing.T) int {
 	t.Helper()
-	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero})
+	hostIP := net.ParseIP(hostLANIPv4(t))
+	c, err := net.ListenUDP("udp", &net.UDPAddr{IP: hostIP})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +58,9 @@ func udpEchoOS(t *testing.T) int {
 			if err != nil {
 				return
 			}
-			_, _ = c.WriteToUDP(append([]byte("echo:"), buf[:n]...), src)
+			if src.IP.Equal(hostIP) {
+				_, _ = c.WriteToUDP(append([]byte("echo:"), buf[:n]...), src)
+			}
 		}
 	}()
 	return c.LocalAddr().(*net.UDPAddr).Port
@@ -65,17 +69,27 @@ func udpEchoOS(t *testing.T) int {
 // Full path: WG handshake against the userspace backend, then UDP and TCP
 // flows forwarded by net.Dial to host services.
 func TestUserspaceNATEndToEnd(t *testing.T) {
+	hostIP := hostLANIPv4(t)
 	echoPort := udpEchoOS(t)
-	httpSrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	httpSrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		peer, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if peer != hostIP {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		fmt.Fprint(w, "pvm-userspace-ok")
 	}))
-	httpSrv.Listener, _ = net.Listen("tcp", ":0")
+	httpSrv.Listener.Close()
+	var err error
+	httpSrv.Listener, err = net.Listen("tcp", net.JoinHostPort(hostIP, "0"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	httpSrv.Start()
 	defer httpSrv.Close()
 	_, httpPortStr, _ := net.SplitHostPort(httpSrv.Listener.Addr().String())
 	var httpPort int
 	fmt.Sscanf(httpPortStr, "%d", &httpPort)
-	hostIP := hostLANIPv4(t)
 
 	for _, transport := range []string{"udp", "tcp"} {
 		t.Run(transport, func(t *testing.T) {

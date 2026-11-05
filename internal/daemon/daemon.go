@@ -33,11 +33,10 @@ import (
 )
 
 type Server struct {
-	P      *paths.Paths
-	Cfg    *config.Config
-	TC     *qemu.Toolchain
-	Accel  qemu.Accel
-	SSHPub string
+	P     *paths.Paths
+	Cfg   *config.Config
+	TC    *qemu.Toolchain
+	Accel qemu.Accel
 
 	Clusters *cluster.Store
 	relays   *relaySet
@@ -47,8 +46,10 @@ type Server struct {
 	mu      sync.Mutex // guards vms cache
 	vms     map[string]*vm.Spec
 
-	agentMu sync.Mutex // guards agents
-	agents  map[string]*agent.Client
+	agentDialLocks sync.Map   // name -> chan struct{}
+	agentMu        sync.Mutex // guards agents
+	agents         map[string]*agent.Client
+	agentSeq       map[string]uint64
 
 	ctrlWatchMu sync.Mutex // guards ctrlWatch
 	ctrlWatch   map[string]uint64
@@ -60,10 +61,13 @@ type Server struct {
 	// instead of blocking past its deadline.
 	mapMu mapGate
 
-	deskMu sync.Mutex // serializes desktop start/stop per daemon
+	routeMu sync.Mutex // serializes route transactions
+	deskMu  sync.Mutex // serializes desktop start/stop per daemon
 
-	progMu sync.Mutex // guards prog
-	prog   map[string][]StageEvent
+	progMu       sync.Mutex // guards prog
+	prog         map[string][]StageEvent
+	progSeq      map[string]uint64
+	installTasks map[string]*agentInstallTask
 
 	watchMu  sync.Mutex // guards watchSeq
 	watchSeq map[string]uint64
@@ -72,18 +76,19 @@ type Server struct {
 }
 
 type vmInfo struct {
-	Spec        *vm.Spec     `json:"spec"`
-	Running     bool         `json:"running"`
-	PID         int          `json:"pid,omitempty"`
-	Uptime      string       `json:"uptime,omitempty"`
-	GatewaySSH  int          `json:"gw_ssh_port,omitempty"`
-	GatewayUser string       `json:"gw_user,omitempty"`
-	Ready       bool         `json:"ready,omitempty"`
-	Stages      []StageEvent `json:"stages,omitempty"`
+	Spec              *vm.Spec     `json:"spec"`
+	Running           bool         `json:"running"`
+	PID               int          `json:"pid,omitempty"`
+	Uptime            string       `json:"uptime,omitempty"`
+	GatewaySSH        int          `json:"gw_ssh_port,omitempty"`
+	GatewayUser       string       `json:"gw_user,omitempty"`
+	GatewaySSHKeyName string       `json:"gw_ssh_key_name,omitempty"`
+	Ready             bool         `json:"ready,omitempty"`
+	Stages            []StageEvent `json:"stages,omitempty"`
 }
 
-func NewServer(p *paths.Paths, cfg *config.Config, tc *qemu.Toolchain, accel qemu.Accel, sshPub string, clusters *cluster.Store) *Server {
-	return &Server{P: p, Cfg: cfg, TC: tc, Accel: accel, SSHPub: sshPub,
+func NewServer(p *paths.Paths, cfg *config.Config, tc *qemu.Toolchain, accel qemu.Accel, clusters *cluster.Store) *Server {
+	return &Server{P: p, Cfg: cfg, TC: tc, Accel: accel,
 		Clusters: clusters, relays: newRelaySet(), started: time.Now(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}, prog: map[string][]StageEvent{}, watchSeq: map[string]uint64{}, ctrlWatch: map[string]uint64{}, mapMu: newMapGate()}
 }
 
@@ -95,31 +100,74 @@ func NewServer(p *paths.Paths, cfg *config.Config, tc *qemu.Toolchain, accel qem
 // to the VM owning the channel before the client is shared, so guest
 // control requests are scoped by construction.
 func (s *Server) agentClient(name string) (*agent.Client, error) {
-	s.agentMu.Lock()
-	defer s.agentMu.Unlock()
-	if c := s.agents[name]; c != nil && !c.Closed() {
-		return c, nil
+	return s.agentClientContext(context.Background(), name)
+}
+
+func (s *Server) agentClientContext(ctx context.Context, name string) (*agent.Client, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	v, _ := s.agentDialLocks.LoadOrStore(name, make(chan struct{}, 1))
+	gate := v.(chan struct{})
+	select {
+	case gate <- struct{}{}:
+		defer func() { <-gate }()
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
-	c, err := agent.DialSock(s.P.AgentSock(name))
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.agentMu.Lock()
+	cached := s.agents[name]
+	seq := s.agentSeq[name]
+	s.agentMu.Unlock()
+	if cached != nil && !cached.Closed() {
+		return cached, nil
+	}
+	c, err := agent.DialSockContext(ctx, s.P.AgentSock(name))
 	if err != nil {
 		return nil, err
 	}
 	c.HandleControl(s.guestControlHandler(name))
-	if _, err := c.Ping(); err != nil {
+	if _, err := c.PingContext(ctx); err != nil {
 		c.Close()
 		return nil, err
 	}
+	s.agentMu.Lock()
+	if s.agentSeq[name] != seq || ctx.Err() != nil {
+		s.agentMu.Unlock()
+		c.Close()
+		return nil, fmt.Errorf("%w: connection invalidated", agent.ErrUnreachable)
+	}
+	if s.agents == nil {
+		s.agents = make(map[string]*agent.Client)
+	}
 	s.agents[name] = c
+	s.agentMu.Unlock()
 	return c, nil
 }
 
 func (s *Server) dropAgent(name string, c *agent.Client) {
 	s.agentMu.Lock()
-	defer s.agentMu.Unlock()
 	if s.agents[name] == c {
 		delete(s.agents, name)
 	}
+	s.agentMu.Unlock()
 	c.Close()
+}
+
+func (s *Server) invalidateAgent(name string) {
+	s.agentMu.Lock()
+	if s.agentSeq == nil {
+		s.agentSeq = make(map[string]uint64)
+	}
+	s.agentSeq[name]++
+	c := s.agents[name]
+	delete(s.agents, name)
+	s.agentMu.Unlock()
+	if c != nil {
+		c.Close()
+	}
 }
 
 func (s *Server) instance(spec *vm.Spec) *qemu.Instance {
@@ -155,7 +203,7 @@ func (s *Server) clustersByGatewayName(name string) *cluster.Cluster {
 
 func (s *Server) getSpec(name string) (*vm.Spec, error) {
 	s.mu.Lock()
-	cached := s.vms[name]
+	cached := copySpec(s.vms[name])
 	s.mu.Unlock()
 	if cached != nil {
 		return cached, nil
@@ -167,10 +215,27 @@ func (s *Server) getSpec(name string) (*vm.Spec, error) {
 		}
 		return nil, err
 	}
-	s.mu.Lock()
-	s.vms[name] = spec
-	s.mu.Unlock()
+	// Readers never publish a disk snapshot: a concurrent mutation may
+	// have committed or deleted the VM while the file was being read.
 	return spec, nil
+}
+
+func copySpec(spec *vm.Spec) *vm.Spec {
+	if spec == nil {
+		return nil
+	}
+	next := *spec
+	next.Mounts = append([]vm.GuestMount(nil), spec.Mounts...)
+	return &next
+}
+
+func (s *Server) cacheSpec(spec *vm.Spec) {
+	s.mu.Lock()
+	if s.vms == nil {
+		s.vms = make(map[string]*vm.Spec)
+	}
+	s.vms[spec.Name] = copySpec(spec)
+	s.mu.Unlock()
 }
 
 func (s *Server) handler() http.Handler {
@@ -259,6 +324,7 @@ func (s *Server) collectInfos() ([]vmInfo, error) {
 				if gw, err := s.getSpec(cl.Gateway); err == nil {
 					info.GatewaySSH = gw.SSHPort
 					info.GatewayUser = gw.User
+					info.GatewaySSHKeyName = gw.SSHKeyName
 				}
 			}
 		}
@@ -297,7 +363,7 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	for _, info := range infos {
 		if info.Spec.Name == spec.Name {
 			info.Stages = s.stages(spec.Name)
-			info.Ready = info.Running && s.vmReady(spec.Name)
+			info.Ready = info.Running && !info.Spec.IdentityReset && s.vmReady(spec.Name)
 			writeJSON(w, 200, info)
 			return
 		}
@@ -323,6 +389,7 @@ type createRequest struct {
 	GitName     string `json:"git_name,omitempty"`
 	SmbiosSpoof bool   `json:"smbios_spoof,omitempty"`
 	NoGolden    bool   `json:"no_golden,omitempty"`
+	ShareMode   string `json:"share_mode,omitempty"`
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -339,8 +406,18 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	lock.Lock()
 	defer lock.Unlock()
 
-	if _, err := vm.Load(s.P, req.Name); err == nil {
+	if _, err := os.Lstat(s.P.VMDir(req.Name)); err == nil {
 		writeErr(w, 409, fmt.Errorf("vm %q already exists", req.Name))
+		return
+	} else if !errors.Is(err, os.ErrNotExist) {
+		writeErr(w, 500, fmt.Errorf("inspect target VM directory: %w", err))
+		return
+	}
+	if req.ShareMode == "" {
+		req.ShareMode = vm.SharePrivate
+	}
+	if req.ShareMode != vm.SharePrivate && req.ShareMode != vm.ShareGlobal && req.ShareMode != vm.ShareNone {
+		writeErr(w, 400, fmt.Errorf("share_mode must be private, global or none"))
 		return
 	}
 	s.resetStages(req.Name)
@@ -396,7 +473,12 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	base := filepath.Join(s.P.Images, fmt.Sprintf("%s-%s.qcow2", imageFileStem(req.Image), native.Arch))
 	goldenVer := 0
 	if distro, version, ok := strings.Cut(req.Image, ":"); ok && !req.NoGolden {
-		if g := image.LatestGolden(s.P.Images, distro, version); g != nil {
+		g, err := image.LatestGolden(s.P.Images, distro, version)
+		if err != nil {
+			writeErr(w, 500, fmt.Errorf("read golden image catalog: %w", err))
+			return
+		}
+		if g != nil {
 			base = filepath.Join(image.GoldenDir(s.P.Images), g.File)
 			goldenVer = g.Version
 		}
@@ -426,10 +508,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		ClusterID: cl.ID, IP: vnet.IP, MAC: vnet.MAC,
 		TZ: req.TZ, Locale: req.Locale,
 		GitEmail: req.GitEmail, GitName: req.GitName,
-		SmbiosSpoof: req.SmbiosSpoof,
+		SmbiosSpoof: req.SmbiosSpoof, ShareMode: req.ShareMode,
 	}
 	createStart := time.Now()
-	if err := vm.Create(s.P, s.TC, spec, s.SSHPub); err != nil {
+	if err := vm.Create(s.P, s.TC, spec); err != nil {
 		if lerr := s.removeVMMember(cl.ID, req.Name); lerr != nil {
 			writeErr(w, 500, fmt.Errorf("create failed (%v) and membership cleanup is incomplete (%v); retry the same create to finish", err, lerr))
 			return
@@ -439,7 +521,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.stage(req.Name, "disk+seed", fmt.Sprintf("%s (%.1fs)", filepath.Base(base), time.Since(createStart).Seconds()))
 	s.mu.Lock()
-	s.vms[spec.Name] = spec
+	s.vms[spec.Name] = copySpec(spec)
 	s.mu.Unlock()
 
 	if req.Start {
@@ -463,20 +545,28 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 // On lock timeout nothing is deleted and the returned error tells the
 // caller to finish with `pvm rm` (idempotent).
 func (s *Server) rollbackFailedCreate(spec *vm.Spec, cl *cluster.Cluster) error {
-	_ = s.instance(spec).Stop()
+	if err := s.instance(spec).Stop(); err != nil {
+		return fmt.Errorf("cleanup could not stop VM: %w; run `pvm rm %s`", err, spec.Name)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), rollbackLockTimeout)
 	defer cancel()
 	if err := s.mapMu.Lock(ctx); err != nil {
 		return fmt.Errorf("cleanup incomplete (map lock: %v); run `pvm rm %s` to finish", err, spec.Name)
 	}
 	defer s.mapMu.Unlock()
-	s.closeVMResources(spec.Name, cl)
-	s.removeLink(cl, spec.Name)
-	_ = s.pushBounded(cl.ID)
-	_ = vm.Delete(s.P, spec.Name)
+	if err := s.closeVMResources(spec.Name, cl); err != nil {
+		return fmt.Errorf("cleanup incomplete: %w; run `pvm rm %s`", err, spec.Name)
+	}
+	cleanupErr := errors.Join(s.removeLink(cl, spec.Name), s.pushBounded(cl.ID))
+	if err := vm.Delete(s.P, spec.Name); err != nil {
+		return fmt.Errorf("remove VM files: %w; run `pvm rm %s`", err, spec.Name)
+	}
 	s.mu.Lock()
 	delete(s.vms, spec.Name)
 	s.mu.Unlock()
+	if cleanupErr != nil {
+		return fmt.Errorf("VM files and membership removed but gateway cleanup is incomplete: %w; run `pvm daemon restart`", cleanupErr)
+	}
 	return nil
 }
 
@@ -547,21 +637,48 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err)
 		return
 	}
+	s.cancelAgentInstall(spec.Name)
 	lock := qemu.LockVM(spec.Name)
 	lock.Lock()
 	defer lock.Unlock()
+	spec, err = vm.Load(s.P, spec.Name)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	if running, err := s.instance(spec).Running(); err != nil {
+		writeErr(w, 500, err)
+		return
+	} else if running != nil {
+		if !s.vmReady(spec.Name) || spec.IdentityReset {
+			s.resetStages(spec.Name)
+			if spec.IdentityReset {
+				s.maybeIdentityReset(spec)
+			} else {
+				s.ensureAgentAsync(spec)
+			}
+		}
+		writeJSON(w, 200, map[string]any{"started": spec.Name, "already_running": true})
+		return
+	}
 	s.resetStages(spec.Name)
 	inst, man, err := s.startVM(spec)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	s.ensureAgentAsync(spec)
-	s.maybeIdentityReset(spec)
+	if spec.IdentityReset {
+		s.maybeIdentityReset(spec)
+	} else {
+		s.ensureAgentAsync(spec)
+	}
 	if man != nil {
 		vmDir := s.P.VMDir(spec.Name)
 		if err := inst.WaitRestored(vmDir); err != nil {
 			inst.Stop()
+			s.invalidateAgent(spec.Name)
+			s.resetStages(spec.Name)
+			s.stage(spec.Name, "failed", "snapshot restore failed; retry pvm start after inspecting the error")
 			writeErr(w, 500, fmt.Errorf("restore failed, vm stopped: %w", err))
 			return
 		}
@@ -598,6 +715,11 @@ func (s *Server) handleSnapshotCreate(w http.ResponseWriter, r *http.Request) {
 	lock := qemu.LockVM(name)
 	lock.Lock()
 	defer lock.Unlock()
+	spec, err = vm.Load(s.P, spec.Name)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
 
 	if err := qemu.CheckSnapshotCreate(s.P.VMDir(name)); err != nil {
 		writeErr(w, 409, err)
@@ -606,7 +728,10 @@ func (s *Server) handleSnapshotCreate(w http.ResponseWriter, r *http.Request) {
 
 	// 9p mounts hold guest fid state the fresh QEMU process cannot
 	// reconstruct; lazily unmount them before migration (best effort).
-	mounts := []string{"/share"}
+	var mounts []string
+	if spec.ShareMode != vm.ShareNone {
+		mounts = append(mounts, "/share")
+	}
 	for _, m := range spec.Mounts {
 		mounts = append(mounts, m.Guest)
 	}
@@ -614,12 +739,14 @@ func (s *Server) handleSnapshotCreate(w http.ResponseWriter, r *http.Request) {
 	for i, m := range mounts {
 		quoted[i] = shellQuote(m)
 	}
-	if err := s.sshGuest(spec, "sudo sync; sudo umount -l "+strings.Join(quoted, " ")); err != nil {
-		log.Printf("snapshot %s: pre-migrate umount failed (continuing): %v", name, err)
+	if len(quoted) > 0 {
+		if err := s.sshGuest(spec, "sudo sync; sudo umount -l "+strings.Join(quoted, " ")); err != nil {
+			log.Printf("snapshot %s: pre-migrate umount failed (continuing): %v", name, err)
+		}
 	}
 
 	if err := s.instance(spec).CreateSnapshot(s.P.VMDir(name), buildinfo.Version); err != nil {
-		if st, stateErr := s.instance(spec).Running(); stateErr == nil && st != nil {
+		if st, stateErr := s.instance(spec).Running(); stateErr == nil && st != nil && len(quoted) > 0 {
 			if mountErr := s.sshGuest(spec, "for target in "+strings.Join(quoted, " ")+"; do mountpoint -q \"$target\" || sudo mount \"$target\" || exit; done"); mountErr != nil {
 				err = errors.Join(err, fmt.Errorf("restore guest mounts after failed snapshot: %w", mountErr))
 			}
@@ -659,6 +786,11 @@ func (s *Server) handleSnapshotDelete(w http.ResponseWriter, r *http.Request) {
 	lock := qemu.LockVM(name)
 	lock.Lock()
 	defer lock.Unlock()
+	spec, err = vm.Load(s.P, spec.Name)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
 	if st, err := s.instance(spec).Running(); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -679,13 +811,21 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err)
 		return
 	}
+	s.cancelAgentInstall(spec.Name)
 	lock := qemu.LockVM(spec.Name)
 	lock.Lock()
 	defer lock.Unlock()
+	spec, err = vm.Load(s.P, spec.Name)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
 	if err := s.instance(spec).Stop(); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
+	s.invalidateAgent(spec.Name)
+	s.resetStages(spec.Name)
 	writeJSON(w, 200, map[string]any{"stopped": spec.Name})
 }
 
@@ -696,13 +836,21 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err)
 		return
 	}
+	s.cancelAgentInstall(spec.Name)
 	lock := qemu.LockVM(name)
 	lock.Lock()
 	defer lock.Unlock()
+	spec, err = vm.Load(s.P, spec.Name)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
 	if err := s.instance(spec).Stop(); err != nil {
 		writeErr(w, 500, fmt.Errorf("cannot stop %s safely (%v); not deleting", name, err))
 		return
 	}
+	s.invalidateAgent(name)
+	s.resetStages(name)
 	var cl *cluster.Cluster
 	if spec.Role != "gateway" && spec.ClusterID > 0 {
 		cl = s.Clusters.Get(spec.ClusterID)
@@ -714,12 +862,13 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.mapMu.Unlock()
-	s.closeVMResources(name, cl)
+	if err := s.closeVMResources(name, cl); err != nil {
+		writeErr(w, 500, fmt.Errorf("remove cluster state: %w; VM files retained, retry delete", err))
+		return
+	}
+	var cleanupErr error
 	if cl != nil {
-		s.removeLink(cl, name)
-		if err := s.pushBounded(cl.ID); err != nil {
-			log.Printf("delete %s: gateway config push failed: %v", name, err)
-		}
+		cleanupErr = errors.Join(s.removeLink(cl, name), s.pushBounded(cl.ID))
 	}
 	if err := vm.Delete(s.P, name); err != nil {
 		writeErr(w, 500, err)
@@ -729,6 +878,10 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	delete(s.vms, name)
 	s.mu.Unlock()
 	s.resetStages(name)
+	if cleanupErr != nil {
+		writeErr(w, 500, fmt.Errorf("VM files and membership deleted, but gateway cleanup is incomplete: %w; run `pvm daemon restart` to reconcile gateway state", cleanupErr))
+		return
+	}
 	writeJSON(w, 200, map[string]any{"deleted": name})
 }
 
@@ -743,11 +896,17 @@ func (s *Server) handleShutdown(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) StopAllVMs() {
+	s.progMu.Lock()
+	for _, task := range s.installTasks {
+		task.cancel()
+	}
+	s.progMu.Unlock()
 	infos, err := s.collectInfos()
 	if err != nil {
 		log.Printf("VM enumeration incomplete during shutdown: %v", err)
 	}
 	stopInfosParallel(infos, 8, func(spec *vm.Spec) {
+		s.cancelAgentInstall(spec.Name)
 		lock := qemu.LockVM(spec.Name)
 		lock.Lock()
 		defer lock.Unlock()
@@ -789,15 +948,27 @@ func (s *Server) recoverClusters() {
 		// Restore relays from the CURRENT store inside mapMu: a snapshot
 		// taken earlier could rebind a port whose map was just removed,
 		// and the stale relay would later forward another VM's traffic.
-		s.recoverRelays()
+		if err := s.recoverRelays(); err != nil {
+			healthy = false
+			log.Printf("recover relays: %v", err)
+		}
 		var running []*vm.Spec
 		for _, vn := range cl.VMs {
 			spec, err := s.getSpec(vn.Name)
 			if err != nil {
+				healthy = false
+				log.Printf("recover VM %s: %v", vn.Name, err)
 				continue
 			}
-			if st, err := s.instance(spec).Running(); err == nil && st != nil {
+			st, err := s.instance(spec).Running()
+			if err != nil {
+				healthy = false
+				log.Printf("recover VM status %s: %v", vn.Name, err)
+				continue
+			}
+			if st != nil {
 				if err := s.ensureLink(cl, vn.Name); err != nil {
+					healthy = false
 					log.Printf("recover link %s: %v", vn.Name, err)
 				}
 				running = append(running, spec)
@@ -806,7 +977,11 @@ func (s *Server) recoverClusters() {
 		// Control for this cluster opens only after its relays match
 		// the store, so guests cannot observe half-recovered state.
 		for _, spec := range running {
-			s.ensureControlWatcher(spec)
+			if spec.IdentityReset {
+				s.maybeIdentityReset(spec)
+			} else {
+				s.ensureAgentAsync(spec)
+			}
 		}
 		go s.deployClusterAgent(cl)
 	}
@@ -817,21 +992,22 @@ func (s *Server) recoverClusters() {
 // at lock time: a remove that committed before the lock must not see
 // its port rebound, or the stale relay later forwards another VM's
 // traffic once the pool port is reused.
-func (s *Server) recoverRelays() {
+func (s *Server) recoverRelays() error {
 	ctx, cancel := mapLockCtx()
 	defer cancel()
 	if err := s.mapMu.Lock(ctx); err != nil {
-		log.Printf("recover relays: map lock: %v", err)
-		return
+		return fmt.Errorf("map lock: %w", err)
 	}
 	defer s.mapMu.Unlock()
+	var errs []error
 	for _, cl := range s.Clusters.List() {
 		for _, m := range cl.Maps {
 			if err := s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort); err != nil {
-				log.Printf("recover relay %s/%d: %v", m.Proto, m.HostPort, err)
+				errs = append(errs, fmt.Errorf("restore relay %s/%d: %w", m.Proto, m.HostPort, err))
 			}
 		}
 	}
+	return errors.Join(errs...)
 }
 
 func Run(p *paths.Paths, srv *Server) error {
@@ -857,9 +1033,12 @@ func Run(p *paths.Paths, srv *Server) error {
 	}
 	os.Chmod(sock, 0o600)
 
-	httpSrv := &http.Server{Handler: srv.handler()}
+	serveCtx, cancelServe := context.WithCancel(context.Background())
+	defer cancelServe()
+	httpSrv := &http.Server{Handler: srv.handler(), ReadHeaderTimeout: 10 * time.Second, BaseContext: func(net.Listener) context.Context { return serveCtx }}
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigCh)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpSrv.Serve(ln) }()
@@ -872,11 +1051,14 @@ func Run(p *paths.Paths, srv *Server) error {
 		return err
 	}
 
+	cancelServe()
 	log.Println("daemon shutting down: stopping VMs")
 	srv.StopAllVMs()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	httpSrv.Shutdown(ctx)
+	if err := httpSrv.Shutdown(ctx); err != nil {
+		_ = httpSrv.Close()
+	}
 	ln.Close()
 	os.Remove(sock)
 	return nil

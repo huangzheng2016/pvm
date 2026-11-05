@@ -3,6 +3,7 @@ package image
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/huangzheng2016/pvm/internal/native"
+	"github.com/huangzheng2016/pvm/internal/paths"
 )
 
 func TestGoldenVersionIncrementAndLatest(t *testing.T) {
@@ -33,13 +35,16 @@ func TestGoldenVersionIncrementAndLatest(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if g := LatestGolden(dir, "ubuntu", "24.04"); g != nil {
-		t.Fatalf("expected nil, got %+v", g)
+	if g, err := LatestGolden(dir, "ubuntu", "24.04"); err != nil || g != nil {
+		t.Fatalf("expected empty catalog, got %+v, %v", g, err)
 	}
 	mk(GoldenEntry{Version: 1, Distro: "ubuntu", ImageVersion: "24.04", File: goldenFileName("ubuntu", "24.04", 1)})
 	mk(GoldenEntry{Version: 2, Distro: "ubuntu", ImageVersion: "24.04", File: goldenFileName("ubuntu", "24.04", 2)})
 
-	g := LatestGolden(dir, "ubuntu", "24.04")
+	g, err := LatestGolden(dir, "ubuntu", "24.04")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if g == nil || g.Version != 2 {
 		t.Fatalf("want v2, got %+v", g)
 	}
@@ -67,7 +72,10 @@ func TestLatestGoldenSkipsMissingFile(t *testing.T) {
 	}
 	// only v1 exists on disk
 	os.WriteFile(filepath.Join(GoldenDir(dir), goldenFileName("ubuntu", "24.04", 1)), []byte("x"), 0o644)
-	g := LatestGolden(dir, "ubuntu", "24.04")
+	g, err := LatestGolden(dir, "ubuntu", "24.04")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if g == nil || g.Version != 1 {
 		t.Fatalf("want fallback to v1, got %+v", g)
 	}
@@ -260,5 +268,103 @@ func TestFetchKeepsCachedImageWhenChecksumServiceFails(t *testing.T) {
 	}
 	if string(got) != string(cached) {
 		t.Fatalf("cached image changed to %q", got)
+	}
+}
+
+func TestGoldenCatalogErrorsRemainVisible(t *testing.T) {
+	for _, fixture := range []string{"malformed", "unreadable"} {
+		t.Run(fixture, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.MkdirAll(GoldenDir(dir), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			path := goldenCatalogPath(dir)
+			if fixture == "malformed" {
+				if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				// A directory produces a read error even when tests run as root.
+				if err := os.Mkdir(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if g, err := LatestGolden(dir, "ubuntu", "24.04"); err == nil || g != nil {
+				t.Fatalf("lookup must report catalog error, got %+v, %v", g, err)
+			}
+			if entries, err := ListGolden(dir); err == nil || entries != nil {
+				t.Fatalf("list must report catalog error, got %+v, %v", entries, err)
+			}
+		})
+	}
+}
+
+func TestLatestGoldenDoesNotHideStatError(t *testing.T) {
+	dir := t.TempDir()
+	entry := GoldenEntry{Version: 1, Distro: "ubuntu", ImageVersion: "24.04", File: "broken.qcow2"}
+	if err := (&goldenCatalog{Entries: []GoldenEntry{entry}}).save(dir); err != nil {
+		t.Fatal(err)
+	}
+	// A symlink loop is an inspection failure, not a missing version.
+	if err := os.Symlink(entry.File, filepath.Join(GoldenDir(dir), entry.File)); err != nil {
+		t.Fatal(err)
+	}
+	if g, err := LatestGolden(dir, "ubuntu", "24.04"); err == nil || g != nil {
+		t.Fatalf("lookup must report stat error, got %+v, %v", g, err)
+	}
+}
+
+func TestGoldenCatalogPermissionError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file read permissions")
+	}
+	dir := t.TempDir()
+	if err := (&goldenCatalog{}).save(dir); err != nil {
+		t.Fatal(err)
+	}
+	path := goldenCatalogPath(dir)
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o600) })
+	if _, err := LatestGolden(dir, "ubuntu", "24.04"); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("lookup permission error lost: %v", err)
+	}
+	if _, err := ListGolden(dir); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("list permission error lost: %v", err)
+	}
+}
+
+func TestListGoldenMissingCatalog(t *testing.T) {
+	entries, err := ListGolden(t.TempDir())
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("missing catalog: got %+v, %v", entries, err)
+	}
+}
+
+func TestBakeRejectsBrokenCatalogBeforeCreatingVM(t *testing.T) {
+	p := paths.New(t.TempDir())
+	if err := p.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := Resolve("ubuntu:24.04")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(p.Images, ref.FileName()), []byte("unused"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(GoldenDir(p.Images), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(goldenCatalogPath(p.Images), []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Bake(&BakeOptions{Spec: "ubuntu:24.04", P: p}); err == nil || !strings.Contains(err.Error(), "golden catalog") {
+		t.Fatalf("expected catalog error before toolchain use, got %v", err)
+	}
+	entries, err := os.ReadDir(p.VMs)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("bake created VM state before validating catalog: %v, %v", entries, err)
 	}
 }

@@ -74,24 +74,26 @@ func (c *goldenCatalog) match(distro, imageVersion string) []GoldenEntry {
 	return out
 }
 
-func LatestGolden(imagesDir, distro, imageVersion string) *GoldenEntry {
+func LatestGolden(imagesDir, distro, imageVersion string) (*GoldenEntry, error) {
 	cat, err := loadGoldenCatalog(imagesDir)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	for _, e := range cat.match(distro, imageVersion) {
 		if _, err := os.Stat(filepath.Join(GoldenDir(imagesDir), e.File)); err == nil {
 			e := e
-			return &e
+			return &e, nil
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("inspect golden image %s: %w", e.File, err)
 		}
 	}
-	return nil
+	return nil, nil
 }
 
-func ListGolden(imagesDir string) []GoldenEntry {
+func ListGolden(imagesDir string) ([]GoldenEntry, error) {
 	cat, err := loadGoldenCatalog(imagesDir)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	out := cat.Entries
 	sort.Slice(out, func(i, j int) bool {
@@ -100,5 +102,5 @@ func ListGolden(imagesDir string) []GoldenEntry {
 		}
 		return out[i].Version > out[j].Version
 	})
-	return out
+	return out, nil
 }

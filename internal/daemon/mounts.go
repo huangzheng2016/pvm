@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,9 +16,10 @@ import (
 )
 
 type mountRequest struct {
-	Host    string `json:"host"`
-	Guest   string `json:"guest"`
-	Profile string `json:"profile"`
+	Host     string `json:"host"`
+	Guest    string `json:"guest"`
+	Profile  string `json:"profile"`
+	ReadOnly bool   `json:"read_only"`
 }
 
 func (s *Server) handleMountList(w http.ResponseWriter, r *http.Request) {
@@ -56,11 +58,17 @@ func (s *Server) handleMountAdd(w http.ResponseWriter, r *http.Request) {
 	lock := qemu.LockVM(spec.Name)
 	lock.Lock()
 	defer lock.Unlock()
+	spec, err = s.getSpec(spec.Name)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
 	m, err := newGuestMount(spec, req.Host, req.Guest, req.Profile)
 	if err != nil {
 		writeErr(w, 400, err)
 		return
 	}
+	m.ReadOnly = req.ReadOnly
 	if err := s.addMount(spec, m); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -82,6 +90,11 @@ func (s *Server) handleMountRemove(w http.ResponseWriter, r *http.Request) {
 	lock := qemu.LockVM(spec.Name)
 	lock.Lock()
 	defer lock.Unlock()
+	spec, err = s.getSpec(spec.Name)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
 	index := -1
 	var m vm.GuestMount
 	for i, candidate := range spec.Mounts {
@@ -154,6 +167,19 @@ func (s *Server) addMount(spec *vm.Spec, m vm.GuestMount) error {
 	if err != nil {
 		return err
 	}
+	if m.ReadOnly {
+		if st != nil {
+			return fmt.Errorf("read-only mounts require a stopped VM; run `pvm stop %s` first", spec.Name)
+		}
+		if err := s.prepareMountSlots(&next); err != nil {
+			return err
+		}
+		if err := next.Save(s.P); err != nil {
+			return s.mountStateError(err, s.prepareMountSlots(spec))
+		}
+		s.cacheSpec(&next)
+		return nil
+	}
 	if st == nil {
 		return fmt.Errorf("vm %s is not running; start it before changing mounts", spec.Name)
 	}
@@ -188,6 +214,7 @@ func (s *Server) addMount(spec *vm.Spec, m vm.GuestMount) error {
 		return s.mountStateError(err, s.rollbackAddedMount(spec, m, q, deviceAdded))
 	}
 	spec.Mounts = mounts
+	s.cacheSpec(spec)
 	return nil
 }
 
@@ -204,6 +231,19 @@ func (s *Server) removeMount(spec *vm.Spec, m vm.GuestMount) error {
 	st, err := inst.Running()
 	if err != nil {
 		return err
+	}
+	if m.ReadOnly {
+		if st != nil {
+			return fmt.Errorf("read-only mounts require a stopped VM; run `pvm stop %s` first", spec.Name)
+		}
+		if err := s.prepareMountSlots(&next); err != nil {
+			return err
+		}
+		if err := next.Save(s.P); err != nil {
+			return s.mountStateError(err, s.prepareMountSlots(spec))
+		}
+		s.cacheSpec(&next)
+		return nil
 	}
 	if st == nil {
 		return fmt.Errorf("vm %s is not running; start it before changing mounts", spec.Name)
@@ -227,6 +267,7 @@ func (s *Server) removeMount(spec *vm.Spec, m vm.GuestMount) error {
 		return fmt.Errorf("mount detached but configuration save failed; configuration retained, retry the remove: %w", err)
 	}
 	spec.Mounts = mounts
+	s.cacheSpec(spec)
 	return nil
 }
 
@@ -253,7 +294,10 @@ func (s *Server) rollbackAddedMountWith(spec *vm.Spec, m vm.GuestMount, q *qemu.
 func (s *Server) retainFailedMount(spec *vm.Spec, m vm.GuestMount, cause error) error {
 	next := *spec
 	next.Mounts = append(append([]vm.GuestMount(nil), spec.Mounts...), m)
+	// The live backend still exposes this directory. Reserve it even if
+	// the recovery write fails, so another mount cannot retarget it.
 	spec.Mounts = next.Mounts
+	s.cacheSpec(&next)
 	if err := next.Save(s.P); err != nil {
 		return fmt.Errorf("%w; mount backend retained but recovery configuration could not be saved: %v; stop the VM before retrying", cause, err)
 	}
@@ -396,7 +440,12 @@ func guestMountAddScript(m vm.GuestMount) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	line := fmt.Sprintf("%s %s 9p %s,rw,_netdev,nofail 0 0", m.Tag, m.Guest, options)
+	mode := "rw"
+	if m.ReadOnly {
+		mode = "ro"
+	}
+	options += "," + mode
+	line := fmt.Sprintf("%s %s 9p %s,_netdev,nofail 0 0", m.Tag, m.Guest, options)
 	// QMP returns before the guest necessarily enumerates the hotplugged tag.
 	return "set -e\n" +
 		"for attempt in 1 2 3 4 5; do\n" +
@@ -424,4 +473,43 @@ func indentOutput(out string) string {
 		return ""
 	}
 	return "\n" + strings.TrimSpace(out)
+}
+
+// Startup reconciles managed fstab entries after a stopped-VM change.
+// The QEMU backend enforces read-only access independently of guest options.
+func (s *Server) configureGuestMountsCtx(ctx context.Context, spec *vm.Spec) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	script, err := guestMountReconcileScript(spec.Mounts)
+	if err != nil {
+		return err
+	}
+	if out, err := s.sshRunCtx(ctx, spec, script); err != nil {
+		return fmt.Errorf("configure guest mounts: %w%s", err, indentOutput(out))
+	}
+	return nil
+}
+
+func guestMountReconcileScript(mounts []vm.GuestMount) (string, error) {
+	var b strings.Builder
+	b.WriteString("set -e\nsudo sed -i '/^pvm[0-9][0-9]* /d' /etc/fstab\n")
+	for _, m := range mounts {
+		if _, err := qemu.VirtFSSlot(m.Tag); err != nil {
+			return "", err
+		}
+		options, err := vm.GuestMountOptions(m.Profile)
+		if err != nil {
+			return "", err
+		}
+		mode := "rw"
+		if m.ReadOnly {
+			mode = "ro"
+		}
+		options += "," + mode
+		fmt.Fprintf(&b, "sudo mkdir -p %s\nif ! mountpoint -q %s; then sudo mount -t 9p -o %s %s %s; fi\n", shellQuote(m.Guest), shellQuote(m.Guest), shellQuote(options), shellQuote(m.Tag), shellQuote(m.Guest))
+		line := fmt.Sprintf("%s %s 9p %s,_netdev,nofail 0 0", m.Tag, m.Guest, options)
+		fmt.Fprintf(&b, "printf '%%s\\n' %s | sudo tee -a /etc/fstab >/dev/null\n", shellQuote(line))
+	}
+	return b.String(), nil
 }

@@ -3,112 +3,340 @@ name: Build and Release
 on:
   push:
     branches: [master]
-    tags:
-      - 'v[0-9]*'
+    tags: ['v[0-9]*']
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: '23 4 * * 1'
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  GO_VERSION: '1.27.3'
+  GARBLE_VERSION: 'v0.18.0'
+  GOVULNCHECK_VERSION: 'v1.9.0'
+  CYCLONEDX_VERSION: 'v1.12.0'
+  COPYFILE_DISABLE: '1'
+  GARBLE_CACHE: ${{ github.workspace }}/.cache/garble
 
 jobs:
-  test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+  prepare:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      run_id: ${{ steps.reuse.outputs.run_id }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6.4.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          go-version: '1.27.3'
-      - run: go test ./...
+          persist-credentials: false
+      - name: Validate release version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: test "$(cat VERSION)" = "$GITHUB_REF_NAME"
+      - id: reuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 script/ci/reuse.py
 
-  build:
-    needs: test
+  native:
+    needs: prepare
+    if: needs.prepare.outputs.run_id == ''
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
+            out: pvm_linux_amd64
+            host: true
+          - os: macos-15
+            out: pvm_darwin_arm64
+            host: true
+          - os: ubuntu-24.04-arm
+            out: pvm_linux_arm64
+            host: false
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Locate Go caches
+        id: go-cache
+        run: |
+          echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "modules=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ steps.go-cache.outputs.build }}
+            ${{ steps.go-cache.outputs.modules }}
+            ${{ env.GARBLE_CACHE }}
+          key: go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ env.GO_VERSION }}-${{ env.GARBLE_VERSION }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ env.GO_VERSION }}-${{ env.GARBLE_VERSION }}-${{ hashFiles('go.sum') }}-
+      - name: Test and vet native host
+        if: matrix.host
+        run: |
+          go test ./...
+          go vet ./...
+          sh -n scripts/install.sh
+          bash -n script/build.sh script/pack_assets.sh script/qemu/*.sh
+          python3 -B -m unittest discover -s script/ci -p 'test_*.py'
+      - name: Test and vet native VPS agent
+        if: ${{ !matrix.host }}
+        run: |
+          go test ./internal/exit ./internal/tunnel ./internal/warp ./internal/keys ./internal/fsutil
+          go vet ./internal/exit ./internal/tunnel ./internal/warp ./internal/keys ./internal/fsutil
+      - name: Cache build tools
+        if: matrix.host
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/go/bin/garble
+          key: tools-${{ runner.os }}-${{ runner.arch }}-go${{ env.GO_VERSION }}-garble${{ env.GARBLE_VERSION }}
+      - name: Install garble
+        if: matrix.host
+        run: |
+          if ! command -v garble >/dev/null; then go install mvdan.cc/garble@"$GARBLE_VERSION"; fi
+      - name: Build once and check embedded documentation
+        env:
+          PVM_PACK_QEMU: '0'
+        run: |
+          export PVM_VERSION="$(cat VERSION)"
+          if [ '${{ matrix.host }}' = 'true' ]; then
+            ./script/build.sh
+          else
+            CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "-s -w -buildid= -X github.com/huangzheng2016/pvm/internal/buildinfo.Version=${PVM_VERSION}" -o pvm ./cmd/pvm
+          fi
+          ./pvm version
+          ./pvm help > /dev/null
+          ./pvm skill > "$RUNNER_TEMP/skill.md"
+          ./pvm security > "$RUNNER_TEMP/security.md"
+          cmp SKILL.md "$RUNNER_TEMP/skill.md"
+          cmp SECURITY.md "$RUNNER_TEMP/security.md"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: github.event_name == 'push'
+        with:
+          name: raw-${{ matrix.out }}
+          path: pvm
+          retention-days: 14
+          if-no-files-found: error
+
+  network:
+    needs: prepare
+    if: needs.prepare.outputs.run_id == ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Locate Go caches
+        id: go-cache
+        run: |
+          echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "modules=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ steps.go-cache.outputs.build }}
+            ${{ steps.go-cache.outputs.modules }}
+            ${{ env.GARBLE_CACHE }}
+          key: go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ env.GO_VERSION }}-${{ env.GARBLE_VERSION }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ env.GO_VERSION }}-${{ env.GARBLE_VERSION }}-${{ hashFiles('go.sum') }}-
+      - run: sudo apt-get update && sudo apt-get install -y iproute2 nftables iputils-ping
+      - run: python3 script/ci/netns.py
+
+  vulnerabilities:
+    needs: prepare
+    if: always() && (github.event_name == 'schedule' || (needs.prepare.result == 'success' && needs.prepare.outputs.run_id == ''))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Locate Go caches
+        id: go-cache
+        run: |
+          echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "modules=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ steps.go-cache.outputs.build }}
+            ${{ steps.go-cache.outputs.modules }}
+            ${{ env.GARBLE_CACHE }}
+          key: go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ env.GO_VERSION }}-${{ env.GARBLE_VERSION }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ env.GO_VERSION }}-${{ env.GARBLE_VERSION }}-${{ hashFiles('go.sum') }}-
+      - run: go run golang.org/x/vuln/cmd/govulncheck@"$GOVULNCHECK_VERSION" ./...
+      - name: Bounded protocol fuzz
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: go test ./internal/agent -run '^$' -fuzz '^FuzzReadFrameBounded$' -fuzztime=15s -parallel=2
+
+  package:
+    needs: [prepare, native, network, vulnerabilities]
+    if: always() && startsWith(github.ref, 'refs/tags/') && needs.prepare.result == 'success' && (needs.prepare.outputs.run_id != '' || (needs.native.result == 'success' && needs.network.result == 'success' && needs.vulnerabilities.result == 'success'))
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
             out: pvm_linux_amd64
           - os: ubuntu-24.04-arm
             out: pvm_linux_arm64
-          - os: macos-latest
+          - os: macos-15
             out: pvm_darwin_arm64
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6.4.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          go-version: '1.27.3'
-      - name: Install garble
-        run: go install mvdan.cc/garble@v0.18.0
-      - name: Install qemu (macOS, for the bundled runtime)
-        if: runner.os == 'macOS'
-        run: brew install qemu
-      - name: Import macOS signing certificate
-        if: runner.os == 'macOS'
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+      - name: Locate Go caches
+        id: go-cache
+        run: |
+          echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+          echo "modules=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ steps.go-cache.outputs.build }}
+            ${{ steps.go-cache.outputs.modules }}
+            ${{ env.GARBLE_CACHE }}
+          key: go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ env.GO_VERSION }}-${{ env.GARBLE_VERSION }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ env.GO_VERSION }}-${{ env.GARBLE_VERSION }}-${{ hashFiles('go.sum') }}-
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: raw-${{ matrix.out }}
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.prepare.outputs.run_id || github.run_id }}
+      - name: Verify reused binary
+        run: |
+          chmod +x pvm
+          test "$(./pvm version)" = "$(cat VERSION)"
+          go version -m pvm > "$RUNNER_TEMP/build-info.txt"
+          grep -F 'go1.27.3' "$RUNNER_TEMP/build-info.txt"
+          grep -F 'github.com/huangzheng2016/pvm/cmd/pvm' "$RUNNER_TEMP/build-info.txt"
+      - name: Record QEMU package inputs
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
+        run: |
+          brew info --json=v2 qemu > qemu-formula.json
+          echo "QEMU_INPUT_HASH=$(shasum -a 256 qemu-formula.json | cut -d' ' -f1)" >> "$GITHUB_ENV"
+      - name: Cache QEMU downloads
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/Library/Caches/Homebrew/downloads
+          key: qemu-${{ runner.os }}-${{ runner.arch }}-${{ env.QEMU_INPUT_HASH }}
+      - name: Install release QEMU
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          brew install qemu
+          brew info --json=v2 --installed > qemu-installed.json
+      - name: Import signing certificate
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
         env:
           MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
         run: |
           set -euo pipefail
           if [ -z "${MACOS_CERTIFICATE_P12_BASE64:-}" ]; then
-            echo "no signing certificate configured; falling back to ad-hoc"
+            echo 'No distribution certificate configured; runtime uses ad-hoc signing.'
             exit 0
           fi
           CERT_PATH="$RUNNER_TEMP/pvm-codesign.p12"
           KEYCHAIN_PATH="$RUNNER_TEMP/pvm-signing.keychain-db"
           KEYCHAIN_PASSWORD="$(uuidgen)"
+          umask 077
           printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERT_PATH"
-          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
-          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | sed 's/[ "]//g')
-          security default-keychain -d user -s "$KEYCHAIN_PATH"
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
-      - name: Build ${{ matrix.out }}
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null 2>&1
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH" >/dev/null 2>&1
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null 2>&1
+          security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign >/dev/null 2>&1
+          security list-keychains -d user -s "$KEYCHAIN_PATH" >/dev/null 2>&1
+          security default-keychain -d user -s "$KEYCHAIN_PATH" >/dev/null 2>&1
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null 2>&1
+      - name: Package release
+        if: startsWith(github.ref, 'refs/tags/')
         env:
-          PVM_VERSION: ${{ github.ref_name }}
-          PVM_PACK_QEMU: ${{ runner.os == 'macOS' && '1' || '0' }}
           PVM_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
         run: |
-          if [ "${{ matrix.out }}" = "pvm_linux_arm64" ]; then
-            CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "-s -w -X github.com/huangzheng2016/pvm/internal/buildinfo.Version=${PVM_VERSION}" -o pvm ./cmd/pvm
-          else
-            ./script/build.sh
-          fi
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            codesign -s "${PVM_CODESIGN_IDENTITY:--}" --force pvm
-          fi
-          tar -czf ${{ matrix.out }}.tar.gz pvm
-          if [ "${{ runner.os }}" = "macOS" ]; then
+          if [ '${{ runner.os }}' = 'macOS' ]; then
+            ./script/qemu/pack-runtime.sh
+            codesign -s "${PVM_CODESIGN_IDENTITY:--}" --force pvm >/dev/null 2>&1
             tar -czf pvm-qemu-runtime-aarch64.tar.gz -C "$HOME/.pvm/runtime/qemu" aarch64
           fi
-      - uses: actions/upload-artifact@v7
+          tar -czf '${{ matrix.out }}.tar.gz' pvm
+          go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@"$CYCLONEDX_VERSION" bin -json -std -version "$(cat VERSION)" -output '${{ matrix.out }}.cdx.json' pvm
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: startsWith(github.ref, 'refs/tags/')
         with:
-          name: ${{ matrix.out }}
+          name: release-${{ matrix.out }}
+          if-no-files-found: error
           path: |
-            ${{ matrix.out }}.tar.gz
-            pvm-qemu-runtime-aarch64.tar.gz
+            *.tar.gz
+            *.cdx.json
+            qemu-*.json
+      - name: Remove temporary signing credentials
+        if: always() && runner.os == 'macOS'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/pvm-signing.keychain-db" >/dev/null 2>&1 || true
+          python3 -c 'import os; p=os.path.join(os.environ["RUNNER_TEMP"],"pvm-codesign.p12"); os.unlink(p) if os.path.exists(p) else None'
 
   release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    if: always() && startsWith(github.ref, 'refs/tags/') && needs.package.result == 'success'
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/download-artifact@v8
-      - name: Prepare release files
-        run: |
-          mkdir -p release
-          find . -path ./release -prune -o \( -name "*.tar.gz" \) -type f -print | while read f; do cp "$f" release/; done
-          (cd release && sha256sum *.tar.gz > SHA256SUMS)
-          ls -la release/
-      - name: Create Release
-        uses: softprops/action-gh-release@v3
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          path: release
+          pattern: release-*
+          merge-multiple: true
+      - name: Hash release artifacts
+        working-directory: release
+        run: sha256sum *.tar.gz *.json > SHA256SUMS
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: release/*
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
         with:
           tag_name: ${{ github.ref_name }}
           files: release/*

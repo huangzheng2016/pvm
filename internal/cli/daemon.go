@@ -10,7 +10,6 @@ import (
 	"github.com/huangzheng2016/pvm/internal/cluster"
 	"github.com/huangzheng2016/pvm/internal/config"
 	"github.com/huangzheng2016/pvm/internal/daemon"
-	"github.com/huangzheng2016/pvm/internal/keys"
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 )
@@ -122,15 +121,11 @@ func daemonRun(p *paths.Paths) int {
 		return fatalf("%v", err)
 	}
 	accel := qemu.Detect(tc, runtime.GOOS)
-	pub, err := keys.Ensure(p.SSHKey())
-	if err != nil {
-		return fatalf("ssh key: %v", err)
-	}
 	clusters, err := cluster.LoadStore(p.Clusters)
 	if err != nil {
 		return fatalf("clusters: %v", err)
 	}
-	srv := daemon.NewServer(p, cfg, tc, accel, pub, clusters)
+	srv := daemon.NewServer(p, cfg, tc, accel, clusters)
 	fmt.Fprintf(os.Stderr, "pvm daemon: qemu=%s accel=%s sock=%s\n", tc.System, accel, p.DaemonSock())
 	if err := daemon.Run(p, srv); err != nil {
 		return fatalf("daemon: %v", err)

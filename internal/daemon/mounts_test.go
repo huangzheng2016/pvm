@@ -32,7 +32,7 @@ func newMountTestServer(t *testing.T) (*Server, *vm.Spec, string) {
 	if err := spec.Save(p); err != nil {
 		t.Fatal(err)
 	}
-	s := NewServer(p, &config.Config{}, nil, qemu.AccelTCG, "", nil)
+	s := NewServer(p, &config.Config{}, nil, qemu.AccelTCG, nil)
 	s.vms[spec.Name] = spec
 	return s, spec, t.TempDir()
 }

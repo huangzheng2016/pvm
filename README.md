@@ -13,13 +13,13 @@ Personal QEMU dev VMs in a single binary: create an isolated Linux development m
 
 ## Installation
 
-pvm requires macOS on arm64 or Linux on amd64. Install the latest release with `curl`:
+pvm requires macOS on arm64 or Linux on amd64. Install GitHub CLI (`gh`) and Python 3 first, then install the latest release with `curl`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/huangzheng2016/pvm/master/scripts/install.sh | sh
 ```
 
-The installer places `pvm` in `~/.local/bin` by default; set `INSTALL_DIR` to change this. On macOS it also installs the bundled QEMU runtime unless `PVM_SKIP_QEMU=1` is set, in which case pvm uses the system QEMU. You can also download an archive from [Releases](https://github.com/huangzheng2016/pvm/releases).
+The installer places `pvm` in `~/.local/bin` by default; set `INSTALL_DIR` to change this. On macOS it also installs the bundled QEMU runtime unless `PVM_SKIP_QEMU=1` is set, in which case pvm uses the system QEMU. The installer verifies the release checksum and GitHub build attestation, including the repository, workflow, and tag. Releases without this proof are rejected. All downloads and executable checks finish before replacement; previous binaries and QEMU runtimes are retained. You can also download an archive from [Releases](https://github.com/huangzheng2016/pvm/releases) and verify it with `gh attestation verify` before use.
 
 ## Quickstart
 
@@ -33,9 +33,11 @@ pvm desktop dev1
 pvm map dev1 8080:80
 ```
 
+New VMs use a private host directory at `~/.pvm/vms/<name>/share` for `/share`. Use `pvm create --share none ...` to disable it, or explicitly choose `--share global` to use the common `~/.pvm/share`. Existing VMs retain their recorded sharing behavior. Bake and gateway VMs do not export a host share.
+
 ### 9p mount profiles
 
-`/share` and extra mounts use the `coherent` profile by default (`cache=none,msize=262144`) for bidirectional host/guest visibility. This is the shared-source baseline, not multi-writer transaction consistency. `pvm mount ls dev1` shows each extra mount's profile.
+`/share` and extra mounts use the `coherent` profile by default (`cache=none,msize=262144`) for bidirectional host/guest visibility. This is the shared-source baseline, not multi-writer transaction consistency. `pvm mount ls dev1` shows each extra mount's profile and access mode. To enforce read-only access at QEMU, stop the VM, run `pvm mount dev1 --read-only /host/data:/mnt/data`, then start it. Adding or removing a read-only mount requires the VM to be stopped.
 
 For a mount dominated by large sequential reads, explicitly select `readahead`:
 
@@ -87,10 +89,10 @@ Data:    dev VM -> gateway VM -> WireGuard tunnel -> exit-agent on VPS or Cloudf
 
 ## Deploy an exit on a VPS
 
-Download the release archive for the VPS architecture and run the exit agent as a persistent service:
+Verify the release archive for the VPS architecture and create an owner-only token file, then run the exit agent as a persistent service:
 
 ```bash
-pvm exit-agent --listen :18443 --token YOUR_TOKEN
+pvm exit-agent --listen :18443 --token-file /etc/pvm-exit/token
 ```
 
 Then register it on the host with `pvm exit add`. See [SKILL.md](SKILL.md#standard-flow-deploy-an-exit-over-ssh) for the complete SSH deployment, including a systemd unit, fingerprint verification, speed tests, and rollback.
@@ -108,7 +110,10 @@ This creates a new client key, enrolls it with the exit agent, writes the config
 - [SKILL.md](SKILL.md): Complete usage manual for agents and people; `pvm skill` prints the embedded copy.
 - [SECURITY.md](SECURITY.md): Host/guest trust boundaries, credentials, image provenance, and network verification; `pvm security` prints the embedded copy.
 - [AGENTS.md](AGENTS.md): Repository map, build and test workflow, and development rules.
-- `pvm upgrade` upgrades the installed binary, restarts a running daemon, and restores previously running user VMs. Use `--no-restart` to replace only the binary.
+- `pvm upgrade` verifies the release, saves a recovery point, upgrades the installed binary, restarts a running daemon, and attempts to restore every previously running user VM. Use `--no-restart` to replace only the binary, or `pvm upgrade --rollback` to restore the saved binary and VM recovery plan.
+- `pvm audit dev1 --privacy`, `pvm doctor`, and `pvm route explain dev1 example.com` inspect local configuration without starting a daemon or making network probes; their output redacts identifying values.
+- Automatic update checks are off by default. Set `update_check: true` in `~/.pvm/config.yaml` or `PVM_UPDATE_CHECK=1` to opt in; `PVM_NO_UPDATE_CHECK=1` disables them.
+- For independently trusted image signing keys, use `pvm image fetch ubuntu:26.04 --keyring /trusted/ubuntu-cloudimage.gpg`. This requires `gpgv`; pvm does not download or trust keys automatically.
 
 ## Development
 
@@ -120,4 +125,6 @@ go install mvdan.cc/garble@v0.18.0
 go test ./...
 ```
 
-Security boundaries: user VMs share a layer-2 network and a read-write `/share`; they are not isolated hostile tenants. Explicit direct/internal rules can bypass a default exit. See [SECURITY.md](SECURITY.md) for guarantees, limitations, and deployment checks.
+CI tests and builds each native platform once per commit, caches Go and build tools, and reserves QEMU packaging and signing for releases. Releases can reuse verified artifacts from a successful master run of the exact same commit. Linux namespace tests must run rather than skip.
+
+Security boundaries: user VMs share a layer-2 network; global shares and extra host mounts are explicit trust boundaries. They are not isolated hostile tenants. Explicit direct/internal rules can bypass a default exit. See [SECURITY.md](SECURITY.md) for guarantees, limitations, and deployment checks.

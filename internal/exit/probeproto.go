@@ -78,7 +78,7 @@ func serveUDPProbeConn(c *gonet.UDPConn) {
 	defer c.Close()
 	buf := make([]byte, udpProbeBufSize)
 	for {
-		_ = c.SetReadDeadline(time.Now().Add(udpProbeIdleTimeout))
+		_ = c.SetDeadline(time.Now().Add(udpProbeIdleTimeout))
 		n, err := c.Read(buf)
 		if err != nil {
 			return

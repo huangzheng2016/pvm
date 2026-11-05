@@ -14,20 +14,22 @@ import (
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
-const mountUsage = "usage: pvm mount <vm> [--profile coherent|readahead] <host-path>:<guest-path> | ls <vm> | rm <vm> <guest-path>"
+const mountUsage = "usage: pvm mount <vm> [--profile coherent|readahead] [--read-only] <host-path>:<guest-path> | ls <vm> | rm <vm> <guest-path>"
 
 type mountView struct {
-	Tag     string `json:"tag"`
-	Host    string `json:"host"`
-	Guest   string `json:"guest"`
-	Profile string `json:"profile"`
+	Tag      string `json:"tag"`
+	Host     string `json:"host"`
+	Guest    string `json:"guest"`
+	Profile  string `json:"profile"`
+	ReadOnly bool   `json:"read_only"`
 }
 
 type mountAddOptions struct {
-	vmName  string
-	host    string
-	guest   string
-	profile string
+	vmName   string
+	host     string
+	guest    string
+	profile  string
+	readOnly bool
 }
 
 func parseMountAddArgs(args []string) (mountAddOptions, error) {
@@ -36,6 +38,7 @@ func parseMountAddArgs(args []string) (mountAddOptions, error) {
 	}
 	flags := flag.NewFlagSet("mount", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
+	readOnly := flags.Bool("read-only", false, "enforce read-only access (VM must be stopped)")
 	profile := flags.String("profile", "", "coherent or readahead")
 	if err := flags.Parse(args[1:]); err != nil {
 		return mountAddOptions{}, err
@@ -51,18 +54,22 @@ func parseMountAddArgs(args []string) (mountAddOptions, error) {
 	if err != nil {
 		return mountAddOptions{}, err
 	}
-	return mountAddOptions{vmName: args[0], host: host, guest: guest, profile: normalized}, nil
+	return mountAddOptions{vmName: args[0], host: host, guest: guest, profile: normalized, readOnly: *readOnly}, nil
 }
 
 func writeMountTable(w io.Writer, mounts []mountView) error {
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "HOST\tGUEST\tPROFILE")
+	fmt.Fprintln(tw, "HOST\tGUEST\tPROFILE\tACCESS")
 	for _, m := range mounts {
 		profile, err := vm.NormalizeMountProfile(m.Profile)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\n", m.Host, m.Guest, profile)
+		access := "rw"
+		if m.ReadOnly {
+			access = "ro"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", m.Host, m.Guest, profile, access)
 	}
 	return tw.Flush()
 }
@@ -125,7 +132,7 @@ func CmdMount(args []string) int {
 			return fatalf("%v", err)
 		}
 		var m mountView
-		body := map[string]string{"host": host, "guest": add.guest, "profile": add.profile}
+		body := map[string]any{"host": host, "guest": add.guest, "profile": add.profile, "read_only": add.readOnly}
 		if err := c.Post("/v1/vms/"+add.vmName+"/mounts", body, &m); err != nil {
 			return fatalf("mount: %v", err)
 		}

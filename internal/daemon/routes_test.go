@@ -16,11 +16,12 @@ import (
 // routeOpsRecorder builds vmRouteOps that record the call order and fail
 // on scripted steps.
 type routeOpsRecorder struct {
-	events   []string
-	running  bool
-	stopErr  error
-	startErr error
-	pushErr  error
+	events    []string
+	running   bool
+	stopErr   error
+	startErr  error
+	pushErr   error
+	pushCalls int
 }
 
 func (r *routeOpsRecorder) ops() vmRouteOps {
@@ -29,7 +30,14 @@ func (r *routeOpsRecorder) ops() vmRouteOps {
 		stop:    func() error { r.events = append(r.events, "stop"); return r.stopErr },
 		start:   func() error { r.events = append(r.events, "start"); return r.startErr },
 		setExit: func(v string) error { r.events = append(r.events, "setExit:"+v); return nil },
-		push:    func() error { r.events = append(r.events, "push"); return r.pushErr },
+		push: func() error {
+			r.events = append(r.events, "push")
+			r.pushCalls++
+			if r.pushCalls == 1 {
+				return r.pushErr
+			}
+			return nil
+		},
 	}
 }
 

@@ -207,7 +207,7 @@ func TestRenderNFTDirectVMRegisteredPair(t *testing.T) {
 	}
 	// Port-map (DNAT) answers return to the slirp infrastructure subnet
 	// and must pass for every VM, including exit-routed ones.
-	slirp := `iifname "br0" oifname "enp0s1" ip daddr 10.0.2.0/24 accept`
+	slirp := `iifname "br0" oifname "enp0s1" ip daddr 10.0.2.0/24 ct direction reply ct status dnat accept`
 	if !strings.Contains(out, slirp) {
 		t.Errorf("slirp infrastructure accept missing\n%s", out)
 	}

@@ -20,25 +20,26 @@ vm:
   rm            stop and delete a vm (asks for confirmation; -y|--force to skip)
   resize        grow a stopped vm's disk (grow-only): pvm resize dev1 40
   compact       reclaim unused host disk space (vm must be stopped): pvm compact dev1
-  mount         dynamic host mounts: pvm mount dev1 [--profile coherent|readahead] /host:/guest | ls dev1 | rm dev1 /guest
+  mount         dynamic host mounts: pvm mount dev1 [--profile coherent|readahead] [--read-only] /host:/guest | ls dev1 | rm dev1 /guest
   ssh           ssh into a vm: pvm ssh [-t|-T] dev1 [cmd...]
   snapshot      ram snapshots: create <name> | ls [name] | rm <name>
                 (create needs a running vm; rm needs the vm stopped)
   exec          run a command via the guest agent (no network needed): pvm exec dev1 cmd...
   logs          stream a vm console: pvm logs dev1 [--follow] [--tail N]
   desktop       open the vm's native xfce desktop: pvm desktop dev1 [--open] [--stop] [--size WxH] [--public]
-  audit         read-only health audit: pvm audit dev1 (vm, route, tcp/udp/icmp probes, dns, ipv6, timezone, locale)
+  doctor        diagnose local state consistency and permissions (read-only, redacted)
+  audit         read-only health audit: pvm audit dev1 [--privacy] (vm, route, tcp/udp/icmp probes, dns, ipv6, timezone, locale)
 
 network:
   map           map ports: pvm map dev1 8080:80 [--udp] | ls | rm <port> [--udp]
   route         vm default route: pvm route dev1 --via my-exit|direct
                 split rules: pvm route add direct|proxy|internal [--domain-suffix|--domain-prefix|--domain-keyword|--cidr] <v> [--via <exit>] [--dns <srv>]
-                inspect: pvm route ls | pvm route rm <index>
+                inspect: pvm route ls | pvm route explain dev1 example.com | pvm route rm <index>
   dns           inspect fake-ip mappings: pvm dns ls
   exit          manage exit nodes: add (--transport auto=probe&pick fastest) | add-warp | set | ls | rm | test [--speed]
                 add cloudflare warp: pvm exit add-warp my-warp
                 export a standard wireguard client: pvm exit client-config my-exit [-o phone.conf]
-  exit-agent    run the vps exit agent: pvm exit-agent --listen :18443 --token <tok>
+  exit-agent    run the vps exit agent: pvm exit-agent --listen :18443 --token-file <private-file>
 
 image:
   image fetch   download a base image (ubuntu:26.04, debian:13)
@@ -55,7 +56,7 @@ other:
   version       print version
   skill         print the embedded pvm skill doc (install into agent skills)
   security      print the embedded security boundaries and verification guide
-  upgrade       self-upgrade and restart the daemon: pvm upgrade [--check] [--to <tag>] [--no-restart] [-y]
+  upgrade       self-upgrade and restart the daemon: pvm upgrade [--check] [--to <tag>] [--no-restart] [-y] | pvm upgrade --rollback [-y]
 
 common choices:
   images        ubuntu:26.04 | ubuntu:24.04 | debian:13 | debian:12
@@ -77,6 +78,7 @@ create options:
   --git-email E optional neutral git identity (never inherited from host)
   --git-name N  optional neutral git name (requires --git-email)
   --smbios-spoof  spoof dmi as a dell optiplex desktop
+  --share MODE  private (default), global, or none
   --no-start    create disk and metadata without starting the vm
   --no-wait     return before cloud-init finishes
 
@@ -112,7 +114,7 @@ func main() {
 		return
 	}
 	switch os.Args[1] {
-	case "upgrade", "version", "--version", "-v", "skill", "security", "exit-agent", "agent", "gateway", "__snapshot-pipe-out", "__snapshot-pipe-in":
+	case "audit", "doctor", "route", "upgrade", "version", "--version", "-v", "skill", "security", "exit-agent", "agent", "gateway", "__snapshot-pipe-out", "__snapshot-pipe-in":
 	default:
 		cli.MaybeNotifyUpgrade()
 	}
@@ -176,6 +178,8 @@ func main() {
 		code = cli.CmdDesktop(args)
 	case "audit":
 		code = cli.CmdAudit(args)
+	case "doctor":
+		code = cli.CmdDoctor(args)
 	case "gateway":
 		fmt.Println("gateway is managed automatically by the pvm daemon; no manual action is required")
 	default:

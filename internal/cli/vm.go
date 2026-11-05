@@ -15,7 +15,6 @@ import (
 
 	"github.com/huangzheng2016/pvm/internal/daemon"
 	"github.com/huangzheng2016/pvm/internal/image"
-	"github.com/huangzheng2016/pvm/internal/keys"
 	"github.com/huangzheng2016/pvm/internal/native"
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/qemu"
@@ -33,14 +32,16 @@ type vmInfoView struct {
 		CPUs          int    `json:"cpus"`
 		MemMB         int    `json:"mem_mb"`
 		IdentityReset bool   `json:"identity_reset,omitempty"`
+		SSHKeyName    string `json:"ssh_key_name,omitempty"`
 	} `json:"spec"`
-	Running     bool   `json:"running"`
-	PID         int    `json:"pid"`
-	Uptime      string `json:"uptime"`
-	GatewaySSH  int    `json:"gw_ssh_port"`
-	GatewayUser string `json:"gw_user"`
-	Ready       bool   `json:"ready"`
-	Stages      []struct {
+	Running           bool   `json:"running"`
+	PID               int    `json:"pid"`
+	Uptime            string `json:"uptime"`
+	GatewaySSH        int    `json:"gw_ssh_port"`
+	GatewayUser       string `json:"gw_user"`
+	GatewaySSHKeyName string `json:"gw_ssh_key_name"`
+	Ready             bool   `json:"ready"`
+	Stages            []struct {
 		Stage  string `json:"stage"`
 		Detail string `json:"detail"`
 	} `json:"stages"`
@@ -56,9 +57,14 @@ func CmdImage(args []string) int {
 	}
 	switch args[0] {
 	case "fetch":
-		fs := newFlagSet("image fetch", "<distro:version> [--force]")
+		fs := newFlagSet("image fetch", "<distro:version> [--force] [--keyring /trusted/keyring.gpg]")
+		keyring := fs.String("keyring", "", "trusted distribution signing keyring; requires gpgv and signed checksums")
 		force := fs.Bool("force", false, "re-download even if a verified copy is cached")
-		if err := fs.Parse(partitionFlags(args[1:])); err != nil || fs.NArg() != 1 {
+		imageArgs := args[1:]
+		if len(imageArgs) > 0 && !strings.HasPrefix(imageArgs[0], "-") {
+			imageArgs = append(append([]string{}, imageArgs[1:]...), imageArgs[0])
+		}
+		if err := fs.Parse(imageArgs); err != nil || fs.NArg() != 1 {
 			fs.Usage()
 			return 2
 		}
@@ -66,6 +72,7 @@ func CmdImage(args []string) int {
 		if err != nil {
 			return fatalf("%v", err)
 		}
+		ref.TrustedKeyring = *keyring
 		fmt.Printf("fetching %s\n  %s\n", ref.FileName(), ref.URL)
 		path, err := image.Fetch(ref, p.Images, os.Stderr, *force)
 		if err != nil {
@@ -92,7 +99,10 @@ func CmdImage(args []string) int {
 		if err != nil {
 			return fatalf("%v", err)
 		}
-		goldens := image.ListGolden(p.Images)
+		goldens, err := image.ListGolden(p.Images)
+		if err != nil {
+			return fatalf("golden catalog: %v", err)
+		}
 		if len(imgs) == 0 && len(goldens) == 0 {
 			fmt.Println("no images; run `pvm image fetch ubuntu:26.04`")
 			return 0
@@ -122,13 +132,9 @@ func cmdImageBuild(p *paths.Paths, spec string, keep bool, cpus, mem, disk int) 
 		return fatalf("%v", err)
 	}
 	accel := qemu.Detect(tc, runtime.GOOS)
-	pub, err := keys.Ensure(p.SSHKey())
-	if err != nil {
-		return fatalf("ssh key: %v", err)
-	}
 	entry, err := image.Bake(&image.BakeOptions{
 		Spec: spec, P: p, TC: tc, Accel: accel,
-		SSHKey: p.SSHKey(), SSHPub: pub, Out: os.Stderr,
+		Out:    os.Stderr,
 		KeepVM: keep, BuildCPUs: cpus, BuildMem: mem, BuildDisk: disk,
 		Proxy: image.ProxyConfigFromEnv(),
 	})
@@ -183,6 +189,7 @@ func CmdCreate(args []string) int {
 	locale := fs.String("locale", "", "guest locale (default en_US.UTF-8)")
 	gitEmail := fs.String("git-email", "", "git user.email in the guest (never copied from the host)")
 	gitName := fs.String("git-name", "", "git user.name in the guest")
+	share := fs.String("share", "private", "share mode: private | global | none")
 	smbiosSpoof := fs.Bool("smbios-spoof", false, "present commodity PC hardware in DMI instead of QEMU defaults")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -190,6 +197,9 @@ func CmdCreate(args []string) int {
 	spec, err := resolveImageSpec(*imageSpec, *distro, *version)
 	if err != nil {
 		return fatalf("%v", err)
+	}
+	if *share != "private" && *share != "global" && *share != "none" {
+		return fatalf("--share must be private, global, or none")
 	}
 	if spec == "" || *name == "" {
 		fs.Usage()
@@ -210,7 +220,14 @@ func CmdCreate(args []string) int {
 		return fatalf("%v", err)
 	}
 	imgDistro, imgVersion, _ := strings.Cut(spec, ":")
-	if !*bare && imgDistro != "" && image.LatestGolden(p.Images, imgDistro, imgVersion) == nil {
+	var golden *image.GoldenEntry
+	if !*bare && imgDistro != "" {
+		golden, err = image.LatestGolden(p.Images, imgDistro, imgVersion)
+		if err != nil {
+			return fatalf("golden catalog: %v", err)
+		}
+	}
+	if !*bare && imgDistro != "" && golden == nil {
 		stem := strings.ReplaceAll(spec, ":", "-") + "-" + native.Arch + ".qcow2"
 		if _, err := os.Stat(p.Images + "/" + stem); err != nil {
 			ref, err := image.Resolve(spec)
@@ -233,7 +250,7 @@ func CmdCreate(args []string) int {
 	body := map[string]any{
 		"name": *name, "image": spec, "user": *user,
 		"cpus": *cpus, "mem_mb": *mem, "disk_gb": *disk,
-		"start": !*noStart,
+		"start": !*noStart, "share_mode": *share,
 	}
 	if *bare {
 		body["no_golden"] = true
@@ -254,17 +271,21 @@ func CmdCreate(args []string) int {
 		body["smbios_spoof"] = true
 	}
 	var out vmInfoView
-	describeImage(spec, p)
+	if err := describeImage(spec, p, *bare); err != nil {
+		return fatalf("image: %v", err)
+	}
 	start := time.Now()
 	if err := c.Post("/v1/vms", body, &out); err != nil {
 		return fatalf("create: %v", err)
 	}
 	fmt.Printf("[2/5] disk+seed: overlay + cloud-init (done in %.1fs)\n", time.Since(start).Seconds())
-	fmt.Printf("[3/5] cluster: ip=%s via gateway\n[4/5] boot: qemu started\n", out.Spec.IP)
+	fmt.Printf("[3/5] cluster: ip=%s via gateway\n", out.Spec.IP)
 	fmt.Printf("created %s (user=%s ip=%s)\n", out.Spec.Name, out.Spec.User, out.Spec.IP)
 	if *noStart {
+		fmt.Println("not started (--no-start)")
 		return 0
 	}
+	fmt.Println("[4/5] boot: qemu started; waiting for provisioning and agent")
 	if *noWait {
 		fmt.Printf("provisioning in background; watch: pvm logs %s --follow\n", *name)
 		return 0
@@ -277,13 +298,17 @@ func CmdCreate(args []string) int {
 	return 0
 }
 
-func describeImage(spec string, p *paths.Paths) {
+func describeImage(spec string, p *paths.Paths, bare bool) error {
 	kind := "base"
 	file := ""
 	var size int64
 	distro, version, ok := strings.Cut(spec, ":")
-	if ok {
-		if g := image.LatestGolden(p.Images, distro, version); g != nil {
+	if ok && !bare {
+		g, err := image.LatestGolden(p.Images, distro, version)
+		if err != nil {
+			return err
+		}
+		if g != nil {
 			kind = fmt.Sprintf("golden v%d", g.Version)
 			file = g.File
 			if fi, err := os.Stat(p.Images + "/golden/" + g.File); err == nil {
@@ -297,11 +322,11 @@ func describeImage(spec string, p *paths.Paths) {
 		if fi, err := os.Stat(p.Images + "/" + stem); err == nil {
 			size = fi.Size()
 		} else {
-			fmt.Printf("[1/5] image: %s (MISSING - fetch first: pvm image fetch %s)\n", spec, spec)
-			return
+			return fmt.Errorf("image missing; run `pvm image fetch %s`", spec)
 		}
 	}
 	fmt.Printf("[1/5] image: %s (%s, %.1fG)\n", spec, kind, float64(size)/1e9)
+	return nil
 }
 
 func promptUsername() string {
@@ -521,7 +546,7 @@ func CmdSSH(args []string) int {
 		"-o", "IdentitiesOnly=yes",
 		"-o", "IdentityAgent=none",
 		"-o", "ForwardAgent=no",
-		"-i", p.SSHKey(),
+		"-i", (&vm.Spec{SSHKeyName: info.Spec.SSHKeyName}).SSHKeyPath(p),
 		// host keys rotate freely (fresh VMs, reused IPs/ports)
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
@@ -539,7 +564,7 @@ func CmdSSH(args []string) int {
 		// hop ssh WITHOUT our flags (default known_hosts, no key), so
 		// build the ProxyCommand by hand.
 		proxy := fmt.Sprintf("ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -W %%h:%%p -p %d %s@127.0.0.1",
-			sshShellQuote(p.SSHKey()), info.GatewaySSH, info.GatewayUser)
+			sshShellQuote((&vm.Spec{SSHKeyName: info.GatewaySSHKeyName}).SSHKeyPath(p)), info.GatewaySSH, info.GatewayUser)
 		sshArgs = append(sshArgs, "-o", "ProxyCommand="+proxy)
 		target = fmt.Sprintf("%s@%s", info.Spec.User, info.Spec.IP)
 	}

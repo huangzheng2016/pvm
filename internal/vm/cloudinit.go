@@ -13,10 +13,11 @@ const (
 )
 
 type GuestMount struct {
-	Tag     string
-	Host    string
-	Guest   string
-	Profile string `json:"profile,omitempty"`
+	Tag      string
+	Host     string
+	Guest    string
+	Profile  string `json:"profile,omitempty"`
+	ReadOnly bool   `json:"read_only,omitempty"`
 }
 
 func GuestMountOptions(profile string) (string, error) {
@@ -63,12 +64,21 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 		"mkdir -p /share",
 		fmt.Sprintf("mountpoint -q /share || mount -t 9p -o %s pvmshare /share", shareOptions),
 	}
+	if spec.ShareMode == ShareNone || spec.Role == "gateway" {
+		fstab = nil
+		runcmd = nil
+	}
 	for _, m := range mounts {
 		options, err := GuestMountOptions(m.Profile)
 		if err != nil {
 			return nil, err
 		}
-		fstab = append(fstab, fmt.Sprintf("%s %s 9p %s,rw,_netdev,nofail 0 0", m.Tag, m.Guest, options))
+		access := "rw"
+		if m.ReadOnly {
+			access = "ro"
+		}
+		options += "," + access
+		fstab = append(fstab, fmt.Sprintf("%s %s 9p %s,_netdev,nofail 0 0", m.Tag, m.Guest, options))
 		runcmd = append(runcmd,
 			"mkdir -p "+m.Guest,
 			fmt.Sprintf("mountpoint -q %s || mount -t 9p -o %s %s %s", m.Guest, options, m.Tag, m.Guest),
@@ -181,7 +191,7 @@ WantedBy=multi-user.target
 		"package_update": true,
 		"packages":       []string{"nftables", "iproute2"},
 		"runcmd": []string{
-			"mkdir -p /etc/pvm",
+			"install -d -m 0700 /etc/pvm",
 			"printf 'net.ipv4.ip_forward=1\\nnet.ipv4.conf.all.rp_filter=2\\nnet.ipv4.conf.default.rp_filter=2\\nnet.ipv6.conf.all.disable_ipv6=1\\n' > /etc/sysctl.d/99-pvm.conf",
 			"sysctl --system",
 			"systemctl daemon-reload",

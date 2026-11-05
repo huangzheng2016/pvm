@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/cluster"
+	"github.com/huangzheng2016/pvm/internal/keys"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
@@ -47,7 +50,7 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
-	if _, err := vm.Load(s.P, req.NewName); err == nil {
+	if req.NewName == name {
 		writeErr(w, 409, fmt.Errorf("vm %q already exists", req.NewName))
 		return
 	}
@@ -68,6 +71,22 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 	lb.Lock()
 	defer lb.Unlock()
 
+	// The destination may have been created while this request waited.
+	// Any existing directory, including one with an invalid spec, belongs
+	// to its creator and must never enter clone rollback.
+	if _, err := os.Lstat(s.P.VMDir(req.NewName)); err == nil {
+		writeErr(w, 409, fmt.Errorf("vm directory %q already exists", req.NewName))
+		return
+	} else if !errors.Is(err, os.ErrNotExist) {
+		writeErr(w, 500, fmt.Errorf("inspect clone destination: %w", err))
+		return
+	}
+	src, err = vm.Load(s.P, name)
+	if err != nil {
+		writeErr(w, 404, err)
+		return
+	}
+
 	if st, err := s.instance(src).Running(); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -76,29 +95,34 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cl := s.Clusters.Get(src.ClusterID)
-	if cl == nil {
-		writeErr(w, 500, fmt.Errorf("cluster %d for %s not found", src.ClusterID, name))
-		return
-	}
-	vnet, err := s.Clusters.AddVM(cl.ID, req.NewName)
+	cl, vnet, err := s.prepareCloneNetwork(src, req.NewName)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
+	spec := vm.CloneSpec(src, req.NewName, vnet.IP, vnet.MAC)
+	created := false
 	cleanup := func() error {
-		err := s.removeVMMember(cl.ID, req.NewName)
-		// The partial disk is untracked: always safe to remove, and the
-		// retry needs the directory gone.
-		_ = vm.Delete(s.P, req.NewName)
-		if err != nil {
-			return fmt.Errorf("membership cleanup incomplete (%v); retry the same clone to finish", err)
+		if err := s.removeVMMember(cl.ID, req.NewName); err != nil {
+			if created {
+				if saveErr := spec.Save(s.P); saveErr != nil {
+					return fmt.Errorf("membership cleanup incomplete (%v), recovery spec save failed (%v); repair state storage before removing the partial clone", err, saveErr)
+				}
+				s.cacheSpec(spec)
+				return fmt.Errorf("membership cleanup incomplete (%v); clone files retained; run `pvm rm %s` after repairing state storage", err, spec.Name)
+			}
+			return fmt.Errorf("membership cleanup incomplete (%v); no clone files were created; repair state storage and retry the clone", err)
+		}
+		if created {
+			if err := vm.Delete(s.P, req.NewName); err != nil {
+				return fmt.Errorf("clone file cleanup incomplete: %w", err)
+			}
 		}
 		return nil
 	}
 
-	spec := vm.CloneSpec(src, req.NewName, vnet.IP, vnet.MAC)
-	if err := vm.CloneDisk(s.P, s.TC, src, spec); err != nil {
+	created, err = vm.CloneDisk(s.P, s.TC, src, spec)
+	if err != nil {
 		if cerr := cleanup(); cerr != nil {
 			writeErr(w, 500, fmt.Errorf("clone failed (%v) and %v", err, cerr))
 			return
@@ -115,9 +139,7 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.resetStages(spec.Name)
-	s.mu.Lock()
-	s.vms[spec.Name] = spec
-	s.mu.Unlock()
+	s.cacheSpec(spec)
 
 	var added []*cluster.PortMap
 	// Inherit-ports commits under mapMu through the same validation as
@@ -144,10 +166,42 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, fmt.Errorf("cloned but start failed: %w", err))
 			return
 		}
-		s.ensureAgentAsync(spec)
 		s.maybeIdentityReset(spec)
 	}
 	writeJSON(w, 201, map[string]any{"spec": spec, "maps": added, "running": req.Start})
+}
+
+// prepareCloneNetwork pins the source's effective default before any clone
+// process can run. Explicit direct remains direct if the cluster default
+// changes later; global destination rules still apply to both VMs.
+func (s *Server) prepareCloneNetwork(src *vm.Spec, name string) (*cluster.Cluster, *cluster.VMNet, error) {
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
+	cl := s.Clusters.Get(src.ClusterID)
+	if cl == nil {
+		return nil, nil, fmt.Errorf("cluster %d for %s not found", src.ClusterID, src.Name)
+	}
+	if _, exists := cl.VMs[name]; exists {
+		return nil, nil, fmt.Errorf("cluster already contains %q; existing membership retained, inspect the VM state before cloning", name)
+	}
+	via := cl.VMExits[src.Name]
+	if via == "" {
+		via = cl.DefaultExit
+	}
+	if via == "" {
+		via = "direct"
+	}
+	vnet, err := s.Clusters.AddVM(cl.ID, name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := s.Clusters.SetVMExit(cl.ID, name, via); err != nil {
+		if rollbackErr := s.Clusters.RemoveVM(cl.ID, name); rollbackErr != nil {
+			return nil, nil, fmt.Errorf("clone route save failed (%v); membership rollback also failed (%v); no VM files were created", err, rollbackErr)
+		}
+		return nil, nil, fmt.Errorf("clone route save failed, membership rolled back: %w", err)
+	}
+	return cl, vnet, nil
 }
 
 // rollbackCloneVM removes a clone whose creation failed after the spec
@@ -164,14 +218,23 @@ func (s *Server) rollbackCloneVM(cl *cluster.Cluster, spec *vm.Spec) error {
 	// Clean up from the latest store, not just the inherited maps: a
 	// map committed for the clone after the snapshot must not orphan
 	// its relay.
-	s.removeVMMapsLocked(cl.ID, spec.Name)
-	_ = s.pushBounded(cl.ID)
-	_ = s.instance(spec).Stop()
-	s.removeLink(cl, spec.Name)
-	_ = vm.Delete(s.P, spec.Name)
+	if err := s.instance(spec).Stop(); err != nil {
+		return fmt.Errorf("cleanup could not stop VM: %w; run `pvm rm %s`", err, spec.Name)
+	}
+	if err := s.closeVMResources(spec.Name, cl); err != nil {
+		return fmt.Errorf("cleanup could not save membership removal: %w; run `pvm rm %s`", err, spec.Name)
+	}
+	pushErr := s.pushBounded(cl.ID)
+	linkErr := s.removeLink(cl, spec.Name)
+	if err := vm.Delete(s.P, spec.Name); err != nil {
+		return errors.Join(fmt.Errorf("cleanup could not remove VM files: %w; run `pvm rm %s`", err, spec.Name), pushErr, linkErr)
+	}
 	s.mu.Lock()
 	delete(s.vms, spec.Name)
 	s.mu.Unlock()
+	if err := errors.Join(pushErr, linkErr); err != nil {
+		return fmt.Errorf("clone removed but gateway cleanup incomplete: %w", err)
+	}
 	return nil
 }
 
@@ -205,26 +268,67 @@ func (s *Server) cloneInheritMaps(ctx context.Context, spec *vm.Spec, maps []clo
 
 // The source's netplan pins DHCP to the source MAC, so a clone has no
 // network until it is rewritten. Prefer the network-independent agent;
-// reset failures are logged without failing the clone.
+// readiness waits for the reset and exposes a retryable failure stage.
 func (s *Server) maybeIdentityReset(spec *vm.Spec) {
 	if !spec.IdentityReset {
 		return
 	}
+	// Capture identity, not the mutable cached spec.
+	name, createdAt := spec.Name, spec.CreatedAt
 	go func() {
-		if err := s.identityReset(spec); err != nil {
-			log.Printf("clone %s: identity reset failed: %v", spec.Name, err)
+		lock := qemu.LockVM(name)
+		lock.Lock()
+		defer lock.Unlock()
+		fresh, err := vm.Load(s.P, name)
+		if err != nil || !fresh.CreatedAt.Equal(createdAt) || !fresh.IdentityReset {
 			return
 		}
-		spec.IdentityReset = false
-		if err := spec.Save(s.P); err != nil {
-			log.Printf("clone %s: identity reset flag save: %v", spec.Name, err)
+		if err := s.identityReset(fresh); err != nil {
+			log.Printf("clone %s: identity reset failed: %v", name, err)
+			s.stage(name, "failed", fmt.Sprintf("identity reset failed: %v; retry `pvm start %s`", err, name))
+			return
 		}
-		log.Printf("clone %s: guest identity regenerated", spec.Name)
+		if err := s.completeIdentityReset(fresh); err != nil {
+			log.Printf("clone %s: identity reset flag save: %v", name, err)
+			s.stage(name, "failed", fmt.Sprintf("identity reset state save failed: %v; retry `pvm start %s`", err, name))
+			return
+		}
+		if ready, err := vm.Load(s.P, name); err == nil {
+			s.ensureAgentAsync(ready)
+		}
+		log.Printf("clone %s: guest identity regenerated", name)
 	}()
 }
 
+// completeIdentityReset runs under the VM lock and updates only the current
+// generation. A deleted or replaced VM cannot be recreated by a late task.
+func (s *Server) completeIdentityReset(spec *vm.Spec) error {
+	fresh, err := vm.Load(s.P, spec.Name)
+	if err != nil {
+		return err
+	}
+	if !fresh.CreatedAt.Equal(spec.CreatedAt) {
+		return fmt.Errorf("VM generation changed during identity reset")
+	}
+	fresh.IdentityReset = false
+	fresh.SSHKeyName = fresh.Name
+	if err := fresh.Save(s.P); err != nil {
+		return err
+	}
+	s.cacheSpec(fresh)
+	return nil
+}
+
 func (s *Server) identityReset(spec *vm.Spec) error {
-	script := identityResetScript(spec)
+	oldPub, err := keys.Ensure(spec.SSHKeyPath(s.P))
+	if err != nil {
+		return fmt.Errorf("load clone bootstrap key: %w", err)
+	}
+	newPub, err := keys.Ensure(s.P.VMSSHKey(spec.Name))
+	if err != nil {
+		return fmt.Errorf("create clone SSH key: %w", err)
+	}
+	script := identityResetScript(spec) + cloneAuthorizedKeyScript(spec.User, oldPub, newPub)
 
 	// Agent channel first (no network dependency) via the shared pool:
 	// QEMU's chardev accepts exactly one host connection, so dialing
@@ -265,6 +369,19 @@ func (s *Server) identityReset(spec *vm.Spec) error {
 // the NIC by name rather than the source MAC so later clones also boot
 // with networking. Only machine-level identifiers are reset; user files
 // are inherited verbatim.
+// Preserve user-managed keys while replacing the inherited pvm key.
+func cloneAuthorizedKeyScript(user, oldPub, newPub string) string {
+	oldFields := strings.Fields(oldPub)
+	newFields := strings.Fields(newPub)
+	script := fmt.Sprintf(
+		"set -e\nauth=%s\ntmp=$(mktemp \"$auth.pvm-XXXXXX\")\ntrap 'rm -f \"$tmp\"' EXIT\n"+
+			"awk -v old=%s -v new=%s '{ keep=1; for(i=1;i<=NF;i++) if($i==old || $i==new) keep=0; if(keep) print }' \"$auth\" > \"$tmp\"\n"+
+			"printf '%%s\\n' %s >> \"$tmp\"\n"+
+			"chown --reference=\"$auth\" \"$tmp\"\nchmod 600 \"$tmp\"\nmv -f \"$tmp\" \"$auth\"\n",
+		shellQuote("/home/"+user+"/.ssh/authorized_keys"), shellQuote(oldFields[1]), shellQuote(newFields[1]), shellQuote(strings.TrimSpace(newPub)))
+	return "$SUDO sh -c " + shellQuote(script) + "\n"
+}
+
 func identityResetScript(spec *vm.Spec) string {
 	return ubuntuIdentityResetScript(spec.Name)
 }

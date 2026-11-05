@@ -18,8 +18,14 @@ type auditCheck struct {
 // and never touches routes. The exit code is 1 only when a check reports
 // fail; warn and skipped do not block the workflow.
 func CmdAudit(args []string) int {
+	if len(args) == 2 && args[0] == "--privacy" {
+		return cmdPrivacyAudit(args[1])
+	}
+	if len(args) == 2 && args[1] == "--privacy" {
+		return cmdPrivacyAudit(args[0])
+	}
 	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: pvm audit <vm>")
+		fmt.Fprintln(os.Stderr, "usage: pvm audit <vm> [--privacy]")
 		return 2
 	}
 	p, err := mustPaths()

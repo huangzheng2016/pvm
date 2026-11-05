@@ -106,7 +106,8 @@ func RenderNFT(c *Config, uplink, br string, bypassIPs []string) string {
 	// infrastructure subnet, never to the internet; they must pass even
 	// for exit-routed VMs or every map breaks as soon as the VM is routed
 	// through an exit.
-	fmt.Fprintf(&b, "    iifname %q oifname %q ip daddr 10.0.2.0/24 accept\n", br, uplink)
+	fmt.Fprintf(&b, "    iifname %q oifname %q ip daddr 10.0.2.0/24 ct direction reply ct status dnat accept\n", br, uplink)
+	fmt.Fprintf(&b, "    iifname %q oifname %q ip daddr 10.0.2.0/24 drop\n", br, uplink)
 	// br0 -> uplink is default-deny: bypass destinations (direct CIDRs and
 	// learned direct-domain IPs) pass for every VM, then each direct VM's
 	// registered DHCP MAC/IP pair. Exit-routed VMs match neither and fail
