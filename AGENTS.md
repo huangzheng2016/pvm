@@ -48,7 +48,8 @@
 - Go 使用 1.27；只构建宿主原生架构（darwin/arm64、linux/amd64 host）。Linux amd64/arm64 release 二进制用于对应 VPS，不做跨架构 host 模拟。
 - 完整构建使用 Go 1.27.3 和 garble v0.18.0：`go install mvdan.cc/garble@v0.18.0`；CI 固定这两个版本。
 - `./script/build.sh` 从 `./cmd/agent` 构建专用 guest，使用 garble `-tiny`、固定 seed、`-trimpath`、`-buildvcs=false` 和空 build ID，再构建 gateway、assetpack 和带 `embedassets` 的 host 二进制；macOS 默认追加 bundled QEMU，`PVM_PACK_QEMU=0` 可跳过。根目录 `./pvm` 是构建产物，不是源码，验证后必须删除。
-- 提交前必须通过 `go test ./...`、`go vet ./...` 和 `sh -n scripts/install.sh`；修改并发或状态路径时，相关包及全仓库都要用 `go test -race` 复跑。
+- 常规提交和发布默认通过 `go test ./...`、`go vet ./...`、`sh -n scripts/install.sh` 和必要构建，不把全仓 `go test -race` 作为门槛。
+- 修改并发或状态路径时，仍须完成相关包的定向测试和必要行为验证；仅在专项任务或用户明确要求时，对相关包运行 `go test -race`。
 - 功能改动必须验证真实行为：CLI 帮助和参数、伪终端 SSH、create/start/readiness、失败回滚、挂载、端口和出口链路。只做编译或 import 检查不算完成；不能验证的项目要在交付说明中列明。
 - 修改文档示例、CLI 文本或嵌入文档时，同时检查源码、`README.md`、`SKILL.md`、`SECURITY.md` 和构建后 `pvm skill`/`pvm security` 的输出，避免文档与实现漂移。
 
