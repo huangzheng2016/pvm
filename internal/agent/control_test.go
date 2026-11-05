@@ -467,49 +467,120 @@ func waitBroker(t *testing.T, sock string) {
 	t.Fatal("broker did not start")
 }
 
+func waitControlAdmission(t *testing.T, c *Client, id string, write func(*Frame) error) {
+	t.Helper()
+	delivered := make(chan Frame, 1)
+	c.mu.Lock()
+	c.pending[id] = delivered
+	c.mu.Unlock()
+	if err := write(&Frame{ID: id, Op: OpPing, Done: true}); err != nil {
+		t.Fatalf("%s: %v", id, err)
+	}
+	select {
+	case f := <-delivered:
+		if f.ID != id || f.Error != "" {
+			t.Fatalf("%s: barrier response %+v", id, f)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s: admission barrier was not processed", id)
+	}
+}
+
 func TestControlConcurrencyLimit(t *testing.T) {
 	accepted := maxConcurrentControls + maxQueuedControls
 	const extra = 3
 	total := accepted + extra
 	entered := make(chan struct{}, total)
 	release := make(chan struct{})
-	srv, _ := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
+	var releaseOnce sync.Once
+	releaseHandlers := func() { releaseOnce.Do(func() { close(release) }) }
+	srv, c := controlPair(t, func(ctx context.Context, req *Frame) ([]byte, error) {
 		entered <- struct{}{}
 		<-release
 		return []byte(`{}`), nil
 	})
+	c.wmu.Lock()
+	locked := true
+	defer func() {
+		releaseHandlers()
+		if locked {
+			c.wmu.Unlock()
+		}
+	}()
 
-	// Eight handlers run and another maxQueuedControls wait in the queue.
-	// Only requests beyond that fixed capacity may be refused or dropped.
+	sent := make(chan struct{}, total)
+	srv.ctrlMu.Lock()
+	write := srv.sessionWrite
+	srv.sessionWrite = func(f *Frame) error {
+		if err := write(f); err != nil {
+			return err
+		}
+		sent <- struct{}{}
+		return nil
+	}
+	srv.ctrlMu.Unlock()
+
 	var wg sync.WaitGroup
 	errs := make(chan error, total)
-	for i := 0; i < total; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, err := srv.Control(ControlMapList, nil, 2*time.Second)
-			errs <- err
-		}()
+	control := func() {
+		defer wg.Done()
+		_, err := srv.Control(ControlMapList, nil, 2*time.Second)
+		errs <- err
 	}
-	// While the first maxConcurrentControls handlers are blocked, the
-	// overflow refusals must come back without queueing.
-	busy := 0
-	for busy < maxConcurrentControlRefusals {
-		select {
-		case err := <-errs:
-			if err != nil && strings.Contains(err.Error(), "control busy") {
-				busy++
-			} else {
-				t.Fatalf("expected control busy, got %v", err)
+	waitSent := func(stage string, count int) {
+		t.Helper()
+		for i := 0; i < count; i++ {
+			select {
+			case <-sent:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("%s: only %d/%d control writes completed", stage, i, count)
 			}
-		case <-time.After(5 * time.Second):
-			t.Fatalf("only %d/%d refusals arrived", busy, maxConcurrentControlRefusals)
 		}
 	}
-	close(release)
+
+	for i := 0; i < maxConcurrentControls; i++ {
+		wg.Add(1)
+		go control()
+	}
+	waitSent("handlers", maxConcurrentControls)
+	for i := 0; i < maxConcurrentControls; i++ {
+		select {
+		case <-entered:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("only %d handlers admitted", i)
+		}
+	}
+	for i := 0; i < maxQueuedControls; i++ {
+		wg.Add(1)
+		go control()
+	}
+	waitSent("queued", maxQueuedControls)
+	waitControlAdmission(t, c, "accepted-barrier", write)
+	if got := len(c.ctrlQueue); got != maxQueuedControls {
+		t.Fatalf("accepted queue = %d, want %d", got, maxQueuedControls)
+	}
+
+	for i := 0; i < extra; i++ {
+		wg.Add(1)
+		go control()
+	}
+	waitSent("overflow", extra)
+	// Holding c.wmu keeps both refusal writers from completing while the
+	// admission barrier confirms that the third overflow frame was dropped.
+	waitControlAdmission(t, c, "overflow-barrier", write)
+	if got := len(c.ctrlQueue); got != maxQueuedControls {
+		t.Fatalf("overflow queue = %d, want %d", got, maxQueuedControls)
+	}
+	if got := len(c.busySem); got != maxConcurrentControlRefusals {
+		t.Fatalf("refusal writers = %d, want %d", got, maxConcurrentControlRefusals)
+	}
+
+	releaseHandlers()
+	c.wmu.Unlock()
+	locked = false
 	wg.Wait()
 	close(errs)
-	done, dropped := 0, 0
+	done, busy, dropped := 0, 0, 0
 	for err := range errs {
 		switch {
 		case err == nil:
@@ -680,6 +751,17 @@ func TestControlFloodBoundedWithoutReading(t *testing.T) {
 	const flood = 100
 	entered := make(chan struct{}, flood)
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseHandlers := func() { releaseOnce.Do(func() { close(release) }) }
+	c.wmu.Lock()
+	locked := true
+	defer func() {
+		releaseHandlers()
+		if locked {
+			c.wmu.Unlock()
+		}
+		c.Close()
+	}()
 	var active, maxActive atomic.Int32
 	c.HandleControl(func(ctx context.Context, req *Frame) ([]byte, error) {
 		current := active.Add(1)
@@ -700,18 +782,18 @@ func TestControlFloodBoundedWithoutReading(t *testing.T) {
 	})
 	go c.readLoop()
 
-	floodErr := make(chan error, 1)
-	go func() {
-		w := newFrameWriter(guest)
-		for i := 0; i < flood; i++ {
-			if err := w.write(&Frame{ID: fmt.Sprintf("f%d", i), Op: OpControl, Action: ControlMapList}); err != nil {
-				floodErr <- err
-				return
+	w := newFrameWriter(guest)
+	next := 0
+	writeControls := func(count int) {
+		for i := 0; i < count; i++ {
+			id := fmt.Sprintf("f%d", next)
+			next++
+			if err := w.write(&Frame{ID: id, Op: OpControl, Action: ControlMapList}); err != nil {
+				t.Fatalf("flood write %s: %v", id, err)
 			}
 		}
-		floodErr <- nil
-	}()
-
+	}
+	writeControls(maxConcurrentControls)
 	for i := 0; i < maxConcurrentControls; i++ {
 		select {
 		case <-entered:
@@ -719,18 +801,12 @@ func TestControlFloodBoundedWithoutReading(t *testing.T) {
 			t.Fatalf("only %d handlers admitted", i)
 		}
 	}
-	if err := <-floodErr; err != nil {
-		t.Fatalf("flood write: %v", err)
-	}
-	// Reading this non-control barrier means every earlier control frame
-	// has completed admission while the queue and refusal writers are full.
-	if err := newFrameWriter(guest).write(&Frame{ID: "barrier", Op: OpPing}); err != nil {
-		t.Fatalf("flood barrier: %v", err)
-	}
-	deadline := time.Now().Add(5 * time.Second)
-	for (len(c.ctrlQueue) != maxQueuedControls || len(c.busySem) != maxConcurrentControlRefusals) && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	// The next maxQueuedControls frames fill the queue while all workers
+	// are blocked; the rest exercise bounded refusals and drops.
+	writeControls(flood - maxConcurrentControls)
+	// Holding c.wmu keeps the queue and refusal writers full while the
+	// admission barrier confirms every flood frame has been processed.
+	waitControlAdmission(t, c, "barrier", w.write)
 	if got := len(c.ctrlQueue); got != maxQueuedControls {
 		t.Fatalf("queued = %d, want %d", got, maxQueuedControls)
 	}
@@ -743,7 +819,9 @@ func TestControlFloodBoundedWithoutReading(t *testing.T) {
 
 	accepted := maxConcurrentControls + maxQueuedControls
 	expected := accepted + maxConcurrentControlRefusals
-	close(release)
+	releaseHandlers()
+	c.wmu.Unlock()
+	locked = false
 	r := bufio.NewReaderSize(guest, 64<<10)
 	results, busy := 0, 0
 	for i := 0; i < expected; i++ {
