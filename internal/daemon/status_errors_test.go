@@ -111,3 +111,29 @@ func TestSnapshotExistingArtifactsRejectedBeforeGuestChanges(t *testing.T) {
 		t.Fatal("snapshot rejection changed guest mounts")
 	}
 }
+
+func TestHandleGetDoesNotScanUnrelatedCorruptVM(t *testing.T) {
+	p := paths.New(t.TempDir())
+	if err := p.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(p.VMDir("dev1"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	spec := &vm.Spec{Name: "dev1", User: "dev", Role: "user"}
+	if err := spec.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(p.VMDir("broken"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(p.VMDir("broken"), "vm.json"), []byte("{"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(p, &config.Config{}, &qemu.Toolchain{}, qemu.AccelTCG, nil)
+	out := httptest.NewRecorder()
+	srv.handler().ServeHTTP(out, httptest.NewRequest("GET", "/v1/vms/dev1", nil))
+	if out.Code != 200 {
+		t.Fatalf("handleGet failed on unrelated corrupt VM: %d %s", out.Code, out.Body.String())
+	}
+}

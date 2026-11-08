@@ -6,6 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 )
 
 type CompactResult struct {
@@ -21,6 +24,14 @@ type diskImageInfo struct {
 	BackingFilename       string `json:"backing-filename"`
 	FullBackingFilename   string `json:"full-backing-filename"`
 	BackingFilenameFormat string `json:"backing-filename-format"`
+}
+
+// BackingPath normalizes a qcow2 backing file path for qemu-img on the current host.
+func BackingPath(path string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.ToSlash(path)
+	}
+	return path
 }
 
 func CompactDisk(tc *Toolchain, path string) (*CompactResult, error) {
@@ -53,13 +64,17 @@ func CompactDisk(tc *Toolchain, path string) (*CompactResult, error) {
 		if before.BackingFilenameFormat == "" {
 			return nil, fmt.Errorf("disk %s has an unknown backing format", path)
 		}
-		args = append(args, "-b", backing, "-F", before.BackingFilenameFormat)
+		args = append(args, "-b", BackingPath(backing), "-F", before.BackingFilenameFormat)
 	}
 	args = append(args, path, tmp)
-	if out, err := exec.Command(tc.Img, args...).CombinedOutput(); err != nil {
+	convCmd := exec.Command(tc.Img, args...)
+	fsutil.ConfigureHiddenCmd(convCmd)
+	if out, err := convCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("qemu-img convert: %v\n%s", err, out)
 	}
-	if out, err := exec.Command(tc.Img, "check", "-f", "qcow2", tmp).CombinedOutput(); err != nil {
+	checkCmd := exec.Command(tc.Img, "check", "-f", "qcow2", tmp)
+	fsutil.ConfigureHiddenCmd(checkCmd)
+	if out, err := checkCmd.CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("qemu-img check: %v\n%s", err, out)
 	}
 	after, err := readDiskImageInfo(tc, tmp)
@@ -109,7 +124,9 @@ func CompactDisk(tc *Toolchain, path string) (*CompactResult, error) {
 }
 
 func readDiskImageInfo(tc *Toolchain, path string) (*diskImageInfo, error) {
-	out, err := exec.Command(tc.Img, "info", "--output=json", path).CombinedOutput()
+	cmd := exec.Command(tc.Img, "info", "--output=json", path)
+	fsutil.ConfigureHiddenCmd(cmd)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("qemu-img info: %v\n%s", err, out)
 	}

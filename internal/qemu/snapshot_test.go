@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -359,5 +360,33 @@ func TestSnapshotRefusesExistingArtifacts(t *testing.T) {
 				t.Fatalf("saved state changed: %q, %v", got, err)
 			}
 		})
+	}
+}
+
+func TestCaptureSnapshotDiskPreservesBacking(t *testing.T) {
+	img, err := exec.LookPath("qemu-img")
+	if err != nil {
+		t.Skip("qemu-img not installed")
+	}
+	dir := t.TempDir()
+	base := filepath.Join(dir, "golden.qcow2")
+	overlay := filepath.Join(dir, "disk.qcow2")
+	snap := filepath.Join(dir, "disk.snap.qcow2")
+	if out, err := exec.Command(img, "create", "-f", "qcow2", base, "32M").CombinedOutput(); err != nil {
+		t.Fatalf("create base: %v: %s", err, out)
+	}
+	if out, err := exec.Command(img, "create", "-f", "qcow2", "-b", BackingPath(base), "-F", "qcow2", overlay).CombinedOutput(); err != nil {
+		t.Fatalf("create overlay: %v: %s", err, out)
+	}
+	tc := &Toolchain{Img: img}
+	if err := captureSnapshotDisk(tc, overlay, snap); err != nil {
+		t.Fatal(err)
+	}
+	info, err := readDiskImageInfo(tc, snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := canonicalBacking(snap, info); got != filepath.Clean(base) {
+		t.Fatalf("snapshot backing = %q, want %q", got, filepath.Clean(base))
 	}
 }

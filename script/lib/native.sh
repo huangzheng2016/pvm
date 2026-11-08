@@ -29,7 +29,7 @@ pvm_native_target() {
   fi
 
   case "$hostos/$hostarch" in
-    darwin/arm64|linux/amd64) ;;
+    darwin/arm64|linux/amd64|windows/amd64) ;;
     *)
       echo "error: unsupported host platform: $hostos/$hostarch" >&2
       return 1

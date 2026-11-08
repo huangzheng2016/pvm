@@ -12,7 +12,6 @@ import (
 
 	"github.com/huangzheng2016/pvm/internal/exit"
 	gwpolicy "github.com/huangzheng2016/pvm/internal/gw/policy"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -116,7 +115,7 @@ const ipTransparent = 19
 func setSocketTransparent(c syscall.RawConn) error {
 	var sockErr error
 	if err := c.Control(func(fd uintptr) {
-		sockErr = unix.SetsockoptInt(int(fd), 0, ipTransparent, 1)
+		sockErr = setsockoptIPInt(fd, ipTransparent, 1)
 	}); err != nil {
 		return err
 	}
@@ -541,7 +540,7 @@ func enableUDPOriginalDst(conn *net.UDPConn) error {
 	}
 	var sockErr error
 	if err := raw.Control(func(fd uintptr) {
-		sockErr = unix.SetsockoptInt(int(fd), 0, ipRecvOriginalDst, 1)
+		sockErr = setsockoptIPInt(fd, ipRecvOriginalDst, 1)
 	}); err != nil {
 		return err
 	}
@@ -549,18 +548,5 @@ func enableUDPOriginalDst(conn *net.UDPConn) error {
 }
 
 func originalDstUDP(oob []byte) (*net.UDPAddr, error) {
-	msgs, err := unix.ParseSocketControlMessage(oob)
-	if err != nil {
-		return nil, err
-	}
-	for i := range msgs {
-		m := &msgs[i]
-		if int(m.Header.Level) == 0 && int(m.Header.Type) == ipOriginalDst && len(m.Data) >= 16 {
-			return &net.UDPAddr{
-				IP:   net.IPv4(m.Data[4], m.Data[5], m.Data[6], m.Data[7]),
-				Port: int(m.Data[2])<<8 | int(m.Data[3]),
-			}, nil
-		}
-	}
-	return nil, fmt.Errorf("original destination control message not found")
+	return parseOriginalDstUDP(oob)
 }

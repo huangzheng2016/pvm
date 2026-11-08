@@ -2,8 +2,9 @@ package qemu
 
 import (
 	"fmt"
-	"golang.org/x/sys/unix"
+	"net"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
@@ -52,7 +53,7 @@ type Network struct {
 	SSHHostPort int
 	PoolBase    int // gateway only: hostfwd pool start (tcp+udp)
 	PoolSize    int
-	LinkSock    string // unix socket the gateway listens on
+	LinkSock    string // unix socket or tcp:host:port the gateway listens on
 	MAC         string
 }
 
@@ -66,7 +67,7 @@ type VMConfig struct {
 	ConsoleLog string
 	QMPSock    string
 	SerialSock string
-	AgentSock  string // unix socket for the virtio-serial agent channel; empty disables
+	AgentSock  string // unix socket or tcp:host:port for the virtio-serial agent channel; empty disables
 	Network    Network
 	// HotplugPorts pre-creates pcie-root-ports rp10..rp(9+N) so NICs can
 	// be hot-added later (pcie.0 itself does not support hotplug).
@@ -74,7 +75,7 @@ type VMConfig struct {
 	HotplugPorts int
 	ShareDir     string // selected host directory mounted at /share
 	NoShare      bool
-	MountDir     string // daemon-controlled symlinks for dynamic mount backends
+	MountDir     string // daemon-controlled symlinks/junctions for dynamic mount backends
 	ExtraMounts  []Mount
 	Accel        Accel
 	// Incoming, when set, appends `-incoming <value>` (RAM snapshot
@@ -92,13 +93,48 @@ type VMConfig struct {
 }
 
 func validateUnixSocketPath(name, path string) error {
-	if len(path) >= len(unix.RawSockaddrUnix{}.Path) {
-		return fmt.Errorf("%s Unix socket path is %d bytes (maximum %d); use a shorter PVM_HOME", name, len(path), len(unix.RawSockaddrUnix{}.Path)-1)
+	if strings.HasPrefix(path, "tcp:") {
+		return nil
+	}
+	maxLen := maxUnixSocketPathLen()
+	if len(path) >= maxLen {
+		return fmt.Errorf("%s Unix socket path is %d bytes (maximum %d); use a shorter PVM_HOME", name, len(path), maxLen-1)
 	}
 	return nil
 }
 
 func keyval(s string) string { return strings.ReplaceAll(s, ",", ",,") }
+
+func chardevSocketArg(id, endpoint, logfile string) string {
+	var base string
+	if after, ok := strings.CutPrefix(endpoint, "tcp:"); ok {
+		host, port, err := net.SplitHostPort(after)
+		if err != nil {
+			host, port = "127.0.0.1", after
+		}
+		base = fmt.Sprintf("socket,id=%s,host=%s,port=%s,server=on,wait=off", id, keyval(host), keyval(port))
+	} else {
+		base = fmt.Sprintf("socket,id=%s,path=%s,server=on,wait=off", id, keyval(endpoint))
+	}
+	if logfile != "" {
+		base += ",logfile=" + keyval(logfile)
+	}
+	return base
+}
+
+func qmpEndpointArg(endpoint string) string {
+	if after, ok := strings.CutPrefix(endpoint, "tcp:"); ok {
+		return fmt.Sprintf("tcp:%s,server=on,wait=off", keyval(after))
+	}
+	return fmt.Sprintf("unix:%s,server=on,wait=off", keyval(endpoint))
+}
+
+func rngObjectArg() string {
+	if runtime.GOOS == "windows" {
+		return "rng-builtin,id=rng0"
+	}
+	return "rng-random,id=rng0,filename=/dev/urandom"
+}
 
 // BuildArgs constructs the full qemu argv (excluding the binary itself).
 func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
@@ -145,13 +181,13 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 		"-m", strconv.Itoa(c.MemMB),
 		"-smp", strconv.Itoa(c.CPUs),
 		"-display", "none",
-		"-chardev", fmt.Sprintf("socket,id=ser0,path=%s,server=on,wait=off,logfile=%s", keyval(c.SerialSock), keyval(c.ConsoleLog)),
+		"-chardev", chardevSocketArg("ser0", c.SerialSock, c.ConsoleLog),
 		"-serial", "chardev:ser0",
 		"-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio,cache=writeback,discard=unmap,detect-zeroes=unmap", keyval(c.DiskPath)),
 		"-drive", fmt.Sprintf("file=%s,format=raw,if=virtio,readonly=on", keyval(c.SeedPath)),
-		"-object", "rng-random,id=rng0,filename=/dev/urandom",
+		"-object", rngObjectArg(),
 		"-device", "virtio-rng-pci,rng=rng0",
-		"-qmp", fmt.Sprintf("unix:%s,server=on,wait=off", keyval(c.QMPSock)),
+		"-qmp", qmpEndpointArg(c.QMPSock),
 	)
 	if c.GPU {
 		args = append(args, "-device", "virtio-gpu-pci")
@@ -166,7 +202,7 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 	if c.AgentSock != "" {
 		args = append(args,
 			"-device", "virtio-serial-pci",
-			"-chardev", fmt.Sprintf("socket,id=pvmagent,path=%s,server=on,wait=off", keyval(c.AgentSock)),
+			"-chardev", chardevSocketArg("pvmagent", c.AgentSock, ""),
 			"-device", "virtserialport,chardev=pvmagent,name=pvm.agent",
 		)
 	}
@@ -182,6 +218,13 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 			mf = ",multifunction=on"
 		}
 		args = append(args, "-device", fmt.Sprintf("pcie-root-port,id=rp%d,bus=pcie.0,addr=0x%x.%d,chassis=%d%s", 10+i, 8+i/8, i%8, i+1, mf))
+	}
+
+	if t != nil && !t.SupportsVirtio9p() {
+		if len(c.ExtraMounts) > 0 {
+			return nil, fmt.Errorf("current QEMU build does not support virtio-9p; use WSL2 mode or a QEMU build with VirtFS enabled")
+		}
+		return args, nil
 	}
 
 	fs := []Mount{{Tag: "pvmshare", HostPath: c.ShareDir}}
@@ -247,9 +290,17 @@ func netArgs(n Network) []string {
 		// device id nic0, netdev id net0: QMP object ids share one
 		// namespace, so they must differ. slot 0x1e keeps clear of the
 		// NIC hotplug range (0x8-0xf) and the 9p share ports (0x10+).
+		netdevSpec := fmt.Sprintf("stream,id=net0,server=off,addr.type=unix,addr.path=%s", keyval(n.LinkSock))
+		if after, ok := strings.CutPrefix(n.LinkSock, "tcp:"); ok {
+			host, port, err := net.SplitHostPort(after)
+			if err != nil {
+				host, port = "127.0.0.1", after
+			}
+			netdevSpec = fmt.Sprintf("stream,id=net0,server=off,addr.type=inet,addr.host=%s,addr.port=%s", keyval(host), keyval(port))
+		}
 		return []string{
 			"-device", "pcie-root-port,id=rp-link,bus=pcie.0,addr=0x1e.0,chassis=96",
-			"-netdev", fmt.Sprintf("stream,id=net0,server=off,addr.type=unix,addr.path=%s", keyval(n.LinkSock)),
+			"-netdev", netdevSpec,
 			"-device", fmt.Sprintf("virtio-net-pci,id=nic0,netdev=net0,mac=%s,bus=rp-link", keyval(n.MAC)),
 		}
 	default: // NetSlirp

@@ -46,7 +46,7 @@ func parseMountAddArgs(args []string) (mountAddOptions, error) {
 	if len(flags.Args()) != 1 {
 		return mountAddOptions{}, fmt.Errorf("%s", mountUsage)
 	}
-	host, guest, ok := strings.Cut(flags.Args()[0], ":")
+	host, guest, ok := splitMountSpec(flags.Args()[0])
 	if !ok || host == "" || guest == "" {
 		return mountAddOptions{}, fmt.Errorf("invalid mount %q, want <host-path>:<guest-path>", flags.Args()[0])
 	}
@@ -55,6 +55,33 @@ func parseMountAddArgs(args []string) (mountAddOptions, error) {
 		return mountAddOptions{}, err
 	}
 	return mountAddOptions{vmName: args[0], host: host, guest: guest, profile: normalized, readOnly: *readOnly}, nil
+}
+
+// splitMountSpec splits "<host-path>:<guest-path>" while preserving a leading
+// Windows drive letter such as "C:\work:/home/dev/work" or "C:/work:/mnt/work".
+func splitMountSpec(spec string) (string, string, bool) {
+	if hasWindowsDrivePrefix(spec) {
+		rest := spec[2:]
+		idx := strings.IndexByte(rest, ':')
+		if idx < 0 {
+			return "", "", false
+		}
+		return spec[:2+idx], rest[idx+1:], true
+	}
+	host, guest, ok := strings.Cut(spec, ":")
+	if !ok {
+		return "", "", false
+	}
+	return host, guest, true
+}
+
+func hasWindowsDrivePrefix(s string) bool {
+	if len(s) < 3 || s[1] != ':' {
+		return false
+	}
+	c := s[0]
+	isDrive := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	return isDrive && (s[2] == '\\' || s[2] == '/')
 }
 
 func writeMountTable(w io.Writer, mounts []mountView) error {

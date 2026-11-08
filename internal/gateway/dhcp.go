@@ -8,7 +8,6 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"syscall"
 )
 
 // DHCPServer is a minimal DHCPv4 server: fixed MAC->IP assignments from
@@ -49,21 +48,7 @@ func (s *DHCPServer) UpdateMap(byMAC map[string]VMEntry) {
 
 func (s *DHCPServer) Start() error {
 	lc := net.ListenConfig{
-		Control: func(_, _ string, c syscall.RawConn) error {
-			var err error
-			c.Control(func(fd uintptr) {
-				if err = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1); err != nil {
-					return
-				}
-				// broadcast replies otherwise follow the default route
-				// out the uplink and never reach the cluster segment.
-				// SO_BINDTODEVICE is linux-only (=25); the agent only
-				// ever runs on linux guests, and the constant keeps the
-				// package testable on darwin.
-				err = syscall.SetsockoptString(int(fd), syscall.SOL_SOCKET, 25, s.bindDev)
-			})
-			return err
-		},
+		Control: dhcpSocketControl(s.bindDev),
 	}
 	pc, err := lc.ListenPacket(context.Background(), "udp4", ":67")
 	if err != nil {

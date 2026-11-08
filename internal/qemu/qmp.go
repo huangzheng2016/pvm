@@ -55,10 +55,13 @@ type qmpResponse struct {
 }
 
 func DialQMP(sockPath string) (*QMP, error) {
-	if err := validateUnixSocketPath("QMP", sockPath); err != nil {
+	network, addr := "unix", sockPath
+	if after, ok := strings.CutPrefix(sockPath, "tcp:"); ok {
+		network, addr = "tcp", after
+	} else if err := validateUnixSocketPath("QMP", sockPath); err != nil {
 		return nil, err
 	}
-	conn, err := net.DialTimeout("unix", sockPath, 5*time.Second)
+	conn, err := net.DialTimeout(network, addr, 5*time.Second)
 	if err != nil {
 		return nil, err
 	}
@@ -301,14 +304,24 @@ func (q *QMP) NetdevAddStreamConnect(id, sockPath string) error {
 }
 
 func (q *QMP) netdevAddStream(id, sockPath string, server bool) error {
-	if err := validateUnixSocketPath("network link", sockPath); err != nil {
-		return err
+	var addr map[string]any
+	if after, ok := strings.CutPrefix(sockPath, "tcp:"); ok {
+		host, port, err := net.SplitHostPort(after)
+		if err != nil {
+			return fmt.Errorf("invalid network link address %q: %w", sockPath, err)
+		}
+		addr = map[string]any{"type": "inet", "host": host, "port": port}
+	} else {
+		if err := validateUnixSocketPath("network link", sockPath); err != nil {
+			return err
+		}
+		addr = map[string]any{"type": "unix", "path": sockPath}
 	}
 	_, err := q.Execute("netdev_add", map[string]any{
 		"type":   "stream",
 		"id":     id,
 		"server": server,
-		"addr":   map[string]any{"type": "unix", "path": sockPath},
+		"addr":   addr,
 	})
 	if err != nil && strings.Contains(err.Error(), "uplicate") {
 		return nil

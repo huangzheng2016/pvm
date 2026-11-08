@@ -1,21 +1,17 @@
+//go:build !windows
+
 package qemu
 
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 )
-
-// ProcIdentity prevents a recycled PID from being signalled by mistake.
-type ProcIdentity struct {
-	PID     int    `json:"pid"`
-	Started string `json:"started"` // ps lstart, opaque but stable per boot+pid
-	Comm    string `json:"comm"`
-	State   string `json:"state"`
-}
 
 func IdentityOf(pid int) (*ProcIdentity, error) {
 	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=,lstart=,stat=")
@@ -47,29 +43,32 @@ func IdentityOf(pid int) (*ProcIdentity, error) {
 	return &ProcIdentity{PID: pid, Started: started, Comm: comm, State: state}, nil
 }
 
-// Only a definitive not-found means dead; probe failures read as alive so
-// callers never kill or double-start on uncertainty.
-func (id *ProcIdentity) Alive() bool {
-	cur, err := IdentityOf(id.PID)
+// killVerified re-checks the recorded identity immediately before
+// signalling, so a recycled PID is never signalled by mistake.
+func killVerified(st *RunState, sig syscall.Signal) error {
+	if st.Ident == nil || st.PID <= 0 || st.PID != st.Ident.PID {
+		return fmt.Errorf("refusing to signal invalid process identity")
+	}
+	cur, err := IdentityOf(st.PID)
+	if errors.Is(err, errNoProc) {
+		return nil
+	}
 	if err != nil {
-		return err != errNoProc
+		return fmt.Errorf("cannot verify process %d before signalling: %w", st.PID, err)
 	}
-	if cur.State != "" && strings.HasPrefix(cur.State, "Z") {
-		return false
+	if startedWithoutState(cur.Started) != startedWithoutState(st.Ident.Started) || cur.Comm != st.Ident.Comm {
+		return nil
 	}
-	return startedWithoutState(cur.Started) == startedWithoutState(id.Started) && cur.Comm == id.Comm
+	if err := syscall.Kill(st.PID, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("kill(%d, %v): %w", st.PID, sig, err)
+	}
+	return nil
 }
 
-func startedWithoutState(started string) string {
-	fields := strings.Fields(started)
-	if len(fields) > 1 && len(fields[len(fields)-1]) <= 3 {
-		return strings.Join(fields[:len(fields)-1], " ")
-	}
-	return started
+func terminateGraceful(st *RunState) error {
+	return killVerified(st, syscall.SIGTERM)
 }
 
-type errT string
-
-func (e errT) Error() string { return string(e) }
-
-const errNoProc = errT("process not found")
+func terminateForce(st *RunState) error {
+	return killVerified(st, syscall.SIGKILL)
+}

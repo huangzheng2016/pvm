@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
@@ -94,6 +95,9 @@ func (s *Server) watchVMLoop(spec *vm.Spec, seq uint64) {
 		if time.Now().Before(deadline) {
 			continue
 		}
+		if s.vmReady(spec.Name) {
+			return
+		}
 		if _, err := s.sshRun(spec, "true"); err == nil {
 			return
 		}
@@ -153,6 +157,7 @@ func consoleSize(path string) int64 {
 func qemuCPUPercent(pid int) (float64, error) {
 	cmd := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "%cpu=")
 	cmd.Env = append(os.Environ(), "LC_ALL=C") // %cpu follows LC_NUMERIC
+	fsutil.ConfigureHiddenCmd(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		return 0, err

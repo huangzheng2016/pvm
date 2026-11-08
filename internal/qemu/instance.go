@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
@@ -118,7 +117,7 @@ func (in *Instance) startWithAccel(accel Accel) error {
 	cmd := exec.Command(in.Toolchain.System, args...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	fsutil.ConfigureDaemonCmd(cmd)
 	if err := cmd.Start(); err != nil {
 		return err
 	}
@@ -164,8 +163,12 @@ func (in *Instance) startWithAccel(accel Accel) error {
 			return
 		}
 		os.Remove(in.StatePath)
-		os.Remove(cfg.QMPSock)
-		os.Remove(cfg.SerialSock)
+		if !strings.HasPrefix(cfg.QMPSock, "tcp:") {
+			os.Remove(cfg.QMPSock)
+		}
+		if !strings.HasPrefix(cfg.SerialSock, "tcp:") {
+			os.Remove(cfg.SerialSock)
+		}
 	}()
 	return nil
 }
@@ -189,40 +192,18 @@ func (in *Instance) Stop() error {
 			return nil
 		}
 	}
-	if err := killVerified(st, syscall.SIGTERM); err != nil {
+	if err := terminateGraceful(st); err != nil {
 		return err
 	}
 	if waitDead(st.Ident, 10*time.Second) {
 		return nil
 	}
-	if err := killVerified(st, syscall.SIGKILL); err != nil {
+	if err := terminateForce(st); err != nil {
 		return err
 	}
 	// discard=unmap hole punching can keep a killed process in disk io for minutes.
 	if !waitDead(st.Ident, 2*time.Minute) && st.Ident.Alive() {
 		return fmt.Errorf("process %d still alive after SIGKILL", st.PID)
-	}
-	return nil
-}
-
-// killVerified re-checks the recorded identity immediately before
-// signalling, so a recycled PID is never signalled by mistake.
-func killVerified(st *RunState, sig syscall.Signal) error {
-	if st.Ident == nil || st.PID <= 0 || st.PID != st.Ident.PID {
-		return fmt.Errorf("refusing to signal invalid process identity")
-	}
-	cur, err := IdentityOf(st.PID)
-	if errors.Is(err, errNoProc) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("cannot verify process %d before signalling: %w", st.PID, err)
-	}
-	if startedWithoutState(cur.Started) != startedWithoutState(st.Ident.Started) || cur.Comm != st.Ident.Comm {
-		return nil
-	}
-	if err := syscall.Kill(st.PID, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
-		return fmt.Errorf("kill(%d, %v): %w", st.PID, sig, err)
 	}
 	return nil
 }

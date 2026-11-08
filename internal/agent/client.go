@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
@@ -52,7 +53,11 @@ func DialSock(sock string) (*Client, error) {
 }
 
 func DialSockContext(ctx context.Context, sock string) (*Client, error) {
-	conn, err := (&net.Dialer{}).DialContext(ctx, "unix", sock)
+	network, addr := "unix", sock
+	if after, ok := strings.CutPrefix(sock, "tcp:"); ok {
+		network, addr = "tcp", after
+	}
+	conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}

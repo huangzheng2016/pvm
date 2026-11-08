@@ -3,9 +3,11 @@ package gateway
 import (
 	"encoding/json"
 	"log"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +46,20 @@ type Config struct {
 	// Exits carries the connection defs for every exit referenced by
 	// Rules or VMExits (keyed by exit name).
 	Exits map[string]ExitDef `json:"exits,omitempty"`
+}
+
+func routingConfigEqual(a, b *Config) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return a.CIDR == b.CIDR &&
+		a.GwIP == b.GwIP &&
+		a.DNSUpstream == b.DNSUpstream &&
+		a.DefaultExit == b.DefaultExit &&
+		slices.Equal(a.VMs, b.VMs) &&
+		slices.Equal(a.Rules, b.Rules) &&
+		maps.Equal(a.VMExits, b.VMExits) &&
+		maps.EqualFunc(a.Exits, b.Exits, sameExitPeer)
 }
 
 type Agent struct {
@@ -142,6 +158,10 @@ func (a *Agent) Run() error {
 			a.cfg = &c
 			a.mu.Unlock()
 
+			var prevCfg Config
+			hasPrev := len(lastCfg) > 0 && json.Unmarshal(lastCfg, &prevCfg) == nil
+			routingUnchanged := hasPrev && routingConfigEqual(&prevCfg, &c)
+
 			// Only a fully applied generation is marked: any failed step
 			// keeps lastCfg stale so the next tick retries instead of
 			// running a partially applied config forever.
@@ -159,7 +179,7 @@ func (a *Agent) Run() error {
 					fail("dhcp", err)
 					dhcpSrv = nil
 				}
-			} else {
+			} else if !routingUnchanged {
 				dhcpSrv.UpdateMap(a.macIPMap())
 			}
 			if fdns == nil && c.DNSUpstream != "" {
@@ -176,6 +196,7 @@ func (a *Agent) Run() error {
 				} else {
 					fdns = f
 					fdns.RunDumpLoop("/run/pvm/fakeip.json", 3*time.Second)
+					routingUnchanged = false
 				}
 			}
 			if fdns != nil && fproxy == nil {
@@ -184,6 +205,7 @@ func (a *Agent) Run() error {
 					fail("fake proxy listen", err)
 				} else {
 					fproxy = p
+					routingUnchanged = false
 				}
 			}
 			if fdns != nil && fudp == nil {
@@ -192,6 +214,7 @@ func (a *Agent) Run() error {
 					fail("fake udp listen", err)
 				} else {
 					fudp = p
+					routingUnchanged = false
 				}
 			}
 			if fdns != nil && ficmp == nil {
@@ -200,9 +223,10 @@ func (a *Agent) Run() error {
 					fail("fake icmp listen", err)
 				} else {
 					ficmp = p
+					routingUnchanged = false
 				}
 			}
-			if fdns != nil {
+			if fdns != nil && !routingUnchanged {
 				fail("rules", fdns.SetRules(c.Rules))
 				// a rule that flipped direct -> proxy must not keep its
 				// previously learned bypass IPs.
@@ -228,7 +252,9 @@ func (a *Agent) Run() error {
 					ficmp.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
 				}
 			}
-			a.syncExits(&c)
+			if !routingUnchanged {
+				a.syncExits(&c)
+			}
 			if !applyErr {
 				lastCfg = raw
 				lastReconcile = time.Now()

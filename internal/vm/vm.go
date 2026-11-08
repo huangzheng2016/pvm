@@ -154,6 +154,15 @@ func (s *Spec) SharedDir(p *paths.Paths) string {
 	return p.Share
 }
 
+// HostUID returns a valid guest UID aligned with the host user (1000 on Windows where os.Getuid is -1).
+func HostUID() int {
+	uid := os.Getuid()
+	if uid < 0 {
+		return 1000
+	}
+	return uid
+}
+
 func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poolBase, poolSize int) qemu.VMConfig {
 	dir := s.dir(p)
 	mountDir := ""
@@ -185,8 +194,8 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 		SeedPath:     s.Seed(p),
 		VarsPath:     s.Vars(p),
 		ConsoleLog:   filepath.Join(dir, "console.log"),
-		QMPSock:      filepath.Join(dir, "qmp.sock"),
-		SerialSock:   filepath.Join(dir, "serial.sock"),
+		QMPSock:      p.QMPSock(s.Name),
+		SerialSock:   p.SerialSock(s.Name),
 		AgentSock:    p.AgentSock(s.Name),
 		Network:      net,
 		HotplugPorts: hotplug,
@@ -245,7 +254,9 @@ func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec) error {
 	}
 
 	overlay := spec.Disk(p)
-	out, err := exec.Command(tc.Img, "create", "-f", "qcow2", "-b", spec.BaseDisk, "-F", "qcow2", overlay).CombinedOutput()
+	createCmd := exec.Command(tc.Img, "create", "-f", "qcow2", "-b", qemu.BackingPath(spec.BaseDisk), "-F", "qcow2", overlay)
+	fsutil.ConfigureHiddenCmd(createCmd)
+	out, err := createCmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("qemu-img create: %v\n%s", err, out)
 	}
@@ -257,7 +268,9 @@ func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec) error {
 			return err
 		}
 		if spec.DiskGB > cur {
-			out, err := exec.Command(tc.Img, "resize", overlay, fmt.Sprintf("%dG", spec.DiskGB)).CombinedOutput()
+			resizeCmd := exec.Command(tc.Img, "resize", overlay, fmt.Sprintf("%dG", spec.DiskGB))
+			fsutil.ConfigureHiddenCmd(resizeCmd)
+			out, err := resizeCmd.CombinedOutput()
 			if err != nil {
 				return fmt.Errorf("qemu-img resize: %v\n%s", err, out)
 			}

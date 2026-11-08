@@ -2,9 +2,12 @@ package paths
 
 import (
 	"fmt"
+	"hash/fnv"
+	"net"
 	"os"
 	"path/filepath"
-	"syscall"
+	"runtime"
+	"strings"
 
 	"github.com/huangzheng2016/pvm/internal/native"
 )
@@ -60,6 +63,8 @@ func (p *Paths) Ensure() error {
 
 func (p *Paths) ConfigFile() string       { return filepath.Join(p.Home, "config.yaml") }
 func (p *Paths) DaemonSock() string       { return filepath.Join(p.Run, "daemon.sock") }
+func (p *Paths) DaemonAddr() string       { return filepath.Join(p.Run, "daemon.addr") }
+func (p *Paths) DaemonAdminToken() string { return filepath.Join(p.Run, "admin.token") }
 func (p *Paths) DaemonLock() string       { return filepath.Join(p.Run, "daemon.lock") }
 func (p *Paths) DaemonRunLock() string    { return filepath.Join(p.Run, "daemon.run.lock") }
 func (p *Paths) DaemonStopMark() string   { return filepath.Join(p.Run, "daemon.stopped") }
@@ -74,8 +79,47 @@ func (p *Paths) MountDir(name string) string {
 func (p *Paths) MountSlot(name string, slot int) string {
 	return filepath.Join(p.MountDir(name), fmt.Sprintf("slot%d", slot))
 }
+func (p *Paths) QMPSock(name string) string {
+	return SocketEndpoint(filepath.Join(p.VMDir(name), "qmp.sock"))
+}
+func (p *Paths) SerialSock(name string) string {
+	return SocketEndpoint(filepath.Join(p.VMDir(name), "serial.sock"))
+}
 func (p *Paths) AgentSock(name string) string {
-	return filepath.Join(p.VMDir(name), "agent.sock")
+	return SocketEndpoint(filepath.Join(p.VMDir(name), "agent.sock"))
+}
+
+// SocketEndpoint returns sockPath on Unix, or a stable loopback TCP endpoint
+// (tcp:127.0.0.1:<port>) on Windows where QEMU chardev/QMP/stream sockets
+// use inet sockets.
+func SocketEndpoint(sockPath string) string {
+	if runtime.GOOS != "windows" || strings.HasPrefix(sockPath, "tcp:") {
+		return sockPath
+	}
+	tcpFile := sockPath + ".tcp"
+	if b, err := os.ReadFile(tcpFile); err == nil {
+		if addr := strings.TrimSpace(string(b)); strings.HasPrefix(addr, "tcp:127.0.0.1:") {
+			return addr
+		}
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(filepath.Clean(sockPath)))
+	basePort := 40000 + int(h.Sum32()%15000)
+	port := basePort
+	for i := 0; i < 64; i++ {
+		cand := basePort + i
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cand))
+		if err == nil {
+			_ = ln.Close()
+			port = cand
+			break
+		}
+	}
+	addr := fmt.Sprintf("tcp:127.0.0.1:%d", port)
+	if fi, err := os.Stat(filepath.Dir(sockPath)); err == nil && fi.IsDir() {
+		_ = os.WriteFile(tcpFile, []byte(addr+"\n"), 0o600)
+	}
+	return addr
 }
 
 func (p *Paths) AgentBin() string {
@@ -93,13 +137,7 @@ func checkPrivateDir(path string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("pvm state directory must be a directory, not a symlink or file")
 	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Uid != uint32(os.Getuid()) {
-		return fmt.Errorf("pvm state directory is owned by another user; restore ownership before continuing")
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("pvm state directory is accessible to other users; restrict its permissions to 0700 before continuing")
-	}
-	return nil
+	return checkPrivateDirOS(info)
 }
 
 // CheckPermissions diagnoses existing state directories without changing user-selected paths.

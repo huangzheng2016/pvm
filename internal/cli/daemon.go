@@ -88,7 +88,13 @@ func CmdDaemon(args []string) int {
 		fmt.Printf("daemon: running\n  pid:     %v\n  version: %v\n  ready:   %v\n  uptime:  %v\n  accel:   %v\n  qemu:    %v (bundled=%v)\n  vms:     %v (%v running)\n",
 			st["pid"], st["version"], st["ready"], st["uptime"], st["accel"], st["qemu"], st["bundled"], st["vms"], st["running"])
 		if n, _ := st["tcg_fallback"].(float64); n > 0 {
-			fmt.Printf("  warning: %v vm(s) running under tcg fallback; host accel %v is unavailable (on macOS a reboot usually restores it)\n", n, st["accel"])
+			hint := "on macOS a reboot usually restores it"
+			if runtime.GOOS == "windows" {
+				hint = "enable Windows Hypervisor Platform (WHPX) and reboot, or use PVM_BACKEND=wsl"
+			} else if runtime.GOOS == "linux" {
+				hint = "check /dev/kvm permissions"
+			}
+			fmt.Printf("  warning: %v vm(s) running under tcg fallback; host accel %v is unavailable (%s)\n", n, st["accel"], hint)
 		}
 		return 0
 	case "install":

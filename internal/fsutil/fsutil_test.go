@@ -31,3 +31,21 @@ func TestAtomicWrite(t *testing.T) {
 		t.Errorf("temp files left behind: %v", entries)
 	}
 }
+
+func TestTryLock(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "test.lock")
+	l1, err := TryLock(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := TryLock(p); err == nil {
+		l1.Unlock()
+		t.Fatal("second TryLock on held lock must fail")
+	}
+	l1.Unlock()
+	l2, err := TryLock(p)
+	if err != nil {
+		t.Fatalf("TryLock after Unlock failed: %v", err)
+	}
+	l2.Unlock()
+}

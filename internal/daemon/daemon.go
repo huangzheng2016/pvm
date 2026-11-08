@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -314,26 +315,34 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) buildVMInfo(sp *vm.Spec) (vmInfo, error) {
+	info := vmInfo{Spec: sp}
+	if sp.Role != "gateway" && sp.ClusterID > 0 && s.Clusters != nil {
+		if cl := s.Clusters.Get(sp.ClusterID); cl != nil {
+			if gw, err := s.getSpec(cl.Gateway); err == nil {
+				info.GatewaySSH = gw.SSHPort
+				info.GatewayUser = gw.User
+				info.GatewaySSHKeyName = gw.SSHKeyName
+			}
+		}
+	}
+	if st, err := s.instance(sp).Running(); err != nil {
+		return info, fmt.Errorf("inspect VM %s: %w", sp.Name, err)
+	} else if st != nil {
+		info.Running = true
+		info.PID = st.PID
+		info.Uptime = time.Since(st.Started).Round(time.Second).String()
+	}
+	return info, nil
+}
+
 func (s *Server) collectInfos() ([]vmInfo, error) {
 	specs, listErr := vm.ListAll(s.P)
 	infos := make([]vmInfo, 0, len(specs))
 	for _, sp := range specs {
-		info := vmInfo{Spec: sp}
-		if sp.Role != "gateway" && sp.ClusterID > 0 {
-			if cl := s.Clusters.Get(sp.ClusterID); cl != nil {
-				if gw, err := s.getSpec(cl.Gateway); err == nil {
-					info.GatewaySSH = gw.SSHPort
-					info.GatewayUser = gw.User
-					info.GatewaySSHKeyName = gw.SSHKeyName
-				}
-			}
-		}
-		if st, err := s.instance(sp).Running(); err != nil {
-			listErr = errors.Join(listErr, fmt.Errorf("inspect VM %s: %w", sp.Name, err))
-		} else if st != nil {
-			info.Running = true
-			info.PID = st.PID
-			info.Uptime = time.Since(st.Started).Round(time.Second).String()
+		info, err := s.buildVMInfo(sp)
+		if err != nil {
+			listErr = errors.Join(listErr, err)
 		}
 		infos = append(infos, info)
 	}
@@ -355,20 +364,14 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, err)
 		return
 	}
-	infos, err := s.collectInfos()
+	info, err := s.buildVMInfo(spec)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	for _, info := range infos {
-		if info.Spec.Name == spec.Name {
-			info.Stages = s.stages(spec.Name)
-			info.Ready = info.Running && !info.Spec.IdentityReset && s.vmReady(spec.Name)
-			writeJSON(w, 200, info)
-			return
-		}
-	}
-	writeJSON(w, 200, vmInfo{Spec: spec, Stages: s.stages(spec.Name)})
+	info.Stages = s.stages(spec.Name)
+	info.Ready = info.Running && !info.Spec.IdentityReset && s.vmReady(spec.Name)
+	writeJSON(w, 200, info)
 }
 
 func (s *Server) handleClusters(w http.ResponseWriter, r *http.Request) {
@@ -502,7 +505,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	spec := &vm.Spec{
 		Name: req.Name, Image: req.Image, Role: "user", User: req.User,
-		GuestUID: os.Getuid(),
+		GuestUID: vm.HostUID(),
 		CPUs:     req.CPUs, MemMB: req.MemMB, DiskGB: req.DiskGB,
 		BaseDisk: base, Mounts: mounts, Golden: goldenVer, GPU: true, Balloon: true,
 		ClusterID: cl.ID, IP: vnet.IP, MAC: vnet.MAC,
@@ -1026,16 +1029,36 @@ func Run(p *paths.Paths, srv *Server) error {
 	defer runLock.Unlock()
 	os.WriteFile(p.DaemonRunLock(), []byte(fmt.Sprint(os.Getpid())), 0o600)
 
-	os.Remove(sock)
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		return err
+	var ln net.Listener
+	handler := srv.handler()
+	if runtime.GOOS == "windows" {
+		token, err := ensureAdminToken(p)
+		if err != nil {
+			return fmt.Errorf("prepare daemon admin token: %w", err)
+		}
+		ln, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return err
+		}
+		if err := fsutil.AtomicWrite(p.DaemonAddr(), []byte(ln.Addr().String()+"\n"), 0o600); err != nil {
+			ln.Close()
+			return err
+		}
+		defer os.Remove(p.DaemonAddr())
+		handler = daemonAuthMiddleware(token, handler)
+	} else {
+		os.Remove(sock)
+		ln, err = net.Listen("unix", sock)
+		if err != nil {
+			return err
+		}
+		os.Chmod(sock, 0o600)
+		defer os.Remove(sock)
 	}
-	os.Chmod(sock, 0o600)
 
 	serveCtx, cancelServe := context.WithCancel(context.Background())
 	defer cancelServe()
-	httpSrv := &http.Server{Handler: srv.handler(), ReadHeaderTimeout: 10 * time.Second, BaseContext: func(net.Listener) context.Context { return serveCtx }}
+	httpSrv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second, BaseContext: func(net.Listener) context.Context { return serveCtx }}
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigCh)
@@ -1060,7 +1083,6 @@ func Run(p *paths.Paths, srv *Server) error {
 		_ = httpSrv.Close()
 	}
 	ln.Close()
-	os.Remove(sock)
 	return nil
 }
 

@@ -84,7 +84,7 @@ Data:    dev VM -> gateway VM -> WireGuard tunnel -> exit-agent on VPS or Cloudf
 ## Supported images and hosts
 
 - Images: `ubuntu:26.04`, `ubuntu:24.04`, `debian:13`, and `debian:12`.
-- Hosts: macOS on arm64 (`darwin/arm64`) and Linux on amd64 (`linux/amd64`).
+- Hosts: macOS on arm64 (`darwin/arm64`), Linux on amd64 (`linux/amd64`), and Windows on amd64 (`windows/amd64` via WSL2 bridge or native QEMU/WHPX; selectable with `PVM_BACKEND=auto|wsl|native` or `backend` in `config.yaml`).
 - VMs always use the host's native architecture; cross-architecture emulation is not supported. Linux arm64 release binaries are for VPS exit agents, not for running a pvm host.
 
 ## Deploy an exit on a VPS

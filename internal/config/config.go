@@ -14,6 +14,7 @@ import (
 type Config struct {
 	Defaults    Defaults `yaml:"defaults"`
 	UpdateCheck bool     `yaml:"update_check"`
+	Backend     string   `yaml:"backend,omitempty"` // auto | native | wsl (Windows host mode)
 }
 
 type Defaults struct {
@@ -52,6 +53,11 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Defaults.DiskGB <= 0 {
 		cfg.Defaults.DiskGB = 20
+	}
+	switch cfg.Backend {
+	case "", "auto", "native", "wsl":
+	default:
+		return nil, fmt.Errorf("invalid backend %q (want auto, native, or wsl)", cfg.Backend)
 	}
 	return cfg, nil
 }

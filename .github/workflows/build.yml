@@ -91,6 +91,8 @@ jobs:
         run: |
           go test ./...
           go vet ./...
+          GOOS=windows GOARCH=amd64 go vet ./...
+          GOOS=windows GOARCH=amd64 go build ./...
           sh -n scripts/install.sh
           bash -n script/build.sh script/pack_assets.sh script/qemu/*.sh
           python3 -B -m unittest discover -s script/ci -p 'test_*.py'
@@ -116,6 +118,11 @@ jobs:
           export PVM_VERSION="$(cat VERSION)"
           if [ '${{ matrix.host }}' = 'true' ]; then
             ./script/build.sh
+            if [ '${{ matrix.out }}' = 'pvm_linux_amd64' ]; then
+              CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags embedassets -buildvcs=false -trimpath \
+                -ldflags "-s -w -buildid= -X github.com/huangzheng2016/pvm/internal/buildinfo.Version=${PVM_VERSION}" \
+                -o pvm.exe ./cmd/pvm
+            fi
           else
             CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "-s -w -buildid= -X github.com/huangzheng2016/pvm/internal/buildinfo.Version=${PVM_VERSION}" -o pvm ./cmd/pvm
           fi
@@ -130,6 +137,13 @@ jobs:
         with:
           name: raw-${{ matrix.out }}
           path: pvm
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: github.event_name == 'push' && matrix.out == 'pvm_linux_amd64'
+        with:
+          name: raw-pvm_windows_amd64
+          path: pvm.exe
           retention-days: 14
           if-no-files-found: error
 
@@ -240,6 +254,12 @@ jobs:
           name: raw-${{ matrix.out }}
           github-token: ${{ github.token }}
           run-id: ${{ needs.prepare.outputs.run_id || github.run_id }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        if: matrix.out == 'pvm_linux_amd64'
+        with:
+          name: raw-pvm_windows_amd64
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.prepare.outputs.run_id || github.run_id }}
       - name: Verify reused binary
         run: |
           chmod +x pvm
@@ -247,6 +267,11 @@ jobs:
           go version -m pvm > "$RUNNER_TEMP/build-info.txt"
           grep -F 'go1.27.3' "$RUNNER_TEMP/build-info.txt"
           grep -F 'github.com/huangzheng2016/pvm/cmd/pvm' "$RUNNER_TEMP/build-info.txt"
+          if [ '${{ matrix.out }}' = 'pvm_linux_amd64' ]; then
+            go version -m pvm.exe > "$RUNNER_TEMP/build-info-win.txt"
+            grep -F 'go1.27.3' "$RUNNER_TEMP/build-info-win.txt"
+            grep -F 'github.com/huangzheng2016/pvm/cmd/pvm' "$RUNNER_TEMP/build-info-win.txt"
+          fi
       - name: Record QEMU package inputs
         if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
         run: |
@@ -297,6 +322,13 @@ jobs:
             ./script/qemu/pack-runtime.sh
             codesign -s "${PVM_CODESIGN_IDENTITY:--}" --force pvm >/dev/null 2>&1
             tar -czf pvm-qemu-runtime-aarch64.tar.gz -C "$HOME/.pvm/runtime/qemu" aarch64
+          fi
+          if [ '${{ matrix.out }}' = 'pvm_linux_amd64' ]; then
+            command -v 7z >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y p7zip-full)
+            QEMU_METADATA_JSON=qemu-windows.json ./script/qemu/pack-windows-runtime.sh "$RUNNER_TEMP/win-qemu/x86_64"
+            tar -czf pvm-qemu-runtime-x86_64.tar.gz -C "$RUNNER_TEMP/win-qemu" x86_64
+            tar -czf pvm_windows_amd64.tar.gz pvm.exe
+            go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@"$CYCLONEDX_VERSION" bin -json -std -version "$(cat VERSION)" -output pvm_windows_amd64.cdx.json pvm.exe
           fi
           tar -czf '${{ matrix.out }}.tar.gz' pvm
           go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@"$CYCLONEDX_VERSION" bin -json -std -version "$(cat VERSION)" -output '${{ matrix.out }}.cdx.json' pvm

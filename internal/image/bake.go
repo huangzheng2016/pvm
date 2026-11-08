@@ -132,7 +132,7 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 	spec := &vm.Spec{
 		Name: name, Image: o.Spec, User: "baker",
 		ShareMode: vm.ShareNone,
-		GuestUID:  os.Getuid(),
+		GuestUID:  vm.HostUID(),
 		CPUs:      cpus, MemMB: mem, DiskGB: disk,
 		SSHPort: port, BaseDisk: base,
 	}

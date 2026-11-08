@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/cluster"
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/native"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 	"github.com/huangzheng2016/pvm/internal/vm"
@@ -133,7 +134,7 @@ func (s *Server) repairClientLink(cl *cluster.Cluster, spec *vm.Spec) error {
 	lock := qemu.LockVM(spec.Name)
 	lock.Lock()
 	defer lock.Unlock()
-	q, err := qemu.DialQMP(filepath.Join(s.P.VMDir(spec.Name), "qmp.sock"))
+	q, err := qemu.DialQMP(s.P.QMPSock(spec.Name))
 	if err != nil {
 		return fmt.Errorf("qmp: %w", err)
 	}
@@ -177,7 +178,7 @@ func (s *Server) createGatewayVM(cl *cluster.Cluster) (*vm.Spec, error) {
 	}
 	spec := &vm.Spec{
 		Name: cl.Gateway, Image: imgSpec, Role: "gateway",
-		User: "pvmgw", GuestUID: os.Getuid(),
+		User: "pvmgw", GuestUID: vm.HostUID(),
 		// Current Ubuntu initramfs decompression exceeds a 512 MiB guest.
 		CPUs: 1, MemMB: 1024, DiskGB: 10,
 		SSHPort: port, BaseDisk: base, ClusterID: cl.ID,
@@ -202,7 +203,7 @@ func (s *Server) ensureLink(cl *cluster.Cluster, vmName string) error {
 	} else if st == nil {
 		return fmt.Errorf("gateway %s not running", cl.Gateway)
 	}
-	q, err := qemu.DialQMP(filepath.Join(s.P.VMDir(cl.Gateway), "qmp.sock"))
+	q, err := qemu.DialQMP(s.P.QMPSock(cl.Gateway))
 	if err != nil {
 		return fmt.Errorf("gateway qmp: %w", err)
 	}
@@ -256,7 +257,7 @@ func (s *Server) removeLink(cl *cluster.Cluster, vmName string) error {
 	if st, err := s.instance(gwSpec).Running(); err != nil || st == nil {
 		return nil
 	}
-	q, err := qemu.DialQMP(filepath.Join(s.P.VMDir(cl.Gateway), "qmp.sock"))
+	q, err := qemu.DialQMP(s.P.QMPSock(cl.Gateway))
 	if err != nil {
 		return nil
 	}
@@ -467,6 +468,7 @@ func (s *Server) sshRunCtx(ctx context.Context, spec *vm.Spec, cmd string) (stri
 		return "", err
 	}
 	c := exec.CommandContext(ctx, "ssh", append(args, target, cmd)...)
+	fsutil.ConfigureHiddenCmd(c)
 	c.WaitDelay = 2 * time.Second
 	var stdout, stderr strings.Builder
 	c.Stdout = &stdout
@@ -495,6 +497,7 @@ func (s *Server) scpToCtx(ctx context.Context, spec *vm.Spec, local, remote stri
 	}
 	args := append(base, local, target+":"+remote)
 	c := exec.CommandContext(ctx, "scp", args...)
+	fsutil.ConfigureHiddenCmd(c)
 	c.WaitDelay = 2 * time.Second
 	out, err := c.CombinedOutput()
 	if err != nil {

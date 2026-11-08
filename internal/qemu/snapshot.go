@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -236,9 +237,8 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) (retErr error) {
 	// Capture the stopped disk before publishing the snapshot manifest.
 	snapTmp := sp.Snap + ".tmp"
 	os.Remove(snapTmp)
-	out, err := exec.Command(in.Toolchain.Img, "convert", "-f", "qcow2", "-O", "qcow2", in.Cfg.DiskPath, snapTmp).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("qemu-img convert: %v\n%s", err, out)
+	if err := captureSnapshotDisk(in.Toolchain, in.Cfg.DiskPath, snapTmp); err != nil {
+		return err
 	}
 	if err := os.Rename(snapTmp, sp.Snap); err != nil {
 		return err
@@ -335,7 +335,9 @@ func (in *Instance) PrepareRestore(vmDir string) (*SnapshotManifest, error) {
 			return nil, fmt.Errorf("preserve restore overlay: %w", err)
 		}
 	}
-	out, err := exec.Command(in.Toolchain.Img, "create", "-f", "qcow2", "-b", sp.Snap, "-F", "qcow2", sp.Restore).CombinedOutput()
+	createCmd := exec.Command(in.Toolchain.Img, "create", "-f", "qcow2", "-b", BackingPath(sp.Snap), "-F", "qcow2", sp.Restore)
+	fsutil.ConfigureHiddenCmd(createCmd)
+	out, err := createCmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("qemu-img create restore overlay: %v\n%s", err, out)
 	}
@@ -343,6 +345,25 @@ func (in *Instance) PrepareRestore(vmDir string) (*SnapshotManifest, error) {
 	in.Cfg.Incoming = fmt.Sprintf("exec:%s __snapshot-pipe-in %s", shellQuote(exe), shellQuote(sp.RAM))
 	in.Cfg.NoVirtFSDevices = true
 	return m, nil
+}
+
+func captureSnapshotDisk(tc *Toolchain, src, dst string) error {
+	args := []string{"convert", "-f", "qcow2", "-O", "qcow2"}
+	if info, err := readDiskImageInfo(tc, src); err == nil {
+		if backing := canonicalBacking(src, info); backing != "" && info.BackingFilenameFormat != "" {
+			if _, statErr := os.Stat(backing); statErr == nil {
+				args = append(args, "-B", BackingPath(backing), "-F", info.BackingFilenameFormat)
+			}
+		}
+	}
+	args = append(args, src, dst)
+	cmd := exec.Command(tc.Img, args...)
+	fsutil.ConfigureHiddenCmd(cmd)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("qemu-img convert: %v\n%s", err, out)
+	}
+	return nil
 }
 
 func (in *Instance) WaitRestored(vmDir string) error {
@@ -436,8 +457,23 @@ func RemoveSnapshot(vmDir string) error {
 	return nil
 }
 
-// shellQuote wraps s in single quotes for /bin/sh -c (qemu exec: URIs).
+// shellQuote quotes s for qemu exec: URIs (/bin/sh -c on Unix, cmd.exe /c on Windows).
 func shellQuote(s string) string {
+	if runtime.GOOS == "windows" {
+		if !strings.ContainsAny(s, " \t\n\r\"\\") {
+			return s
+		}
+		var b strings.Builder
+		b.WriteByte('"')
+		for _, r := range s {
+			if r == '\\' || r == '"' {
+				b.WriteByte('\\')
+			}
+			b.WriteRune(r)
+		}
+		b.WriteByte('"')
+		return b.String()
+	}
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 

@@ -3,6 +3,9 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,7 +13,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"syscall"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
@@ -31,10 +35,61 @@ func NewClient(p *paths.Paths) *Client {
 			Timeout: 300 * time.Second, // desktop first-start and VM stop grace can both exceed 2min
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					if runtime.GOOS == "windows" {
+						b, err := os.ReadFile(p.DaemonAddr())
+						if err != nil {
+							return nil, err
+						}
+						return (&net.Dialer{}).DialContext(ctx, "tcp", strings.TrimSpace(string(b)))
+					}
 					return (&net.Dialer{}).DialContext(ctx, "unix", p.DaemonSock())
 				},
 			},
 		},
+	}
+}
+
+func ensureAdminToken(p *paths.Paths) (string, error) {
+	path := p.DaemonAdminToken()
+	if data, err := os.ReadFile(path); err == nil {
+		if token := strings.TrimSpace(string(data)); token != "" {
+			return token, nil
+		}
+	}
+	var buf [32]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	token := hex.EncodeToString(buf[:])
+	if err := fsutil.AtomicWrite(path, []byte(token+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func daemonAuthMiddleware(token string, next http.Handler) http.Handler {
+	want := []byte("Bearer " + token)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), want) != 1 {
+			writeErr(w, http.StatusUnauthorized, fmt.Errorf("missing or invalid daemon admin token"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (c *Client) setAuthHeader(req *http.Request) {
+	if runtime.GOOS != "windows" || req.URL.Path == "/v1/health" {
+		return
+	}
+	if data, err := os.ReadFile(c.P.DaemonAdminToken()); err == nil {
+		if token := strings.TrimSpace(string(data)); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 	}
 }
 
@@ -104,7 +159,7 @@ func Ensure(p *paths.Paths) (*Client, error) {
 	cmd := exec.Command(exe, "daemon", "run")
 	cmd.Stdout = logf
 	cmd.Stderr = logf
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	fsutil.ConfigureDaemonCmd(cmd)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("spawn daemon: %w", err)
 	}
@@ -137,7 +192,12 @@ func waitHealthy(c *Client, d time.Duration) bool {
 }
 
 func (c *Client) Get(path string, out any) error {
-	resp, err := c.http.Get("http://d" + path)
+	req, err := http.NewRequest("GET", "http://d"+path, nil)
+	if err != nil {
+		return err
+	}
+	c.setAuthHeader(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
 	}
@@ -154,7 +214,13 @@ func (c *Client) Post(path string, body, out any) error {
 		}
 		rdr = bytes.NewReader(data)
 	}
-	resp, err := c.http.Post("http://d"+path, "application/json", rdr)
+	req, err := http.NewRequest("POST", "http://d"+path, rdr)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.setAuthHeader(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
 	}
@@ -167,6 +233,7 @@ func (c *Client) Delete(path string, out any) error {
 	if err != nil {
 		return err
 	}
+	c.setAuthHeader(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -185,7 +252,13 @@ func (c *Client) PostStream(path string, body any) (*http.Response, error) {
 		}
 		rdr = bytes.NewReader(data)
 	}
-	resp, err := c.http.Post("http://d"+path, "application/json", rdr)
+	req, err := http.NewRequest("POST", "http://d"+path, rdr)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.setAuthHeader(req)
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
 	}

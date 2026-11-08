@@ -5,19 +5,22 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 )
 
 type Accel string
 
 const (
-	AccelHVF Accel = "hvf"
-	AccelKVM Accel = "kvm"
-	AccelTCG Accel = "tcg"
+	AccelHVF  Accel = "hvf"
+	AccelKVM  Accel = "kvm"
+	AccelWHPX Accel = "whpx"
+	AccelTCG  Accel = "tcg"
 )
 
 func ParseAccel(s string) (Accel, bool) {
 	switch Accel(s) {
-	case AccelHVF, AccelKVM, AccelTCG:
+	case AccelHVF, AccelKVM, AccelWHPX, AccelTCG:
 		return Accel(s), true
 	}
 	return "", false
@@ -46,6 +49,10 @@ func Detect(t *Toolchain, goos string) Accel {
 			f.Close()
 			return AccelKVM
 		}
+	case "windows":
+		if probe(t, "-machine", "q35,accel=whpx") {
+			return AccelWHPX
+		}
 	}
 	return AccelTCG
 }
@@ -53,13 +60,14 @@ func Detect(t *Toolchain, goos string) Accel {
 // probe starts qemu briefly with the given machine args; if it is still
 // alive after a short delay the accelerator works.
 func probe(t *Toolchain, args ...string) bool {
-	if t == nil {
+	if t == nil || t.System == "" {
 		return false
 	}
 	args = append(args, "-display", "none", "-S")
 	cmd := exec.Command(t.System, args...)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
+	fsutil.ConfigureHiddenCmd(cmd)
 	if err := cmd.Start(); err != nil {
 		return false
 	}
@@ -76,10 +84,14 @@ func probe(t *Toolchain, args ...string) bool {
 }
 
 func (a Accel) Args() []string {
-	if a == AccelTCG {
+	switch a {
+	case AccelTCG:
 		return []string{"-accel", "tcg,thread=multi", "-cpu", "max"}
+	case AccelWHPX:
+		return []string{"-accel", "whpx", "-cpu", "max"}
+	default:
+		return []string{"-accel", string(a), "-cpu", "host"}
 	}
-	return []string{"-accel", string(a), "-cpu", "host"}
 }
 
 func (a Accel) Fallback() (Accel, bool) {
@@ -92,8 +104,15 @@ func (a Accel) Fallback() (Accel, bool) {
 // HV_NO_DEVICE means macOS Hypervisor.framework refuses new VMs (typically
 // after long uptime / sleep cycles) until the host reboots.
 func FallbackHint(err error) string {
-	if err != nil && strings.Contains(err.Error(), "HV_NO_DEVICE") {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "HV_NO_DEVICE") {
 		return " (macOS Hypervisor.framework is refusing new VMs; reboot the host to restore hardware acceleration)"
+	}
+	if strings.Contains(msg, "WHPX:") || strings.Contains(msg, "Windows Hypervisor Platform") {
+		return " (Windows Hypervisor Platform is unavailable; enable it in Windows Features and reboot to restore hardware acceleration)"
 	}
 	return ""
 }

@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/buildinfo"
@@ -277,7 +276,7 @@ func (s *Server) runExec(serveCtx context.Context, f *Frame, session *execSessio
 	}
 	cmd := exec.CommandContext(ctx, f.Cmd[0], f.Cmd[1:]...)
 	// own process group so a timeout kills the whole tree
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureExecProcessGroup(cmd)
 
 	stdinW, err := cmd.StdinPipe()
 	if err != nil {
@@ -295,7 +294,7 @@ func (s *Server) runExec(serveCtx context.Context, f *Frame, session *execSessio
 		return
 	}
 	cmd.Cancel = func() error {
-		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		err := killExecProcessGroup(cmd)
 		// Descendants can retain these pipes while cancellation races with fork.
 		// Closing our ends lets Wait reap the leader without waiting for EOF.
 		stdinW.Close()
@@ -388,7 +387,7 @@ func (s *Server) runExec(serveCtx context.Context, f *Frame, session *execSessio
 	if ctx.Err() != nil {
 		// A child created concurrently with the first group signal may survive
 		// it. The reaped leader can no longer create additional children.
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = killExecProcessGroup(cmd)
 	}
 	close(stop)
 	stdinW.Close()

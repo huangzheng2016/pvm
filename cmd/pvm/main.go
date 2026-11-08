@@ -113,6 +113,12 @@ func main() {
 		fmt.Printf(usage, buildinfo.Version)
 		return
 	}
+	if delegate, err := cli.ShouldDelegateToWSL(os.Args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "pvm: %v\n", err)
+		os.Exit(1)
+	} else if delegate {
+		os.Exit(cli.DelegateToWSL(os.Args[1:]))
+	}
 	switch os.Args[1] {
 	case "audit", "doctor", "route", "upgrade", "version", "--version", "-v", "skill", "security", "exit-agent", "agent", "gateway", "__snapshot-pipe-out", "__snapshot-pipe-in":
 	default:

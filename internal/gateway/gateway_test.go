@@ -260,3 +260,22 @@ func TestRenderNFTIPv6Drop(t *testing.T) {
 		t.Errorf("ipv6 uplink drop missing\n%s", out)
 	}
 }
+
+func TestRoutingConfigEqual(t *testing.T) {
+	base := &Config{
+		CIDR: "100.99.1.0/24", GwIP: "100.99.1.1", DNSUpstream: "10.0.2.3",
+		VMs:     []VMEntry{{Name: "dev1", IP: "100.99.1.10", MAC: "52:54:00:01:00:0a"}},
+		Maps:    []MapEntry{{HostPort: 30000, VMIP: "100.99.1.10", GuestPort: 80, Proto: "tcp"}},
+		VMExits: map[string]string{"dev1": "my-exit"},
+	}
+	mapsOnly := *base
+	mapsOnly.Maps = []MapEntry{{HostPort: 30001, VMIP: "100.99.1.10", GuestPort: 8080, Proto: "tcp"}}
+	if !routingConfigEqual(base, &mapsOnly) {
+		t.Fatal("map-only change must report routingConfigEqual = true")
+	}
+	exitChanged := *base
+	exitChanged.DefaultExit = "my-exit"
+	if routingConfigEqual(base, &exitChanged) {
+		t.Fatal("default exit change must report routingConfigEqual = false")
+	}
+}

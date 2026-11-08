@@ -182,6 +182,7 @@ func CmdDoctor(args []string) int {
 		}
 		checks = append(checks, auditCheck{item.name, status, fmt.Sprintf("%d inconsistencies; identifiers withheld", item.count)})
 	}
+	checks = append(checks, windowsDoctorChecks(p)...)
 	checks = append(checks, auditCheck{"runtime", "skipped", "read-only disk snapshot; active relays and applied gateway rules are not inspected"})
 	return printAudit(os.Stdout, checks)
 }

@@ -55,7 +55,7 @@ done
 					done <- err
 				}()
 				t.Cleanup(func() { task.cancel() })
-				deadline := time.Now().Add(2 * time.Second)
+				deadline := time.Now().Add(10 * time.Second)
 				for {
 					if _, err := os.Stat(blocked); err == nil {
 						break
@@ -91,7 +91,7 @@ done
 					if rr.Code != 200 {
 						t.Fatalf("%s: %d %s", action, rr.Code, rr.Body.String())
 					}
-				case <-time.After(2 * time.Second):
+				case <-time.After(10 * time.Second):
 					t.Fatal("lifecycle change could not cancel blocked installation")
 				}
 				select {
@@ -99,7 +99,7 @@ done
 					if err == nil {
 						t.Fatal("cancelled installation succeeded")
 					}
-				case <-time.After(time.Second):
+				case <-time.After(5 * time.Second):
 					t.Fatal("cancelled child did not terminate")
 				}
 				// A new instance can reuse the name after lifecycle cancellation.

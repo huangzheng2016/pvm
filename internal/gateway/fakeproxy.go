@@ -8,9 +8,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"unsafe"
-
-	"golang.org/x/sys/unix"
 
 	"github.com/huangzheng2016/pvm/internal/exit"
 	gwpolicy "github.com/huangzheng2016/pvm/internal/gw/policy"
@@ -402,7 +399,7 @@ func soMark(mark int) func(network, address string, c syscall.RawConn) error {
 	return func(network, address string, c syscall.RawConn) error {
 		var serr error
 		err := c.Control(func(fd uintptr) {
-			serr = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, soMarkOpt, mark)
+			serr = setsockoptMark(fd, mark)
 		})
 		if err != nil {
 			return err
@@ -441,17 +438,7 @@ func originalDst(conn *net.TCPConn) (*net.TCPAddr, error) {
 	var addr *net.TCPAddr
 	var serr error
 	if err := raw.Control(func(fd uintptr) {
-		var mreq [16]byte
-		size := uint32(len(mreq))
-		// getsockopt(SOL_IP, SO_ORIGINAL_DST) -> sockaddr_in
-		_, _, errno := syscall.Syscall6(syscall.SYS_GETSOCKOPT, fd, 0, soOriginalDst,
-			uintptr(unsafe.Pointer(&mreq[0])), uintptr(unsafe.Pointer(&size)), 0)
-		if errno != 0 {
-			serr = errno
-			return
-		}
-		port := int(mreq[2])<<8 | int(mreq[3])
-		addr = &net.TCPAddr{IP: net.IPv4(mreq[4], mreq[5], mreq[6], mreq[7]), Port: port}
+		addr, serr = getsockoptOriginalDst(fd)
 	}); err != nil {
 		return nil, err
 	}

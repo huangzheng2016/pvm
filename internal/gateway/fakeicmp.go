@@ -12,7 +12,6 @@ import (
 
 	"github.com/huangzheng2016/pvm/internal/exit"
 	gwpolicy "github.com/huangzheng2016/pvm/internal/gw/policy"
-	"golang.org/x/sys/unix"
 )
 
 const (
@@ -637,7 +636,7 @@ func enableIPOriginalDst(conn *net.IPConn) error {
 	}
 	var sockErr error
 	if err := raw.Control(func(fd uintptr) {
-		sockErr = unix.SetsockoptInt(int(fd), 0, ipRecvOriginalDst, 1)
+		sockErr = setsockoptIPInt(fd, ipRecvOriginalDst, 1)
 	}); err != nil {
 		return err
 	}

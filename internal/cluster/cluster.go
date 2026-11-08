@@ -11,6 +11,7 @@ import (
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/gw/rules"
+	"github.com/huangzheng2016/pvm/internal/paths"
 )
 
 const (
@@ -202,7 +203,7 @@ func (s *Store) LinksDir(id int) string {
 }
 
 func (s *Store) LinkSock(id int, vmName string) string {
-	return filepath.Join(s.LinksDir(id), vmName+".sock")
+	return paths.SocketEndpoint(filepath.Join(s.LinksDir(id), vmName+".sock"))
 }
 
 // Dell's OUI hides QEMU's hypervisor vendor tell from guests reading

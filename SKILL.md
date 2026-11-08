@@ -11,7 +11,7 @@ For security boundaries, credential handling, isolation risks, and verification,
 
 ## Architecture boundary
 
-pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, linux/amd64 runs amd64 VMs. Build artifacts contain guest binaries and the QEMU runtime for the current host architecture only — no cross-arch emulation or packages.
+pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, linux/amd64 and windows/amd64 run amd64 VMs. On Windows, pvm supports both delegating to a WSL2 Linux pvm instance (`PVM_BACKEND=wsl`) and running native Windows QEMU with WHPX (`PVM_BACKEND=native`, or `auto`). Build artifacts contain guest binaries and the QEMU runtime for the current host architecture only — no cross-arch emulation or packages.
 
 ## Prerequisites
 
@@ -204,7 +204,7 @@ pvm release binaries are single files from GitHub Releases. Tags publish archite
 
 ```bash
 VPS=root@vps.example.com
-TAG=v1.0.1
+TAG=v1.1.0
 ASSET=pvm_linux_amd64.tar.gz   # use pvm_linux_arm64.tar.gz for an arm64 VPS
 REPO=huangzheng2016/pvm
 WORK=$(mktemp -d)

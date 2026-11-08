@@ -70,9 +70,12 @@ func CmdDesktop(args []string) int {
 		fmt.Println("WARNING: noVNC is listening on 0.0.0.0; anyone who can reach this host can attempt the VNC password")
 	}
 	if *openBrowser {
-		if runtime.GOOS == "darwin" {
+		switch runtime.GOOS {
+		case "darwin":
 			exec.Command("open", v.URL).Start()
-		} else {
+		case "windows":
+			exec.Command("rundll32", "url.dll,FileProtocolHandler", v.URL).Start()
+		default:
 			exec.Command("xdg-open", v.URL).Start()
 		}
 	}

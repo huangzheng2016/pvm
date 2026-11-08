@@ -2,7 +2,6 @@ package qemu
 
 import (
 	"errors"
-	"golang.org/x/sys/unix"
 	"net"
 	"os"
 	"os/exec"
@@ -343,12 +342,13 @@ func TestBuildArgsCommaPathsWithQEMU(t *testing.T) {
 }
 
 func TestBuildArgsRejectsLongUnixSockets(t *testing.T) {
+	maxLen := maxUnixSocketPathLen()
 	for _, field := range []string{"qmp", "serial", "agent", "link"} {
 		for _, unicode := range []bool{false, true} {
 			cfg := testCfg(AccelHVF)
-			path := strings.Repeat("a", len(unix.RawSockaddrUnix{}.Path))
+			path := strings.Repeat("a", maxLen)
 			if unicode {
-				path = strings.Repeat("界", len(unix.RawSockaddrUnix{}.Path)/3+1)
+				path = strings.Repeat("界", maxLen/3+1)
 			}
 			switch field {
 			case "qmp":
@@ -365,7 +365,31 @@ func TestBuildArgsRejectsLongUnixSockets(t *testing.T) {
 			}
 		}
 	}
-	if err := validateUnixSocketPath("QMP", strings.Repeat("a", len(unix.RawSockaddrUnix{}.Path)-1)); err != nil {
+	if err := validateUnixSocketPath("QMP", strings.Repeat("a", maxLen-1)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBuildArgsTCPEndpointsAndWHPX(t *testing.T) {
+	cfg := testCfg(AccelWHPX)
+	cfg.QMPSock = "tcp:127.0.0.1:45001"
+	cfg.SerialSock = "tcp:127.0.0.1:45002"
+	cfg.AgentSock = "tcp:127.0.0.1:45003"
+	cfg.Network = Network{Mode: NetCluster, LinkSock: "tcp:127.0.0.1:31110", MAC: "52:54:00:01:00:0a"}
+	args, err := BuildArgs(&Toolchain{FirmwareDir: "/fw"}, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := joined(args)
+	for _, want := range []string{
+		"-accel whpx", "-cpu max",
+		"-qmp tcp:127.0.0.1:45001,server=on,wait=off",
+		"socket,id=ser0,host=127.0.0.1,port=45002,server=on,wait=off",
+		"socket,id=pvmagent,host=127.0.0.1,port=45003,server=on,wait=off",
+		"stream,id=net0,server=off,addr.type=inet,addr.host=127.0.0.1,addr.port=31110",
+	} {
+		if !strings.Contains(j, want) {
+			t.Errorf("args missing %q\nargs: %s", want, j)
+		}
 	}
 }

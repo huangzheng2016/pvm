@@ -37,6 +37,8 @@ func upgradeAsset() (string, error) {
 		return "pvm_darwin_arm64", nil
 	case "linux/amd64":
 		return "pvm_linux_amd64", nil
+	case "windows/amd64":
+		return "pvm_windows_amd64", nil
 	default:
 		return "", fmt.Errorf("unsupported host %s/%s (upgrade manually from releases)", runtime.GOOS, runtime.GOARCH)
 	}
@@ -149,8 +151,12 @@ func CmdUpgrade(args []string) int {
 		return fatalf("checksum: %v", err)
 	}
 
-	bin := filepath.Join(tmp, "pvm")
-	if err := untarSingle(arc, "pvm", bin); err != nil {
+	binName := "pvm"
+	if runtime.GOOS == "windows" {
+		binName = "pvm.exe"
+	}
+	bin := filepath.Join(tmp, binName)
+	if err := untarSingle(arc, binName, bin); err != nil {
 		return fatalf("extract: %v", err)
 	}
 	if err := os.Chmod(bin, 0o755); err != nil {

@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
@@ -394,10 +397,20 @@ func (s *Server) prepareMountSlots(spec *vm.Spec) error {
 	return nil
 }
 
+func isMountSlotLink(fi os.FileInfo) bool {
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return true
+	}
+	if runtime.GOOS == "windows" && fi.Mode()&os.ModeIrregular != 0 {
+		return true
+	}
+	return false
+}
+
 func ensureMountSymlink(path, target string) error {
 	fi, err := os.Lstat(path)
 	if err == nil {
-		if fi.Mode()&os.ModeSymlink == 0 {
+		if !isMountSlotLink(fi) {
 			return fmt.Errorf("mount slot %s is not a daemon-managed symlink", path)
 		}
 		current, err := os.Readlink(path)
@@ -424,7 +437,19 @@ func ensureMountSymlink(path, target string) error {
 	}
 	defer os.Remove(tmpPath)
 	if err := os.Symlink(target, tmpPath); err != nil {
-		return err
+		if runtime.GOOS != "windows" {
+			return err
+		}
+		// Unprivileged Windows users cannot create symlinks without Developer
+		// Mode; NTFS directory junctions require no special privilege.
+		cmd := exec.Command("cmd", "/c", "mklink", "/J", tmpPath, target)
+		fsutil.ConfigureHiddenCmd(cmd)
+		if out, jerr := cmd.CombinedOutput(); jerr != nil {
+			return fmt.Errorf("create mount junction: %v (%s)", err, strings.TrimSpace(string(out)))
+		}
+	}
+	if runtime.GOOS == "windows" {
+		_ = os.Remove(path)
 	}
 	return os.Rename(tmpPath, path)
 }
