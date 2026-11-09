@@ -76,13 +76,5 @@ func WriteSeed(path string, userData, metaData []byte) (retErr error) {
 	if err := os.Rename(tmp, path); err != nil {
 		return err
 	}
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return fmt.Errorf("seed installed but opening directory for sync failed: %w", err)
-	}
-	defer dir.Close()
-	if err := dir.Sync(); err != nil {
-		return fmt.Errorf("seed installed but directory sync failed: %w", err)
-	}
-	return nil
+	return syncDir(path)
 }
