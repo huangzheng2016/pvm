@@ -2,6 +2,7 @@ package vm
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -89,7 +90,6 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 		"hostname":   spec.Name,
 		"fqdn":       spec.Name + ".pvm.internal",
 		"ssh_pwauth": false,
-		"runcmd":     runcmd,
 		// Neutral default: a plain US-English Ubuntu, not the C.UTF-8
 		// cloud-image fallback.
 		"locale": "en_US.UTF-8",
@@ -111,18 +111,14 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 	if tz != "" {
 		doc["timezone"] = tz
 	}
+	// The daemon uploads pvm's agent from its embedded asset, so neither base
+	// nor golden VMs need an apt transaction before they can become ready.
+	doc["package_update"] = false
 	if spec.Golden > 0 {
-		// Golden images are already provisioned (docker, qga, dev tools):
-		// skip the first-boot apt storm and just attach the user to docker.
-		// Do not --now qemu-guest-agent: its unit waits on the qga virtio
-		// port which pvm does not attach, stalling boot for 90s.
-		doc["package_update"] = false
-		doc["runcmd"] = append(runcmd,
-			"systemctl enable --now docker",
-		)
-	} else {
-		doc["package_update"] = true
-		doc["packages"] = []string{"qemu-guest-agent"}
+		runcmd = append(runcmd, "systemctl enable --now docker")
+	}
+	if len(runcmd) > 0 {
+		doc["runcmd"] = runcmd
 	}
 	groups := []string{"sudo"}
 	if spec.Golden > 0 {
@@ -188,8 +184,7 @@ WantedBy=multi-user.target
 	doc := map[string]any{
 		"hostname":       spec.Name,
 		"ssh_pwauth":     false,
-		"package_update": true,
-		"packages":       []string{"nftables", "iproute2"},
+		"package_update": false,
 		"runcmd": []string{
 			"install -d -m 0700 /etc/pvm",
 			"printf 'net.ipv4.ip_forward=1\\nnet.ipv4.conf.all.rp_filter=2\\nnet.ipv4.conf.default.rp_filter=2\\nnet.ipv6.conf.all.disable_ipv6=1\\n' > /etc/sysctl.d/99-pvm.conf",
@@ -211,6 +206,13 @@ WantedBy=multi-user.target
 			"content":     unit,
 			"permissions": "0644",
 		}},
+	}
+	if runtime.GOOS == "windows" {
+		doc["write_files"] = append(doc["write_files"].([]map[string]any), map[string]any{
+			"path":        "/etc/systemd/resolved.conf.d/pvm-upstream.conf",
+			"content":     fmt.Sprintf("[Resolve]\nDNS=100.99.%d.1\n", spec.ClusterID),
+			"permissions": "0644",
+		})
 	}
 	out, err := yaml.Marshal(doc)
 	if err != nil {

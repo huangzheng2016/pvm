@@ -106,13 +106,18 @@ func SocketEndpoint(sockPath string) string {
 	_, _ = h.Write([]byte(filepath.Clean(sockPath)))
 	basePort := 40000 + int(h.Sum32()%15000)
 	port := basePort
-	for i := 0; i < 64; i++ {
-		cand := basePort + i
-		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cand))
-		if err == nil {
-			_ = ln.Close()
-			port = cand
-			break
+	if ln, err := net.Listen("tcp", "127.0.0.1:0"); err == nil {
+		port = ln.Addr().(*net.TCPAddr).Port
+		_ = ln.Close()
+	} else {
+		for i := 0; i < 64; i++ {
+			cand := basePort + i
+			ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", cand))
+			if err == nil {
+				_ = ln.Close()
+				port = cand
+				break
+			}
 		}
 	}
 	addr := fmt.Sprintf("tcp:127.0.0.1:%d", port)

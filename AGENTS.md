@@ -40,7 +40,7 @@
 - `internal/keys`: pvm 专用 SSH keypair，绝不触碰 `~/.ssh` 或 macOS 钥匙串。
 - `internal/fsutil`: 原子写和文件锁。
 - `internal/buildinfo`: 构建期版本号。
-- `script/build.sh`: 原生构建入口；`script/qemu/`: bundled QEMU 组装与签名。
+- `script/build.sh`: 原生构建入口；`script/qemu/`: bundled QEMU 组装与签名，包含 macOS `pack-runtime.sh`、Linux `pack-linux-runtime.sh` 和 Windows `pack-windows-runtime.sh`。Windows 固件放在 `bin/share`，Linux 使用 `share/qemu` 并携带 ELF loader 和动态库闭包。
 - `SKILL.md`/`SECURITY.md`: 面向 agent 的使用和安全指南，构建期 embed 到二进制中。
 
 ## Build & Test

@@ -21,6 +21,8 @@ import (
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
+const provisionFollowTimeout = 20 * time.Minute
+
 type vmInfoView struct {
 	Spec struct {
 		Name          string `json:"name"`
@@ -219,6 +221,22 @@ func CmdCreate(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
+	supports9p := true
+	if runtime.GOOS == "windows" {
+		tc, err := qemu.Find(p.Runtime)
+		if err != nil {
+			return fatalf("%v", err)
+		}
+		supports9p = tc.SupportsVirtio9p()
+	}
+	shareMode, warning, err := nativeShareMode(*share, shareFlagExplicit(args), supports9p, runtime.GOOS)
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	if warning != "" {
+		fmt.Fprintln(os.Stderr, "warning: "+warning)
+	}
+	*share = shareMode
 	imgDistro, imgVersion, _ := strings.Cut(spec, ":")
 	var golden *image.GoldenEntry
 	if !*bare && imgDistro != "" {
@@ -291,7 +309,7 @@ func CmdCreate(args []string) int {
 		return 0
 	}
 	fmt.Printf("[5/5] provision: following (ctrl-c to detach; vm keeps provisioning)\n")
-	if rc := followProvision(c, *name, 15*time.Minute); rc != 0 {
+	if rc := followProvision(c, *name, provisionFollowTimeout); rc != 0 {
 		return rc
 	}
 	fmt.Printf("ready in %.0fs; ssh: pvm ssh %s\n", time.Since(start).Seconds(), *name)
@@ -435,7 +453,7 @@ func CmdStart(args []string) int {
 	if *noWait {
 		return 0
 	}
-	return followProvision(c, name, 15*time.Minute)
+	return followProvision(c, name, provisionFollowTimeout)
 }
 
 func CmdStop(args []string) int { return cmdVMSimple(args, "stop") }

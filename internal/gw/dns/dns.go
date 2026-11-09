@@ -59,6 +59,14 @@ func (u UDPUpstream) Exchange(ctx context.Context, req *mdns.Msg) (*mdns.Msg, er
 	return resp, err
 }
 
+type TCPUpstream struct{ Addr string }
+
+func (u TCPUpstream) Exchange(ctx context.Context, req *mdns.Msg) (*mdns.Msg, error) {
+	c := &mdns.Client{Net: "tcp", Timeout: 5 * time.Second}
+	resp, _, err := c.ExchangeContext(ctx, req, u.Addr)
+	return resp, err
+}
+
 type Server struct {
 	upstream Upstream
 	pool     *Pool

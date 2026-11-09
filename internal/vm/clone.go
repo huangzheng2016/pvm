@@ -55,6 +55,9 @@ func CloneDisk(p *paths.Paths, tc *qemu.Toolchain, src, dst *Spec) (created bool
 		if err := os.Mkdir(p.VMShare(dst.Name), 0o755); err != nil {
 			return true, err
 		}
+		if err := preparePrivateShare(p.VMShare(dst.Name), dst.GuestUID); err != nil {
+			return true, err
+		}
 	}
 	out, err := exec.Command(tc.Img, "convert", "-f", "qcow2", "-O", "qcow2", sourceDisk, dst.Disk(p)).CombinedOutput()
 	if err != nil {

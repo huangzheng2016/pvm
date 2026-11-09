@@ -32,7 +32,7 @@ func NewClient(p *paths.Paths) *Client {
 	return &Client{
 		P: p,
 		http: &http.Client{
-			Timeout: 300 * time.Second, // desktop first-start and VM stop grace can both exceed 2min
+			Timeout: 20 * time.Minute, // first gateway provisioning can exceed 10min on slow TCG hosts
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 					if runtime.GOOS == "windows" {
@@ -94,7 +94,9 @@ func (c *Client) setAuthHeader(req *http.Request) {
 }
 
 func (c *Client) Healthy() bool {
-	req, err := http.NewRequest("GET", "http://d/v1/health", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://d/v1/health", nil)
 	if err != nil {
 		return false
 	}
@@ -110,7 +112,9 @@ func (c *Client) Ready() bool {
 	var status struct {
 		Ready bool `json:"ready"`
 	}
-	if err := c.Get("/v1/health", &status); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.getCtx(ctx, "/v1/health", &status); err != nil {
 		return false
 	}
 	return status.Ready
@@ -192,7 +196,11 @@ func waitHealthy(c *Client, d time.Duration) bool {
 }
 
 func (c *Client) Get(path string, out any) error {
-	req, err := http.NewRequest("GET", "http://d"+path, nil)
+	return c.getCtx(context.Background(), path, out)
+}
+
+func (c *Client) getCtx(ctx context.Context, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, "GET", "http://d"+path, nil)
 	if err != nil {
 		return err
 	}

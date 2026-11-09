@@ -324,9 +324,12 @@ jobs:
             tar -czf pvm-qemu-runtime-aarch64.tar.gz -C "$HOME/.pvm/runtime/qemu" aarch64
           fi
           if [ '${{ matrix.out }}' = 'pvm_linux_amd64' ]; then
-            command -v 7z >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y p7zip-full)
+            sudo apt-get update
+            sudo apt-get install -y p7zip-full qemu-system-x86 qemu-utils patchelf
             QEMU_METADATA_JSON=qemu-windows.json ./script/qemu/pack-windows-runtime.sh "$RUNNER_TEMP/win-qemu/x86_64"
-            tar -czf pvm-qemu-runtime-x86_64.tar.gz -C "$RUNNER_TEMP/win-qemu" x86_64
+            tar -czf pvm-qemu-runtime-windows-x86_64.tar.gz -C "$RUNNER_TEMP/win-qemu" x86_64
+            QEMU_METADATA_JSON=qemu-linux.json ./script/qemu/pack-linux-runtime.sh "$RUNNER_TEMP/linux-qemu/x86_64"
+            tar -czf pvm-qemu-runtime-linux-x86_64.tar.gz -C "$RUNNER_TEMP/linux-qemu" x86_64
             tar -czf pvm_windows_amd64.tar.gz pvm.exe
             go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@"$CYCLONEDX_VERSION" bin -json -std -version "$(cat VERSION)" -output pvm_windows_amd64.cdx.json pvm.exe
           fi

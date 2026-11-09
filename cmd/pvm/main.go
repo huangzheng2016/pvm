@@ -64,6 +64,7 @@ common choices:
   providers     pvm exit-agent | cloudflare warp (udp only)
   nat backends  auto | nft | iptables | userspace (no root; icmp via ping socket)
   route via     direct | <exit-name>  (for example: my-exit)
+  backend       auto | native | wsl (windows only; PVM_BACKEND or config.yaml backend)
 
 create options:
   --image IMG   ubuntu:26.04 | ubuntu:24.04 | debian:13 | debian:12

@@ -82,6 +82,7 @@ func TestBuildArgsNativeHVF(t *testing.T) {
 		"mount_tag=pvmshare", "mount_tag=pvm0",
 		"security_model=none",
 		"-qmp unix:/d/qmp.sock,server=on,wait=off",
+		"-L /fw",
 	}
 	if native.Arch == "arm64" {
 		want = append(want, "-machine virt", "if=pflash,format=raw,readonly=on,file=/fw/edk2-aarch64-code.fd", "if=pflash,format=raw,file=/d/vars.fd")
@@ -199,6 +200,7 @@ func TestQemuArch(t *testing.T) {
 func TestNetArgsSlirpPool(t *testing.T) {
 	args := joined(netArgs(Network{Mode: NetSlirp, SSHHostPort: 10022, PoolBase: 30000, PoolSize: 2}))
 	for _, want := range []string{
+		"user,id=net0,ipv6=off,",
 		"hostfwd=tcp:127.0.0.1:10022-:22",
 		"hostfwd=tcp:127.0.0.1:30000-:30000",
 		"hostfwd=udp:127.0.0.1:30000-:30000",
@@ -382,7 +384,7 @@ func TestBuildArgsTCPEndpointsAndWHPX(t *testing.T) {
 	}
 	j := joined(args)
 	for _, want := range []string{
-		"-accel whpx", "-cpu max",
+		"-accel whpx", "-cpu host",
 		"-qmp tcp:127.0.0.1:45001,server=on,wait=off",
 		"socket,id=ser0,host=127.0.0.1,port=45002,server=on,wait=off",
 		"socket,id=pvmagent,host=127.0.0.1,port=45003,server=on,wait=off",

@@ -137,10 +137,10 @@ func (s *Server) installAgentGeneration(ctx context.Context, spec *vm.Spec, bin 
 	s.stageIfCurrent(spec.Name, seq, "ssh", "SSH and cloud-init ready")
 	phaseCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	err := s.withInstallVM(phaseCtx, spec, seq, func(fresh *vm.Spec) error {
-		if err := s.configureGuestMountsCtx(phaseCtx, fresh); err != nil {
+		if err := retryTransientSSH(phaseCtx, func() error { return s.configureGuestMountsCtx(phaseCtx, fresh) }); err != nil {
 			return err
 		}
-		if err := s.scpToCtx(phaseCtx, fresh, bin, "/tmp/pvm-agent.new"); err != nil {
+		if err := retryTransientSSH(phaseCtx, func() error { return s.scpToCtx(phaseCtx, fresh, bin, "/tmp/pvm-agent.new") }); err != nil {
 			return fmt.Errorf("scp: %w", err)
 		}
 		installCmd := fmt.Sprintf(
@@ -148,7 +148,12 @@ func (s *Server) installAgentGeneration(ctx context.Context, spec *vm.Spec, bin 
 				"echo %s | sudo tee /etc/systemd/system/pvm-agent.service >/dev/null && "+
 				"sudo systemctl daemon-reload && sudo systemctl enable pvm-agent && sudo systemctl restart pvm-agent",
 			shellQuote(agentUnit))
-		if out, err := s.sshRunCtx(phaseCtx, fresh, installCmd); err != nil {
+		var out string
+		if err := retryTransientSSH(phaseCtx, func() error {
+			var err error
+			out, err = s.sshRunCtx(phaseCtx, fresh, installCmd)
+			return err
+		}); err != nil {
 			return fmt.Errorf("install unit: %v\n%s", err, out)
 		}
 		if err := phaseCtx.Err(); err != nil {

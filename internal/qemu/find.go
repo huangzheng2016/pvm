@@ -43,11 +43,14 @@ func probeVersion(system string) [3]int {
 // SupportsVirtio9p reports whether the QEMU binary supports virtio-9p-pci.
 // Windows QEMU distributions frequently omit 9p support.
 func (t *Toolchain) SupportsVirtio9p() bool {
-	if t == nil || t.System == "" || runtime.GOOS != "windows" {
+	if t == nil || t.System == "" {
 		return true
 	}
 	if t.has9p != nil {
 		return *t.has9p
+	}
+	if runtime.GOOS != "windows" {
+		return true
 	}
 	cmd := exec.Command(t.System, "-device", "help")
 	fsutil.ConfigureHiddenCmd(cmd)

@@ -50,7 +50,7 @@ func Detect(t *Toolchain, goos string) Accel {
 			return AccelKVM
 		}
 	case "windows":
-		if probe(t, "-machine", "q35,accel=whpx") {
+		if windowsHypervisorPlatformEnabled() && probe(t, "-machine", "q35,accel=whpx") {
 			return AccelWHPX
 		}
 	}
@@ -88,7 +88,7 @@ func (a Accel) Args() []string {
 	case AccelTCG:
 		return []string{"-accel", "tcg,thread=multi", "-cpu", "max"}
 	case AccelWHPX:
-		return []string{"-accel", "whpx", "-cpu", "max"}
+		return []string{"-accel", "whpx", "-cpu", "host"}
 	default:
 		return []string{"-accel", string(a), "-cpu", "host"}
 	}
