@@ -151,6 +151,11 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 	}
 	args := []string{}
 
+	// Windows QEMU needs -L to locate BIOS/firmware files
+	if runtime.GOOS == "windows" && t.FirmwareDir != "" {
+		args = append(args, "-L", t.FirmwareDir)
+	}
+
 	if native.Arch == "arm64" {
 		args = append(args, "-machine", "virt")
 		if t.FirmwareDir == "" {

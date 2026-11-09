@@ -1,5 +1,7 @@
 .bin/
 /pvm
+/pvm.exe
+/assetpack.exe
 internal/assets/packed/*.zst
 internal/assets/packed/gateway-*
 internal/assets/packed/agent-*

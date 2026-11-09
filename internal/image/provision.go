@@ -42,7 +42,8 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 # wait for the base image's own cloud-init/apt to settle
-if command -v cloud-init >/dev/null; then cloud-init status --wait >/dev/null; fi
+# exit 2 means "degraded" (some modules had warnings) which is non-fatal; only exit 1 means real failure.
+if command -v cloud-init >/dev/null; then cloud-init status --wait || { rc=$?; [ $rc -eq 2 ] && echo "[provision] cloud-init degraded (non-fatal, continuing)" || { echo "[provision] cloud-init failed (exit $rc)" >&2; exit $rc; }; }; fi
 for i in $(seq 1 300); do
   fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
   sleep 2
@@ -58,15 +59,19 @@ fi
 		proxy.writeProvisionEnv(&b)
 		return b.String()
 	}() + `
+echo "[provision] updating package lists..."
 apt-get update
 # e.g. debian forky has no tigervnc: fail before the long upgrade
 apt-cache show tigervnc-standalone-server novnc websockify >/dev/null 2>&1 || { echo "desktop packages (tigervnc/novnc/websockify) unavailable on this release" >&2; exit 1; }
+echo "[provision] upgrading system packages (this may take 5-10 minutes)..."
 apt-get -y upgrade
+echo "[provision] installing docker, build tools, and desktop packages (this may take 10-15 minutes)..."
 # lightdm/xserver-xorg come in via Recommends (xfce4-session -> light-locker
 # -> lightdm -> xserver-xorg) but VMs have no GPU: lightdm fails to start a
 # local Xorg and restart-loops. The TigerVNC stack needs neither; block them.
 apt-get -y install ` + strings.Join(GoldenPackages, " ") + ` ` + strings.Join(DesktopPackages, " ") + ` lightdm- light-locker- xfce4-screensaver- xserver-xorg- xserver-xorg-core-
 
+echo "[provision] configuring desktop environment..."
 cat > /etc/environment.d/ibus.conf <<'EOF'
 GTK_IM_MODULE=ibus
 QT_IM_MODULE=ibus
@@ -100,6 +105,7 @@ cat > /etc/skel/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-screensaver.xml <
 </channel>
 EOF
 
+echo "[provision] starting docker service..."
 systemctl enable docker
 systemctl start docker
 # wait for the daemon to come up
@@ -116,6 +122,7 @@ polkit.addRule(function(action, subject) {
 });
 EOF
 
+echo "[provision] cleaning up and preparing image for cloning..."
 # scrub machine-specific state so clones re-run cloud-init cleanly
 apt-get clean
 rm -rf /var/lib/apt/lists/*
@@ -133,6 +140,7 @@ rm -f /var/lib/dbus/machine-id
 sed -i '/^pvmshare /d' /etc/fstab
 sync
 
+echo "[provision] finalizing golden image (removing build user)..."
 # last: drop the build user (it holds the host uid which clones reuse).
 # After this no further ssh is possible; shutdown happens via QMP.
 ` + func() string {
@@ -141,6 +149,7 @@ sync
 		return b.String()
 	}() + `userdel -rf ` + buildUser + `
 getent passwd ` + buildUser + ` >/dev/null && { echo "build user ` + buildUser + ` still exists; refusing to seal the golden image" >&2; exit 1; } || true
+echo "[provision] golden image provisioning complete"
 fstrim -av || true
 sync
 `)

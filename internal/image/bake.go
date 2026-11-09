@@ -59,9 +59,37 @@ func (r *sshRunner) args(extra ...string) []string {
 func (r *sshRunner) runScript(script string, out io.Writer) error {
 	cmd := exec.Command("ssh", r.args("sudo", "bash", "-s")...)
 	cmd.Stdin = strings.NewReader(script)
-	cmd.Stdout = out
-	cmd.Stderr = out
-	return cmd.Run()
+
+	// Use StdoutPipe and StderrPipe for real-time output
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	// Copy output in real-time
+	done := make(chan error, 2)
+	go func() {
+		_, err := io.Copy(out, stdout)
+		done <- err
+	}()
+	go func() {
+		_, err := io.Copy(out, stderr)
+		done <- err
+	}()
+
+	// Wait for both pipes to finish
+	<-done
+	<-done
+
+	return cmd.Wait()
 }
 
 func (r *sshRunner) output(args ...string) (string, error) {
@@ -165,8 +193,16 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 	}
 
 	r := &sshRunner{key: spec.SSHKeyPath(o.P), port: port, user: spec.User}
-	fmt.Fprintf(o.Out, "waiting for ssh (cloud-init first boot)...\n")
-	if err := waitSSH(r, 10*time.Minute); err != nil {
+	// TCG software emulation is extremely slow; build VM may take 20+ minutes to boot.
+	// Hardware acceleration is much faster and needs only 10 minutes.
+	sshTimeout := 10 * time.Minute
+	if o.Accel == qemu.AccelTCG {
+		sshTimeout = 30 * time.Minute
+		fmt.Fprintf(o.Out, "waiting for ssh (cloud-init first boot, TCG mode is slow — may take 20+ minutes)...\n")
+	} else {
+		fmt.Fprintf(o.Out, "waiting for ssh (cloud-init first boot)...\n")
+	}
+	if err := waitSSH(r, sshTimeout); err != nil {
 		return nil, err
 	}
 
@@ -174,7 +210,11 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(o.Out, "provisioning (apt upgrade, docker, xfce desktop — this takes a while)...\n")
+	if o.Accel == qemu.AccelTCG {
+		fmt.Fprintf(o.Out, "provisioning (apt upgrade, docker, xfce desktop — TCG mode is slow, may take 30-60 minutes)...\n")
+	} else {
+		fmt.Fprintf(o.Out, "provisioning (apt upgrade, docker, xfce desktop — this takes a while)...\n")
+	}
 	// The provision script deletes the build user as its last action, so
 	// nothing may ssh in afterwards; capture the image list from the log.
 	var provLog strings.Builder

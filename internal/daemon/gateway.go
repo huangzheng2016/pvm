@@ -272,8 +272,16 @@ func (s *Server) deployGatewayAgent(cl *cluster.Cluster) error {
 	if err != nil {
 		return err
 	}
-	if err := s.waitSSH(gwSpec, 180*time.Second); err != nil {
-		return fmt.Errorf("gateway %s ssh not ready after 3min", cl.Gateway)
+	// TCG software emulation is extremely slow; gateway VM may take 15+ minutes to boot.
+	// Hardware acceleration (HVF, KVM, WHPX) is much faster and needs only 3 minutes.
+	timeout := 180 * time.Second
+	timeoutDesc := "3min"
+	if s.Accel == qemu.AccelTCG {
+		timeout = 20 * time.Minute
+		timeoutDesc = "20min"
+	}
+	if err := s.waitSSH(gwSpec, timeout); err != nil {
+		return fmt.Errorf("gateway %s ssh not ready after %s", cl.Gateway, timeoutDesc)
 	}
 	// sshd wins the race against cloud-init; /etc/pvm and the systemd
 	// unit only exist once runcmd finishes.

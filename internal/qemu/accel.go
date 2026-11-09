@@ -50,7 +50,7 @@ func Detect(t *Toolchain, goos string) Accel {
 			return AccelKVM
 		}
 	case "windows":
-		if probe(t, "-machine", "q35,accel=whpx") {
+		if probe(t, "-machine", "q35,accel=whpx,kernel-irqchip=off", "-L", t.FirmwareDir) {
 			return AccelWHPX
 		}
 	}
@@ -88,8 +88,10 @@ func (a Accel) Args() []string {
 	case AccelTCG:
 		return []string{"-accel", "tcg,thread=multi", "-cpu", "max"}
 	case AccelWHPX:
-		return []string{"-accel", "whpx", "-cpu", "max"}
-	default:
+		// kernel-irqchip=off required on Windows 11 with QEMU 9+;
+		// -xsave suppresses "failed to get xsave state" crashes (QEMU+WHPX bug on Win11 24H2+).
+		return []string{"-accel", "whpx,kernel-irqchip=off", "-cpu", "host,-xsave"}
+	default: // AccelHVF, AccelKVM
 		return []string{"-accel", string(a), "-cpu", "host"}
 	}
 }
