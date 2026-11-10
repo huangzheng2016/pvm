@@ -87,7 +87,17 @@ func nftRuleset(tunNames []string, cidrs []string, allow ...*net.IPNet) string {
 }
 
 func NFTInstall(tunNames []string, cidrs []string, allow ...*net.IPNet) error {
-	return runNFT("destroy table inet " + nftTableFor(tunNames) + "\n" + nftRuleset(tunNames, cidrs, allow...))
+	// Prefer the atomic destroy+recreate, but "destroy table" needs nftables
+	// >= 1.0.7 and Debian 12 ships 1.0.6. A failed nft -f applies nothing,
+	// so falling back to delete-then-create is safe.
+	err := runNFT("destroy table inet " + nftTableFor(tunNames) + "\n" + nftRuleset(tunNames, cidrs, allow...))
+	if err == nil {
+		return nil
+	}
+	if rmErr := NFTRemove(tunNames); rmErr != nil {
+		return err
+	}
+	return runNFT(nftRuleset(tunNames, cidrs, allow...))
 }
 
 func NFTRemove(tunNames []string) error {
