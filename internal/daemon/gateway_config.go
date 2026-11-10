@@ -2,12 +2,25 @@ package daemon
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 
 	"github.com/huangzheng2016/pvm/internal/cluster"
 	"github.com/huangzheng2016/pvm/internal/exit"
 	"github.com/huangzheng2016/pvm/internal/gw/rules"
 )
+
+func gatewayDNSUpstream(goos string) string {
+	if upstream := strings.TrimSpace(os.Getenv("PVM_DNS_UPSTREAM")); upstream != "" {
+		return upstream
+	}
+	if goos == "windows" {
+		return "tcp://1.1.1.1:53"
+	}
+	return "10.0.2.3"
+}
 
 func gatewayConfigFromCluster(s *Server, cl *cluster.Cluster) []byte {
 	type vmEntry struct {
@@ -45,7 +58,7 @@ func gatewayConfigFromCluster(s *Server, cl *cluster.Cluster) []byte {
 		DefaultExit string             `json:"default_exit,omitempty"`
 		Exits       map[string]exitDef `json:"exits,omitempty"`
 	}{
-		CIDR: cl.CIDR, GwIP: cl.GwIP, DNSUpstream: "10.0.2.3",
+		CIDR: cl.CIDR, GwIP: cl.GwIP, DNSUpstream: gatewayDNSUpstream(runtime.GOOS),
 		Rules: cl.Rules, VMExits: cl.VMExits, DefaultExit: cl.DefaultExit,
 	}
 	for _, v := range cl.VMs {

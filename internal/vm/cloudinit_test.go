@@ -1,21 +1,20 @@
 package vm
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
 
-func TestUserDataGoldenSkipsApt(t *testing.T) {
+func TestUserDataSkipsApt(t *testing.T) {
 	base := &Spec{Name: "dev1", User: "u", GuestUID: 501}
 	ud, err := userData(base, "ssh-ed25519 AAAA", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(ud), "package_update: true") {
-		t.Error("base image should run package_update")
-	}
-	if !strings.Contains(string(ud), "qemu-guest-agent") {
-		t.Error("base image should install qemu-guest-agent")
+	s := string(ud)
+	if !strings.Contains(s, "package_update: false") || strings.Contains(s, "packages:") {
+		t.Errorf("base image must not install an unused guest agent before pvm's agent upload:\n%s", s)
 	}
 
 	golden := &Spec{Name: "dev1", User: "u", GuestUID: 501, Golden: 2}
@@ -23,7 +22,7 @@ func TestUserDataGoldenSkipsApt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := string(ud)
+	s = string(ud)
 	if strings.Contains(s, "package_update: true") {
 		t.Error("golden clone must skip package_update")
 	}
@@ -32,6 +31,20 @@ func TestUserDataGoldenSkipsApt(t *testing.T) {
 	}
 	if !strings.Contains(s, "docker") {
 		t.Error("golden clone user should join the docker group")
+	}
+}
+
+func TestGatewayUserDataDoesNotNeedPackageDownloads(t *testing.T) {
+	ud, err := gatewayUserData(&Spec{Name: "pvm-gw1", User: "pvmgw", GuestUID: 1000, ClusterID: 1}, "ssh-ed25519 AAAA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(ud)
+	if !strings.Contains(out, "package_update: false") || strings.Contains(out, "packages:") {
+		t.Fatalf("gateway must not wait for apt before DNS is ready:\n%s", out)
+	}
+	if runtime.GOOS == "windows" && !strings.Contains(out, "DNS=100.99.1.1") {
+		t.Fatalf("native Windows gateway must use its TCP-capable DNS relay:\n%s", out)
 	}
 }
 
@@ -139,5 +152,22 @@ func TestUserDataUsesMountProfiles(t *testing.T) {
 	}
 	if got := strings.Count(out, readahead); got != 2 {
 		t.Errorf("readahead options occur %d times, want fstab+mount", got)
+	}
+}
+
+func TestUserDataWithoutSharesOmitsEmptyRuncmd(t *testing.T) {
+	ud, err := userData(&Spec{Name: "dev1", User: "dev", GuestUID: 1000, ShareMode: ShareNone}, "ssh-ed25519 AAAA", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(ud), "runcmd: []") {
+		t.Fatalf("empty runcmd is rejected by cloud-init schema:\n%s", ud)
+	}
+	ud, err = userData(&Spec{Name: "dev1", User: "dev", GuestUID: 1000, ShareMode: ShareNone, Golden: 1}, "ssh-ed25519 AAAA", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(ud), "systemctl enable --now docker") {
+		t.Fatalf("golden initialization was removed with empty shares:\n%s", ud)
 	}
 }

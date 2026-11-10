@@ -23,12 +23,18 @@ func IdentityOf(pid int) (*ProcIdentity, error) {
 	}
 	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
-		return nil, errNoProc
+		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+			return nil, errNoProc
+		}
+		return nil, err
 	}
 	defer windows.CloseHandle(h)
 
 	var exitCode uint32
-	if err := windows.GetExitCodeProcess(h, &exitCode); err == nil && exitCode != stillActiveExitCode {
+	if err := windows.GetExitCodeProcess(h, &exitCode); err != nil {
+		return nil, err
+	}
+	if exitCode != stillActiveExitCode {
 		return nil, errNoProc
 	}
 

@@ -58,7 +58,10 @@ func newFakeDNS(upstream string, onDirectIP func(domain string, ips []string)) (
 	if err != nil {
 		return nil, err
 	}
-	up := gwdns.Upstream(gwdns.UDPUpstream{Addr: upstream + ":53"})
+	up, err := dnsUpstream(upstream)
+	if err != nil {
+		return nil, err
+	}
 	var engPtr *atomic.Pointer[rules.Engine]
 	if onDirectIP != nil {
 		engPtr = &atomic.Pointer[rules.Engine]{}

@@ -2,6 +2,7 @@ package qemu
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,8 +24,9 @@ type Instance struct {
 	// mu serializes operations within this Instance value only. The daemon
 	// creates a fresh Instance per call, so cross-call lifecycle exclusion
 	// must use LockVM; mu is not a daemon-wide or per-VM lock.
-	mu  sync.Mutex
-	cmd *exec.Cmd
+	mu            sync.Mutex
+	cmd           *exec.Cmd
+	restoreStream func(context.Context) error
 }
 
 type RunState struct {

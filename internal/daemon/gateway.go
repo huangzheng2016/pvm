@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -80,10 +82,7 @@ func (s *Server) onGatewayStarted(cl *cluster.Cluster) {
 		}
 		repaired = append(repaired, spec)
 	}
-	if err := s.deployGatewayAgent(cl); err != nil {
-		log.Printf("deploy gateway agent: %v", err)
-		return
-	}
+	s.deployClusterAgent(cl)
 	for _, spec := range repaired {
 		vn := cl.VMs[spec.Name]
 		if vn == nil {
@@ -236,7 +235,7 @@ func (s *Server) ensureLink(cl *cluster.Cluster, vmName string) error {
 	return nil
 }
 
-func (s *Server) ensureLinkRetry(cl *cluster.Cluster, vmName string) error {
+func (s *Server) ensureLinkRetry(ctx context.Context, cl *cluster.Cluster, vmName string) error {
 	var lastErr error
 	for i := 0; i < gatewayRetryAttempts; i++ {
 		if err := s.ensureLink(cl, vmName); err == nil {
@@ -244,7 +243,9 @@ func (s *Server) ensureLinkRetry(cl *cluster.Cluster, vmName string) error {
 		} else {
 			lastErr = err
 		}
-		time.Sleep(gatewayRetryDelay)
+		if err := waitInstallRetry(ctx, gatewayRetryDelay); err != nil {
+			return fmt.Errorf("ensure link: %w (last error: %v)", err, lastErr)
+		}
 	}
 	return fmt.Errorf("ensure link: %w", lastErr)
 }
@@ -267,41 +268,58 @@ func (s *Server) removeLink(cl *cluster.Cluster, vmName string) error {
 	return nil
 }
 
-func (s *Server) deployGatewayAgent(cl *cluster.Cluster) error {
+func (s *Server) deployGatewayAgentCtx(ctx context.Context, cl *cluster.Cluster) error {
+	v, _ := s.gwAgentLocks.LoadOrStore(cl.ID, make(chan struct{}, 1))
+	gate := v.(chan struct{})
+	select {
+	case gate <- struct{}{}:
+		defer func() { <-gate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 	gwSpec, err := s.getSpec(cl.Gateway)
 	if err != nil {
 		return err
-	}
-	// TCG software emulation is extremely slow; gateway VM may take 15+ minutes to boot.
-	// Hardware acceleration (HVF, KVM, WHPX) is much faster and needs only 3 minutes.
-	timeout := 180 * time.Second
-	timeoutDesc := "3min"
-	if s.Accel == qemu.AccelTCG {
-		timeout = 20 * time.Minute
-		timeoutDesc = "20min"
-	}
-	if err := s.waitSSH(gwSpec, timeout); err != nil {
-		return fmt.Errorf("gateway %s ssh not ready after %s", cl.Gateway, timeoutDesc)
-	}
-	// sshd wins the race against cloud-init; /etc/pvm and the systemd
-	// unit only exist once runcmd finishes.
-	if _, err := s.sshRun(gwSpec, "sudo cloud-init status --wait >/dev/null 2>&1 || true"); err != nil {
-		return fmt.Errorf("cloud-init wait: %w", err)
 	}
 	bin, err := s.gatewayAgentBinary()
 	if err != nil {
 		return err
 	}
-	if err := s.scpTo(gwSpec, bin, "/tmp/pvm-gateway"); err != nil {
-		return fmt.Errorf("scp agent: %w", err)
-	}
-	if out, err := s.sshRun(gwSpec, "sudo install -m 0755 /tmp/pvm-gateway /usr/local/bin/pvm-gateway"); err != nil {
-		return fmt.Errorf("install agent: %v\n%s", err, out)
-	}
-	if err := s.pushGatewayConfig(cl.ID); err != nil {
+	raw, err := os.ReadFile(bin)
+	if err != nil {
 		return err
 	}
-	if out, err := s.sshRun(gwSpec, "sudo systemctl restart pvm-gateway.service"); err != nil {
+	digest := sha256.Sum256(raw)
+	localSHA := hex.EncodeToString(digest[:])
+	if err := s.waitSSHCtx(ctx, gwSpec, 6*time.Minute); err != nil {
+		return fmt.Errorf("gateway %s ssh: %w", cl.Gateway, err)
+	}
+	out, err := s.sshRunCtx(ctx, gwSpec, "if systemctl is-active --quiet pvm-gateway.service && test -x /usr/local/bin/pvm-gateway; then sha256sum /usr/local/bin/pvm-gateway; fi")
+	if err != nil {
+		return fmt.Errorf("inspect gateway agent: %w", err)
+	}
+	if fields := strings.Fields(out); len(fields) > 0 && fields[0] == localSHA {
+		return nil
+	}
+	// sshd wins the race against cloud-init; /etc/pvm and the systemd
+	// unit only exist once runcmd finishes. Slow TCG/cloud mirrors can
+	// take several minutes, so do not kill a valid provisioning run at 2min.
+	if _, err := s.sshRunCtx(ctx, gwSpec, "sudo cloud-init status --wait >/dev/null 2>&1 || true"); err != nil {
+		return fmt.Errorf("cloud-init wait: %w", err)
+	}
+	if err := s.scpToCtx(ctx, gwSpec, bin, "/tmp/pvm-gateway"); err != nil {
+		return fmt.Errorf("scp agent: %w", err)
+	}
+	if out, err := s.sshRunCtx(ctx, gwSpec, "sudo install -m 0755 /tmp/pvm-gateway /usr/local/bin/pvm-gateway"); err != nil {
+		return fmt.Errorf("install agent: %v\n%s", err, out)
+	}
+	if err := s.pushGatewayConfigCtx(ctx, cl.ID); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if out, err := s.sshRunCtx(ctx, gwSpec, "sudo systemctl restart pvm-gateway.service"); err != nil {
 		return fmt.Errorf("start agent: %v\n%s", err, out)
 	}
 	log.Printf("gateway %s: agent deployed", cl.Gateway)
@@ -403,12 +421,21 @@ var gatewayRetryDelay = 3 * time.Second
 
 // Retry while the gateway and its control channel are starting.
 func (s *Server) pushGatewayConfigRetry(clusterID int) error {
+	return s.pushGatewayConfigRetryCtx(context.Background(), clusterID)
+}
+
+func (s *Server) pushGatewayConfigRetryCtx(ctx context.Context, clusterID int) error {
 	var err error
 	for i := 0; i < gatewayRetryAttempts; i++ {
-		if err = s.pushGatewayConfig(clusterID); err == nil {
+		if err = s.pushGatewayConfigCtx(ctx, clusterID); err == nil {
 			return nil
 		}
-		time.Sleep(gatewayRetryDelay)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("push gateway config: %w", ctxErr)
+		}
+		if waitErr := waitInstallRetry(ctx, gatewayRetryDelay); waitErr != nil {
+			return fmt.Errorf("push gateway config: %w (last error: %v)", waitErr, err)
+		}
 	}
 	cl := s.Clusters.Get(clusterID)
 	gwName := ""

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/huangzheng2016/pvm/internal/cluster"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
@@ -227,5 +228,43 @@ func TestResumeAgentInstallAfterFailedRoute(t *testing.T) {
 	s.progMu.Unlock()
 	if repeated != current {
 		t.Fatal("live readiness task was restarted unnecessarily")
+	}
+}
+
+func TestStartResetDoesNotCancelNewGatewayTask(t *testing.T) {
+	s, spec, _ := newMountTestServer(t)
+	store, err := cluster.LoadStore(filepath.Join(s.P.Home, "clusters"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Clusters = store
+	cl, err := store.Ensure(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddVM(1, spec.Name); err != nil {
+		t.Fatal(err)
+	}
+	spec.ClusterID = 1
+	if err := spec.Save(s.P); err != nil {
+		t.Fatal(err)
+	}
+	s.cacheSpec(spec)
+	gw := &vm.Spec{Name: cl.Gateway, Role: "gateway", User: "pvmgw", ClusterID: 1, SSHPort: 10022}
+	if err := os.MkdirAll(s.P.VMDir(gw.Name), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Save(s.P); err != nil {
+		t.Fatal(err)
+	}
+	s.cacheSpec(gw)
+	markVMRunning(t, s, gw.Name)
+	oldAttempts, oldDelay := gatewayRetryAttempts, gatewayRetryDelay
+	gatewayRetryAttempts, gatewayRetryDelay = 1, time.Millisecond
+	t.Cleanup(func() { gatewayRetryAttempts, gatewayRetryDelay = oldAttempts, oldDelay })
+	rr := httptest.NewRecorder()
+	s.handler().ServeHTTP(rr, httptest.NewRequest("POST", "/v1/vms/dev1/start", nil))
+	if strings.Contains(rr.Body.String(), "context canceled") {
+		t.Fatalf("start reset cancelled its new gateway task: %s", rr.Body.String())
 	}
 }

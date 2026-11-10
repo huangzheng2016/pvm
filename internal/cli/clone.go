@@ -7,7 +7,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/huangzheng2016/pvm/internal/daemon"
 )
@@ -205,7 +204,7 @@ func CmdClone(args []string) int {
 	if out.Running {
 		fmt.Println("starting; guest identity (hostname/machine-id/ssh keys) is regenerated on first boot")
 		if !*noWait {
-			return followProvision(c, newName, 15*time.Minute)
+			return followProvision(c, newName, provisionFollowTimeout)
 		}
 	}
 	return 0

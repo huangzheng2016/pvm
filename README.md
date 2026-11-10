@@ -13,13 +13,23 @@ Personal QEMU dev VMs in a single binary: create an isolated Linux development m
 
 ## Installation
 
-pvm requires macOS on arm64 or Linux on amd64. Install GitHub CLI (`gh`) and Python 3 first, then install the latest release with `curl`:
+pvm supports macOS on arm64, Linux on amd64, and Windows on amd64 (native QEMU or WSL2). Install GitHub CLI (`gh`) and Python 3 first, then install the latest release with `curl` (on Windows, run this in Git Bash):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/huangzheng2016/pvm/master/scripts/install.sh | sh
 ```
 
-The installer places `pvm` in `~/.local/bin` by default; set `INSTALL_DIR` to change this. On macOS it also installs the bundled QEMU runtime unless `PVM_SKIP_QEMU=1` is set, in which case pvm uses the system QEMU. The installer verifies the release checksum and GitHub build attestation, including the repository, workflow, and tag. Releases without this proof are rejected. All downloads and executable checks finish before replacement; previous binaries and QEMU runtimes are retained. You can also download an archive from [Releases](https://github.com/huangzheng2016/pvm/releases) and verify it with `gh attestation verify` before use.
+The installer places `pvm` in `~/.local/bin` by default; set `INSTALL_DIR` to change this. On macOS, Linux, and Windows it also installs the bundled QEMU runtime unless `PVM_SKIP_QEMU=1` is set, in which case pvm uses the system QEMU. The installer verifies the release checksum and GitHub build attestation, including the repository, workflow, and tag. Releases without this proof are rejected. All downloads and executable checks finish before replacement; previous binaries and QEMU runtimes are retained. You can also download an archive from [Releases](https://github.com/huangzheng2016/pvm/releases) and verify it with `gh attestation verify` before use.
+
+### Windows backend selection
+
+Windows supports two backends, selected with `PVM_BACKEND` or `backend` in `~/.pvm/config.yaml`:
+
+- `wsl`: forward pvm commands to `pvm` inside WSL2. This is the recommended backend for full `/share`, extra mounts, and KVM where available. Windows mount paths such as `C:\work\proj` are converted to `/mnt/c/work/proj` automatically.
+- `native`: run the Windows pvm daemon and Windows QEMU directly. The daemon listens on loopback TCP and requires the bearer token in `~/.pvm/run/admin.token` for every API except `/v1/health`. Official Windows QEMU builds do not include virtio-9p, so `create` uses `--share none` with an explicit warning; explicitly requesting `private` or `global` fails with guidance to use WSL2. `pvm daemon install` registers a Scheduled Task.
+- `auto` (default): use an already-running native daemon or native QEMU when present, otherwise use WSL2 when `pvm` is installed there.
+
+WHPX is used only when Windows Hypervisor Platform is enabled and the QEMU probe succeeds; otherwise native mode uses TCG and reports it. Set `PVM_QEMU_ACCEL=whpx` to force a WHPX attempt, or `PVM_QEMU_ACCEL=tcg` to force software emulation. Native Windows uses DNS-over-TCP because some Windows QEMU/network combinations cannot deliver UDP DNS; `PVM_DNS_UPSTREAM` can override the resolver (for example `tcp://192.0.2.53:53` or the default slirp address `10.0.2.3`). `pvm doctor` reports backend, OpenSSH, QEMU, WSL2, and acceleration readiness.
 
 ## Quickstart
 
@@ -110,7 +120,7 @@ This creates a new client key, enrolls it with the exit agent, writes the config
 - [SKILL.md](SKILL.md): Complete usage manual for agents and people; `pvm skill` prints the embedded copy.
 - [SECURITY.md](SECURITY.md): Host/guest trust boundaries, credentials, image provenance, and network verification; `pvm security` prints the embedded copy.
 - [AGENTS.md](AGENTS.md): Repository map, build and test workflow, and development rules.
-- `pvm upgrade` verifies the release, saves a recovery point, upgrades the installed binary, restarts a running daemon, and attempts to restore every previously running user VM. Use `--no-restart` to replace only the binary, or `pvm upgrade --rollback` to restore the saved binary and VM recovery plan.
+- `pvm upgrade` verifies the release, saves a recovery point, upgrades the installed binary and bundled QEMU runtime, restarts a running daemon, and attempts to restore every previously running user VM. Use `--no-restart` to replace only the binary and runtime, or `pvm upgrade --rollback` to restore the saved binary, QEMU runtime, and VM recovery plan. On Windows, `--no-restart` requires no running VMs when QEMU is included; omit it so pvm can stop the daemon before replacing the runtime and restore the VM plan afterwards. Set `PVM_SKIP_QEMU=1` to upgrade only pvm.
 - `pvm audit dev1 --privacy`, `pvm doctor`, and `pvm route explain dev1 example.com` inspect local configuration without starting a daemon or making network probes; their output redacts identifying values.
 - Automatic update checks are off by default. Set `update_check: true` in `~/.pvm/config.yaml` or `PVM_UPDATE_CHECK=1` to opt in; `PVM_NO_UPDATE_CHECK=1` disables them.
 - For independently trusted image signing keys, use `pvm image fetch ubuntu:26.04 --keyring /trusted/ubuntu-cloudimage.gpg`. This requires `gpgv`; pvm does not download or trust keys automatically.

@@ -19,7 +19,7 @@ func TestUpgradeRefusesUnresponsiveRunningDaemon(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer lock.Unlock()
-	if _, running, err := upgradeRunningVMs(); err == nil || !running {
+	if _, running, _, err := upgradeRunningVMs(); err == nil || !running {
 		t.Fatalf("running=%v err=%v", running, err)
 	}
 }

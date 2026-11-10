@@ -88,7 +88,7 @@ IMG_BIN=$(find "$EXTRACT" -type f -iname "qemu-img.exe" -print -quit)
 BINDIR=$(dirname "$IMG_BIN")
 [ -f "$BINDIR/qemu-system-x86_64.exe" ] || { echo "error: qemu-system-x86_64.exe not found in installer" >&2; exit 1; }
 
-mkdir -p "$DEST/bin" "$DEST/share/qemu"
+mkdir -p "$DEST/bin/share"
 cp "$BINDIR/qemu-img.exe" "$BINDIR/qemu-system-x86_64.exe" "$DEST/bin/"
 for dll in "$BINDIR"/*.dll; do
   [ -f "$dll" ] && cp "$dll" "$DEST/bin/"
@@ -103,22 +103,22 @@ elif [ -d "$BINDIR/../share" ]; then
   SHAREDIR="$BINDIR/../share"
 fi
 if [ -n "$SHAREDIR" ]; then
-  [ -d "$SHAREDIR/keymaps" ] && cp -R "$SHAREDIR/keymaps" "$DEST/share/qemu/"
+  [ -d "$SHAREDIR/keymaps" ] && cp -R "$SHAREDIR/keymaps" "$DEST/bin/share/"
   for pat in "bios*.bin" "q35-acpi-dsdt.aml" "kvmvapic.bin" "linuxboot*.bin" "multiboot*.bin" "vgabios*.bin" "efi-*.rom" "pxe-*.rom" "edk2-x86_64*.fd" "edk2-i386-vars.fd"; do
     for f in "$SHAREDIR"/$pat; do
-      [ -f "$f" ] && cp "$f" "$DEST/share/qemu/"
+      [ -f "$f" ] && cp "$f" "$DEST/bin/share/"
     done
   done
 fi
 
-[ -f "$DEST/share/qemu/bios-256k.bin" ] || [ -f "$DEST/share/qemu/edk2-x86_64-code.fd" ] || {
-  echo "error: Windows QEMU firmware missing in extracted bundle" >&2
+[ -f "$DEST/bin/share/bios-256k.bin" ] || {
+  echo "error: Windows QEMU SeaBIOS firmware missing in extracted bundle" >&2
   exit 1
 }
 
 (
   cd "$DEST"
-  find bin share -type f -print | LC_ALL=C sort | while IFS= read -r f; do
+  find bin -type f -print | LC_ALL=C sort | while IFS= read -r f; do
     if command -v shasum >/dev/null 2>&1; then
       shasum -a 256 "$f"
     else
@@ -138,6 +138,10 @@ with open(out, "w", encoding="utf-8") as f:
 PY
 fi
 
+if [ -e "$FINAL_DEST" ] || [ -L "$FINAL_DEST" ]; then
+  echo "error: destination $FINAL_DEST appeared while packing; leaving it unchanged" >&2
+  exit 1
+fi
 mv "$DEST" "$FINAL_DEST"
 rm -rf "$WORK"
 trap - EXIT

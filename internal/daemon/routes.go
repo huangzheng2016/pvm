@@ -314,7 +314,9 @@ const routeSwitchReadyTimeout = 3 * time.Minute
 // ssh readiness. The route is already switched at this point, so every
 // error names the exact recovery command instead of a bare failure.
 func (s *Server) startForRouteSwitch(spec *vm.Spec) error {
-	inst, man, err := s.startVM(spec)
+	task := s.beginAgentInstall(spec.Name)
+	defer s.finishAgentInstall(spec.Name, task)
+	inst, man, err := s.startVM(task.ctx, spec)
 	if err != nil {
 		return fmt.Errorf("vm failed to start: %w; run `pvm start %s`", err, spec.Name)
 	}

@@ -1,6 +1,7 @@
 package qemu
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -110,7 +111,7 @@ func (m *SnapshotManifest) checkMatch(c *VMConfig, qemuVersion string) error {
 	return nil
 }
 
-// selfExe resolves the running pvm binary for exec: migration URIs.
+// selfExe resolves the running pvm binary for migration helpers.
 func selfExe() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -191,7 +192,7 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) (retErr error) {
 		slots = append(slots, slot)
 	}
 	for _, slot := range slots {
-		if err := q.DeviceDel(VirtFSID(slot), 15*time.Second); err != nil {
+		if err := q.DeviceDel(VirtFSID(slot), 60*time.Second); err != nil {
 			return err
 		}
 		tag := "pvmshare"
@@ -205,21 +206,29 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) (retErr error) {
 		return fmt.Errorf("qmp stop: %w", err)
 	}
 	// No QEMU-level compression: QEMU 11 dropped the "compress"
-	// capability, and the exec: pipe already zstd-compresses.
+	// capability, and the migration helper already zstd-compresses.
 
-	exe, err := selfExe()
+	ramTmp := sp.RAM + ".tmp"
+	os.Remove(ramTmp)
+	uri, helperDone, finishHelper, cancelHelper, err := migrationOutgoing(ramTmp, in.Cfg.MemMB)
 	if err != nil {
 		return err
 	}
-	ramTmp := sp.RAM + ".tmp"
-	os.Remove(ramTmp)
-	uri := fmt.Sprintf("exec:%s __snapshot-pipe-out %s", shellQuote(exe), shellQuote(ramTmp))
+	defer cancelHelper()
 	if err := q.Migrate(uri); err != nil {
 		return fmt.Errorf("qmp migrate: %w", err)
 	}
 	migrationStarted = true
 	if err := waitMigrate(q, in.Cfg.MemMB); err != nil {
 		return err
+	}
+	if finishHelper != nil {
+		finishHelper()
+	}
+	if helperDone != nil {
+		if err := <-helperDone; err != nil {
+			return fmt.Errorf("migration helper: %w", err)
+		}
 	}
 
 	// RAM is fully saved; the old process must go away (its replacement
@@ -317,7 +326,7 @@ func (in *Instance) PrepareRestore(vmDir string) (*SnapshotManifest, error) {
 		return nil, fmt.Errorf("snapshot base disk missing: %w", err)
 	}
 
-	exe, err := selfExe()
+	uri, restoreStream, err := migrationRestore(sp.RAM)
 	if err != nil {
 		return nil, err
 	}
@@ -342,7 +351,8 @@ func (in *Instance) PrepareRestore(vmDir string) (*SnapshotManifest, error) {
 		return nil, fmt.Errorf("qemu-img create restore overlay: %v\n%s", err, out)
 	}
 	in.Cfg.DiskPath = sp.Restore
-	in.Cfg.Incoming = fmt.Sprintf("exec:%s __snapshot-pipe-in %s", shellQuote(exe), shellQuote(sp.RAM))
+	in.Cfg.Incoming = uri
+	in.restoreStream = restoreStream
 	in.Cfg.NoVirtFSDevices = true
 	return m, nil
 }
@@ -367,6 +377,14 @@ func captureSnapshotDisk(tc *Toolchain, src, dst string) error {
 }
 
 func (in *Instance) WaitRestored(vmDir string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	var helperDone chan error
+	if in.restoreStream != nil {
+		helperDone = make(chan error, 1)
+		go func() { helperDone <- in.restoreStream(ctx) }()
+		defer func() { in.restoreStream = nil }()
+	}
 	deadline := time.Now().Add(3 * time.Minute)
 	for time.Now().Before(deadline) {
 		q, err := DialQMP(in.Cfg.QMPSock)
@@ -376,6 +394,16 @@ func (in *Instance) WaitRestored(vmDir string) error {
 		}
 		defer q.Close()
 		for time.Now().Before(deadline) {
+			if helperDone != nil {
+				select {
+				case err := <-helperDone:
+					if err != nil {
+						return fmt.Errorf("restore helper: %w", err)
+					}
+					helperDone = nil
+				default:
+				}
+			}
 			status, err := q.MigrateStatus()
 			if err != nil {
 				return fmt.Errorf("query-migrate: %w", err)

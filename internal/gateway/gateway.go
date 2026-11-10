@@ -35,7 +35,7 @@ type MapEntry struct {
 type Config struct {
 	CIDR        string            `json:"cidr"`         // e.g. 100.99.1.0/24
 	GwIP        string            `json:"gw_ip"`        // e.g. 100.99.1.1
-	DNSUpstream string            `json:"dns_upstream"` // slirp DNS, 10.0.2.3
+	DNSUpstream string            `json:"dns_upstream"` // slirp address or tcp://resolver:port
 	VMs         []VMEntry         `json:"vms"`
 	Maps        []MapEntry        `json:"maps"`
 	Rules       []rules.Rule      `json:"rules,omitempty"`    // routing rules (fake-ip engine)

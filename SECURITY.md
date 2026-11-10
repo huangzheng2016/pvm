@@ -15,7 +15,7 @@ VMs in one cluster share a gateway and a layer-2 network. The gateway validates 
 
 ## Host and guest privileges
 
-The host `pvm` binary exposes the complete pvm control plane and acts with the host user's filesystem and process permissions. It can manage all local VMs, cluster routes, host-path mounts, exit registrations, and stored credentials. Access to the host account or pvm data directory is therefore not limited to one guest.
+The host `pvm` binary exposes the complete pvm control plane and acts with the host user's filesystem and process permissions. It can manage all local VMs, cluster routes, host-path mounts, exit registrations, and stored credentials. Access to the host account or pvm data directory is therefore not limited to one guest. On Windows, the daemon uses loopback TCP instead of a Unix socket and requires the bearer token in `~/.pvm/run/admin.token` for every API except `/v1/health`; this token is a local control-plane credential and must remain private.
 
 The Linux guest uses a separate binary with only `agent`, `map`, and `skill`. It has no host lifecycle, route, mount, exit, or `security` commands. Every local guest user can use `map`; requests carry no VM name. The daemon derives the VM identity from that guest's virtio-serial channel and limits list, add, and remove operations to maps owned by that VM. These maps still create host loopback listeners into the current VM.
 

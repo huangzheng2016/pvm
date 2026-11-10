@@ -169,7 +169,7 @@ func CmdUpgrade(args []string) int {
 	if err != nil || len(data) == 0 {
 		return fatalf("read extracted binary: %v (refusing to replace %s)", err, exe)
 	}
-	running, daemonRunning, err := upgradeRunningVMs()
+	running, daemonRunning, anyRunning, err := upgradeRunningVMs()
 	if err != nil {
 		return fatalf("inspect daemon before upgrade: %v", err)
 	}
@@ -177,11 +177,35 @@ func CmdUpgrade(args []string) int {
 		fmt.Printf("daemon will restart; %d running user VM(s) will be restored\n", len(running))
 	}
 	state := upgradeRecovery{Version: cur, Running: running, DaemonRunning: daemonRunning}
+	oldBinary, err := os.ReadFile(exe)
+	if err != nil {
+		return fatalf("read current binary for recovery: %v", err)
+	}
+	binarySHA := sha256.Sum256(oldBinary)
+	state.SHA256 = hex.EncodeToString(binarySHA[:])
+	qemuUpdate, err := prepareQEMUUpgrade(client, tag, tmp, state.SHA256)
+	if err != nil {
+		return fatalf("prepare QEMU runtime: %v", err)
+	}
+	if qemuUpdate != nil {
+		defer os.RemoveAll(qemuUpdate.stageRoot)
+		state.QEMUArch = qemuUpdate.arch
+		state.QEMUBackup = qemuUpdate.backup
+		state.QEMUHadPrevious = qemuUpdate.hadPrevious
+		state.QEMUCurrent = qemuUpdate.current
+		state.QEMUVersion = qemuUpdate.previousVersion
+	}
 	if err := saveUpgradeRecovery(exe, state); err != nil {
 		return fatalf("save rollback: %v", err)
 	}
-	if err := fsutil.AtomicWrite(exe, data, 0o755); err != nil {
+	if err := prepareDaemonForRuntimeChange(runtime.GOOS, daemonRunning, anyRunning, *noRestart, qemuUpdate != nil, func() int { return CmdDaemon([]string{"stop"}) }); err != nil {
+		return fatalf("%v", err)
+	}
+	if err := replaceBinary(exe, data); err != nil {
 		return fatalf("replace %s: %v", exe, err)
+	}
+	if err := qemuUpdate.Activate(); err != nil {
+		return fatalf("activate QEMU runtime: %v; run `pvm upgrade --rollback -y` to restore both components", err)
 	}
 	if *noRestart {
 		fmt.Printf("upgraded to %s; restart the daemon to use it: pvm daemon restart; rollback: pvm upgrade --rollback -y\n", tag)
@@ -201,10 +225,15 @@ func CmdUpgrade(args []string) int {
 var releaseTagPattern = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$`)
 
 type upgradeRecovery struct {
-	Version       string   `json:"version"`
-	Running       []string `json:"running"`
-	DaemonRunning bool     `json:"daemon_running"`
-	SHA256        string   `json:"sha256"`
+	Version         string   `json:"version"`
+	Running         []string `json:"running"`
+	DaemonRunning   bool     `json:"daemon_running"`
+	SHA256          string   `json:"sha256"`
+	QEMUArch        string   `json:"qemu_arch,omitempty"`
+	QEMUBackup      string   `json:"qemu_backup,omitempty"`
+	QEMUHadPrevious bool     `json:"qemu_had_previous,omitempty"`
+	QEMUCurrent     string   `json:"qemu_current,omitempty"`
+	QEMUVersion     string   `json:"qemu_version,omitempty"`
 }
 
 func verifyReleaseAttestation(path, tag string) error {
@@ -314,8 +343,18 @@ func rollbackUpgrade(exe string, noRestart, yes bool) int {
 	if !yes && !confirmAction(os.Stdin, os.Stdout, "restore saved pvm binary and VM state?") {
 		return fatalf("aborted")
 	}
-	if err := fsutil.AtomicWrite(exe, old, 0o755); err != nil {
+	_, daemonRunning, anyRunning, err := upgradeRunningVMs()
+	if err != nil {
+		return fatalf("inspect daemon before rollback: %v", err)
+	}
+	if err := prepareDaemonForRuntimeChange(runtime.GOOS, daemonRunning, anyRunning, noRestart, state.QEMUArch != "", func() int { return CmdDaemon([]string{"stop"}) }); err != nil {
+		return fatalf("%v", err)
+	}
+	if err := replaceBinary(exe, old); err != nil {
 		return fatalf("restore binary: %v", err)
+	}
+	if err := restoreQEMUUpgrade(state); err != nil {
+		return fatalf("binary restored but QEMU rollback failed: %v; retry `pvm upgrade --rollback -y`", err)
 	}
 	if !noRestart && state.DaemonRunning {
 		if err := restoreUpgradeVMs(state.Running, func() int { return CmdDaemon([]string{"restart"}) }, func(name string) int { return CmdStart([]string{name}) }); err != nil {
@@ -330,35 +369,39 @@ func rollbackUpgrade(exe string, noRestart, yes bool) int {
 	return 0
 }
 
-func upgradeRunningVMs() ([]string, bool, error) {
+func upgradeRunningVMs() ([]string, bool, bool, error) {
 	p, err := paths.Default()
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	c := daemon.NewClient(p)
 	if !c.Healthy() {
 		if _, err := os.Stat(p.DaemonRunLock()); err == nil {
 			lock, err := fsutil.TryLock(p.DaemonRunLock())
 			if err != nil {
-				return nil, true, fmt.Errorf("daemon is running but unresponsive; recover it before upgrading")
+				return nil, true, false, fmt.Errorf("daemon is running but unresponsive; recover it before upgrading")
 			}
 			lock.Unlock()
 		} else if !os.IsNotExist(err) {
-			return nil, false, err
+			return nil, false, false, err
 		}
-		return nil, false, nil
+		return nil, false, false, nil
 	}
 	var infos []vmInfoView
 	if err := c.Get("/v1/vms", &infos); err != nil {
-		return nil, true, err
+		return nil, true, false, err
 	}
 	var running []string
+	anyRunning := false
 	for _, info := range infos {
-		if info.Running && info.Spec.Role != "gateway" {
-			running = append(running, info.Spec.Name)
+		if info.Running {
+			anyRunning = true
+			if info.Spec.Role != "gateway" {
+				running = append(running, info.Spec.Name)
+			}
 		}
 	}
-	return running, true, nil
+	return running, true, anyRunning, nil
 }
 
 func downloadFile(client *http.Client, url, dst string) error {

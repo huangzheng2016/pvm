@@ -151,11 +151,6 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 	}
 	args := []string{}
 
-	// Windows QEMU needs -L to locate BIOS/firmware files
-	if runtime.GOOS == "windows" && t.FirmwareDir != "" {
-		args = append(args, "-L", t.FirmwareDir)
-	}
-
 	if native.Arch == "arm64" {
 		args = append(args, "-machine", "virt")
 		if t.FirmwareDir == "" {
@@ -171,6 +166,9 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 		args = append(args, "-machine", "q35")
 	}
 
+	if t != nil && t.FirmwareDir != "" {
+		args = append(args, "-L", t.FirmwareDir)
+	}
 	args = append(args, c.Accel.Args()...)
 	if c.SmbiosSpoof {
 		// A coherent desktop persona: VMs have no battery/ACPI power
@@ -226,8 +224,8 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 	}
 
 	if t != nil && !t.SupportsVirtio9p() {
-		if len(c.ExtraMounts) > 0 {
-			return nil, fmt.Errorf("current QEMU build does not support virtio-9p; use WSL2 mode or a QEMU build with VirtFS enabled")
+		if !c.NoShare || len(c.ExtraMounts) > 0 {
+			return nil, fmt.Errorf("current QEMU build does not support virtio-9p; use --share none, WSL2 mode, or a QEMU build with VirtFS enabled")
 		}
 		return args, nil
 	}
@@ -317,7 +315,7 @@ func netArgs(n Network) []string {
 			}
 		}
 		return []string{
-			"-netdev", "user,id=net0," + fwd,
+			"-netdev", "user,id=net0,ipv6=off," + fwd,
 			"-device", "virtio-net-pci,netdev=net0",
 		}
 	}

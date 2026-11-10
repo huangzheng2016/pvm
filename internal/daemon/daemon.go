@@ -73,7 +73,8 @@ type Server struct {
 	watchMu  sync.Mutex // guards watchSeq
 	watchSeq map[string]uint64
 
-	gwPushLocks sync.Map // clusterID -> chan struct{} (cap 1), serializes gateway config pushes
+	gwPushLocks  sync.Map // clusterID -> chan struct{} (cap 1), serializes gateway config pushes
+	gwAgentLocks sync.Map // clusterID -> chan struct{} (cap 1), serializes gateway agent deployments
 }
 
 type vmInfo struct {
@@ -529,7 +530,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	if req.Start {
 		bootStart := time.Now()
-		if _, _, err := s.startVM(spec); err != nil {
+		task := s.beginAgentInstall(spec.Name)
+		_, _, err := s.startVM(task.ctx, spec)
+		s.finishAgentInstall(spec.Name, task)
+		if err != nil {
 			if rerr := s.rollbackFailedCreate(spec, cl); rerr != nil {
 				writeErr(w, 500, fmt.Errorf("start failed (%v) and %v", err, rerr))
 				return
@@ -573,7 +577,31 @@ func (s *Server) rollbackFailedCreate(spec *vm.Spec, cl *cluster.Cluster) error 
 	return nil
 }
 
-func (s *Server) startVM(spec *vm.Spec) (*qemu.Instance, *qemu.SnapshotManifest, error) {
+func (s *Server) prepareClusterStart(ctx context.Context, spec *vm.Spec) error {
+	if spec.Role == "gateway" || spec.ClusterID == 0 {
+		return nil
+	}
+	cl, err := s.ensureCluster(spec.ClusterID)
+	if err != nil {
+		return err
+	}
+	if err := s.ensureLinkRetry(ctx, cl, spec.Name); err != nil {
+		return err
+	}
+	// Provision the agent before pushing its first config: a gateway under
+	// TCG may need several minutes for cloud-init, longer than the retry loop.
+	if err := s.deployGatewayAgentCtx(ctx, cl); err != nil {
+		return fmt.Errorf("deploy gateway agent: %w", err)
+	}
+	// The gateway agent and DHCP mapping must both be ready before the user
+	// VM boots; slow TCG starts can exhaust networkd-wait-online otherwise.
+	if err := s.pushGatewayConfigRetryCtx(ctx, cl.ID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Server) startVM(ctx context.Context, spec *vm.Spec) (*qemu.Instance, *qemu.SnapshotManifest, error) {
 	if spec.Role == "gateway" {
 		inst := s.instance(spec)
 		if err := inst.Start(); err != nil {
@@ -588,21 +616,8 @@ func (s *Server) startVM(spec *vm.Spec) (*qemu.Instance, *qemu.SnapshotManifest,
 	if err := s.prepareMountSlots(spec); err != nil {
 		return nil, nil, err
 	}
-	if spec.ClusterID > 0 {
-		cl, err := s.ensureCluster(spec.ClusterID)
-		if err != nil {
-			return nil, nil, err
-		}
-		if err := s.ensureLinkRetry(cl, spec.Name); err != nil {
-			return nil, nil, err
-		}
-		// The DHCP mapping must be in place before the guest's first
-		// DHCP request: the async deploy races the boot and fast-give-up
-		// DHCP clients never get an offer.
-		if err := s.pushGatewayConfigRetry(cl.ID); err != nil {
-			return nil, nil, err
-		}
-		go s.deployClusterAgent(cl) // binary push is best-effort async
+	if err := s.prepareClusterStart(ctx, spec); err != nil {
+		return nil, nil, err
 	}
 	inst := s.instance(spec)
 	man, err := inst.PrepareRestore(s.P.VMDir(spec.Name))
@@ -617,7 +632,9 @@ func (s *Server) startVM(spec *vm.Spec) (*qemu.Instance, *qemu.SnapshotManifest,
 }
 
 func (s *Server) deployClusterAgent(cl *cluster.Cluster) {
-	if err := s.deployGatewayAgent(cl); err != nil {
+	task := s.beginAgentInstall(cl.Gateway)
+	defer s.finishAgentInstall(cl.Gateway, task)
+	if err := s.deployGatewayAgentCtx(task.ctx, cl); err != nil && task.ctx.Err() == nil {
 		log.Printf("deploy gateway agent: %v", err)
 	}
 }
@@ -653,6 +670,12 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	} else if running != nil {
+		task := s.beginAgentInstall(spec.Name)
+		defer s.finishAgentInstall(spec.Name, task)
+		if err := s.prepareClusterStart(task.ctx, spec); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
 		if !s.vmReady(spec.Name) || spec.IdentityReset {
 			s.resetStages(spec.Name)
 			if spec.IdentityReset {
@@ -665,7 +688,9 @@ func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.resetStages(spec.Name)
-	inst, man, err := s.startVM(spec)
+	task := s.beginAgentInstall(spec.Name)
+	defer s.finishAgentInstall(spec.Name, task)
+	inst, man, err := s.startVM(task.ctx, spec)
 	if err != nil {
 		writeErr(w, 500, err)
 		return

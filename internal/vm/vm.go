@@ -154,13 +154,17 @@ func (s *Spec) SharedDir(p *paths.Paths) string {
 	return p.Share
 }
 
-// HostUID returns a valid guest UID aligned with the host user (1000 on Windows where os.Getuid is -1).
+// HostUID returns a valid unprivileged guest UID aligned with the host user.
+// Root and Windows hosts use 1000 because guest uid 0 cannot be created as a normal user.
 func HostUID() int {
-	uid := os.Getuid()
-	if uid < 0 {
+	return guestUID(os.Getuid())
+}
+
+func guestUID(hostUID int) int {
+	if hostUID <= 0 {
 		return 1000
 	}
-	return uid
+	return hostUID
 }
 
 func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poolBase, poolSize int) qemu.VMConfig {
@@ -244,6 +248,9 @@ func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec) error {
 
 	if spec.ShareMode == SharePrivate {
 		if err := os.Mkdir(p.VMShare(spec.Name), 0o755); err != nil {
+			return err
+		}
+		if err := preparePrivateShare(p.VMShare(spec.Name), spec.GuestUID); err != nil {
 			return err
 		}
 	}

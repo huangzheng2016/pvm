@@ -158,7 +158,10 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Start {
-		if _, _, err := s.startVM(spec); err != nil {
+		task := s.beginAgentInstall(spec.Name)
+		_, _, err := s.startVM(task.ctx, spec)
+		s.finishAgentInstall(spec.Name, task)
+		if err != nil {
 			if rerr := s.rollbackCloneVM(cl, spec); rerr != nil {
 				writeErr(w, 500, fmt.Errorf("cloned but start failed (%v) and %v", err, rerr))
 				return

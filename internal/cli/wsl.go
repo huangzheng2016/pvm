@@ -25,7 +25,7 @@ import (
 //  2. config.yaml backend ("native" | "wsl" | "auto")
 //  3. In "auto" mode (default):
 //     - If a native Windows daemon is already healthy, or native QEMU is
-//       installed, use "native".
+//     installed, use "native".
 //     - Otherwise, if WSL2 is available and has `pvm` installed, use "wsl".
 //     - Otherwise default to "native".
 func ResolveWindowsBackend(p *paths.Paths) (string, error) {

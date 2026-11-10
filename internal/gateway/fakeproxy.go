@@ -63,14 +63,8 @@ type trackedConn struct {
 
 func newFakeProxy(policy *gwpolicy.Engine, upstream string, vmByIP func(net.IP) string) *fakeProxy {
 	return &fakeProxy{
-		policy: policy,
-		resolver: &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				d := net.Dialer{Timeout: 5 * time.Second}
-				return d.DialContext(ctx, "udp", upstream+":53")
-			},
-		},
+		policy:       policy,
+		resolver:     upstreamResolver(upstream),
 		vmByIP:       vmByIP,
 		markFor:      func(string) int { return -1 },
 		dcAddrFor:    func(string) (string, bool) { return "", false },

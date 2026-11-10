@@ -13,6 +13,14 @@ For security boundaries, credential handling, isolation risks, and verification,
 
 pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, linux/amd64 and windows/amd64 run amd64 VMs. On Windows, pvm supports both delegating to a WSL2 Linux pvm instance (`PVM_BACKEND=wsl`) and running native Windows QEMU with WHPX (`PVM_BACKEND=native`, or `auto`). Build artifacts contain guest binaries and the QEMU runtime for the current host architecture only — no cross-arch emulation or packages.
 
+### Windows hosts
+
+- `PVM_BACKEND=wsl` delegates commands to `pvm` in WSL2 and is the recommended mode for full `/share`, extra mounts, and KVM where available. `pvm mount` converts a Windows source such as `C:\work\proj` to `/mnt/c/work/proj` before delegation.
+- `PVM_BACKEND=native` runs a Windows daemon on loopback TCP. All daemon APIs except `/v1/health` require the bearer token stored in `~/.pvm/run/admin.token`. `pvm daemon install` uses a Scheduled Task.
+- Native Windows QEMU does not provide virtio-9p. `create` therefore uses `--share none` and prints a warning; explicitly requesting `private` or `global` fails with guidance to use WSL2. Use WSL2 when host/guest file sharing is required.
+- Native mode uses WHPX only when Windows Hypervisor Platform is enabled and its probe succeeds. Otherwise it uses TCG and reports the fallback. `PVM_QEMU_ACCEL=whpx` forces a WHPX attempt; `PVM_QEMU_ACCEL=tcg` forces emulation. Native Windows resolves through DNS-over-TCP to avoid Windows QEMU UDP DNS failures. Set `PVM_DNS_UPSTREAM` to override the upstream (for example `tcp://192.0.2.53:53`); Linux and WSL2 retain the default slirp resolver.
+- `PVM_BACKEND=auto` is the default and chooses a running native daemon or native QEMU first, then WSL2 if pvm is installed there. Run `pvm doctor` to inspect backend, OpenSSH, QEMU, WSL2, and acceleration readiness.
+
 ## Prerequisites
 
 - If pvm is on PATH, use `pvm ...`; inside the repo, use `./pvm ...` from the repo root.
@@ -65,7 +73,7 @@ pvm ssh dev1 'whoami && ls /share'
 - create follows progress by default (image, disk, boot, cloud-init and agent readiness); `--no-wait` returns immediately.
 - Golden images come with Docker, common dev tools, and a native XFCE desktop (TigerVNC + noVNC) preinstalled. User VMs get a virtio-gpu display device by default (`/dev/dri` in the guest); gateway and build VMs stay headless.
 - New VMs use per-VM pvm management keypairs, no password; existing VMs retain their original key. `pvm ssh dev1` opens an interactive shell; when both local stdin/stdout are terminals, `pvm ssh dev1 codex` and other interactive commands also get a TTY automatically. Use `pvm ssh -t dev1 <cmd>` to force one or `-T` to disable it. SSH remote commands run through the user's login shell, loading `~/.profile`, Bash login files, or `~/.zprofile`; TTY commands also request interactive mode so `.bashrc`/`.zshrc` follow the shell's normal startup rules. When SSH is unreachable the virtio-serial agent channel takes over automatically (or use `pvm exec dev1 <cmd...>` explicitly - it needs no network).
-- create/start pushes the VM's IP/MAC mapping to the gateway DHCP **synchronously** before booting (new VMs are reachable immediately); if the gateway is unreachable, start fails instead of booting a network-less VM.
+- create/start pushes the VM's IP/MAC mapping to the gateway DHCP **synchronously** before booting and deploys the gateway agent before the user VM starts (new VMs get a DHCP offer on their first request); if the gateway is unreachable, start fails instead of booting a network-less VM.
 - Cluster addressing: VMs live in `100.99.<cluster>.0/24` (CGNAT space), the gateway is `100.99.<cluster>.1`.
 
 ### 2. Route all of a VM's traffic through the VPS
@@ -191,7 +199,7 @@ pvm daemon stop && pvm daemon start
 - `pvm doctor`, `pvm audit dev1 --privacy`, and `pvm route explain dev1 example.com` inspect local state without network probes or starting the daemon; output is redacted. Route explanations describe configuration, not observed traffic, and do not resolve DNS.
 - Automatic update checks are off; opt in with `update_check: true` in config.yaml or `PVM_UPDATE_CHECK=1`. `PVM_NO_UPDATE_CHECK=1` overrides either. Failed checks are also cached for 24 hours.
 - Installer and `pvm upgrade` require GitHub CLI (`gh`) for release attestation verification; the installer also requires Python 3. `pvm upgrade --rollback` restores the saved binary and VM recovery plan.
-- Restarting the daemon stops user VMs (the gateway recovers automatically); start them again with `pvm start <name>`. `pvm upgrade` does this restart and restores previously running user VMs automatically; use `--no-restart` only when you want to handle that lifecycle yourself.
+- Restarting the daemon stops user VMs (the gateway recovers automatically); start them again with `pvm start <name>`. `pvm upgrade` does this restart and restores previously running user VMs automatically; use `--no-restart` only when you want to handle that lifecycle yourself. On Windows, `--no-restart` requires all VMs stopped when upgrading QEMU; otherwise pvm stops the daemon before replacing the runtime and restores the recorded VM plan. `pvm upgrade --rollback` restores the saved binary, QEMU runtime, and VM recovery plan.
 - If the gateway pvm-gw1 spins at high CPU with SSH unreachable for a long time, recover with `pvm stop pvm-gw1 && pvm start pvm-gw1`. Never delete pvm-gw1 (the daemon recreates it, but cluster networking is down and custom state is lost in the meantime).
 - The daemon holds a single-instance lock; on `another pvm daemon is already running`, find the existing daemon instead of spawning a second one.
 - A boot watchdog restarts a VM only after two consecutive checks show full CPU with zero console progress; slow TCG boots are left alone.
@@ -204,7 +212,7 @@ pvm release binaries are single files from GitHub Releases. Tags publish archite
 
 ```bash
 VPS=root@vps.example.com
-TAG=v1.1.0
+TAG=v1.1.2
 ASSET=pvm_linux_amd64.tar.gz   # use pvm_linux_arm64.tar.gz for an arm64 VPS
 REPO=huangzheng2016/pvm
 WORK=$(mktemp -d)
