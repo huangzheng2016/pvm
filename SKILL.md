@@ -18,7 +18,7 @@ pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, l
 - `PVM_BACKEND=wsl` delegates commands to `pvm` in WSL2 and is the recommended mode for full `/share`, extra mounts, and KVM where available. `pvm mount` converts a Windows source such as `C:\work\proj` to `/mnt/c/work/proj` before delegation.
 - `PVM_BACKEND=native` runs a Windows daemon on loopback TCP. All daemon APIs except `/v1/health` require the bearer token stored in `~/.pvm/run/admin.token`. `pvm daemon install` uses a Scheduled Task.
 - Native Windows QEMU does not provide virtio-9p. `create` therefore uses `--share none` and prints a warning; explicitly requesting `private` or `global` fails with guidance to use WSL2. Use WSL2 when host/guest file sharing is required.
-- Native mode uses WHPX only when Windows Hypervisor Platform is enabled and its probe succeeds. Otherwise it uses TCG and reports the fallback. `PVM_QEMU_ACCEL=whpx` forces a WHPX attempt; `PVM_QEMU_ACCEL=tcg` forces emulation. Native Windows resolves through DNS-over-TCP to avoid Windows QEMU UDP DNS failures. Set `PVM_DNS_UPSTREAM` to override the upstream (for example `tcp://192.0.2.53:53`); Linux and WSL2 retain the default slirp resolver.
+- Native mode uses WHPX only when Windows Hypervisor Platform is enabled and its probe succeeds. Otherwise it uses TCG and reports the fallback. `PVM_QEMU_ACCEL=whpx` forces a WHPX attempt; `PVM_QEMU_ACCEL=tcg` forces emulation. When `create`, `start`, `clone`, or `image build` detects TCG, pvm prints backend-specific acceleration guidance. To enable WSL2 nested virtualization, set `nestedVirtualization=true` under `[wsl2]` in `%UserProfile%\.wslconfig`, run `wsl --shutdown`, restart WSL, and verify `/dev/kvm`. Explicitly setting `PVM_QEMU_ACCEL=tcg` suppresses the warning. Native Windows resolves through DNS-over-TCP to avoid Windows QEMU UDP DNS failures. Set `PVM_DNS_UPSTREAM` to override the upstream (for example `tcp://192.0.2.53:53`); Linux and WSL2 retain the default slirp resolver.
 - `PVM_BACKEND=auto` is the default and chooses a running native daemon or native QEMU first, then WSL2 if pvm is installed there. Run `pvm doctor` to inspect backend, OpenSSH, QEMU, WSL2, and acceleration readiness.
 
 ## Prerequisites
@@ -212,7 +212,7 @@ pvm release binaries are single files from GitHub Releases. Tags publish archite
 
 ```bash
 VPS=root@vps.example.com
-TAG=v1.1.3
+TAG=v1.1.6
 ASSET=pvm_linux_amd64.tar.gz   # use pvm_linux_arm64.tar.gz for an arm64 VPS
 REPO=huangzheng2016/pvm
 WORK=$(mktemp -d)

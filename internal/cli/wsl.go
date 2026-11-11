@@ -102,10 +102,13 @@ func DelegateToWSL(args []string) int {
 }
 
 // RewriteArgsForWSL converts Windows host paths in `pvm mount` arguments to
-// WSL /mnt/<drive>/... paths while leaving guest paths and other commands
-// untouched.
+// WSL /mnt/<drive>/... paths and restores guest paths rewritten by Git Bash.
 func RewriteArgsForWSL(args []string) []string {
 	out := append([]string(nil), args...)
+	if len(out) == 4 && out[0] == "mount" && out[1] == "rm" {
+		out[3] = restoreGitBashPosixPath(out[3], os.Getenv("EXEPATH"))
+		return out
+	}
 	if len(out) < 3 || out[0] != "mount" || out[1] == "ls" || out[1] == "rm" {
 		return out
 	}
@@ -125,6 +128,36 @@ func RewriteArgsForWSL(args []string) []string {
 	}
 	out[len(out)-1] = WindowsToWSLPath(host) + ":" + guest
 	return out
+}
+
+func gitBashGuestPath(p string) string {
+	if runtime.GOOS != "windows" {
+		return p
+	}
+	return restoreGitBashPosixPath(p, os.Getenv("EXEPATH"))
+}
+
+func restoreGitBashPosixPath(p, exePath string) string {
+	if !hasWindowsDrivePrefix(p) || !hasWindowsDrivePrefix(exePath) {
+		return p
+	}
+	root := strings.TrimRight(strings.ReplaceAll(exePath, `\`, "/"), "/")
+	if !strings.HasSuffix(strings.ToLower(root), "/bin") {
+		return p
+	}
+	root = root[:len(root)-4]
+	candidate := strings.ReplaceAll(p, `\`, "/")
+	if len(candidate) < len(root) || !strings.EqualFold(candidate[:len(root)], root) {
+		return p
+	}
+	rest := candidate[len(root):]
+	if rest == "" {
+		return "/"
+	}
+	if !strings.HasPrefix(rest, "/") {
+		return p
+	}
+	return rest
 }
 
 // WindowsToWSLPath converts a Windows drive path like `C:\Users\dev\work` or
@@ -183,7 +216,7 @@ func windowsDoctorChecks(p *paths.Paths) []auditCheck {
 		if accel == qemu.AccelWHPX {
 			checks = append(checks, auditCheck{"windows_accel", "ok", "native QEMU with WHPX hardware acceleration available"})
 		} else {
-			checks = append(checks, auditCheck{"windows_accel", "warn", "native QEMU found but WHPX is unavailable (using TCG); enable Windows Hypervisor Platform or use PVM_BACKEND=wsl"})
+			checks = append(checks, auditCheck{"windows_accel", "warn", "native QEMU found but WHPX is unavailable (using TCG); enable HypervisorPlatform and reboot, or configure WSL2 nested virtualization and use PVM_BACKEND=wsl"})
 		}
 	case wslOK:
 		checks = append(checks, auditCheck{"windows_accel", "ok", "WSL2 pvm backend available"})

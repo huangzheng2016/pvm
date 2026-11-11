@@ -80,6 +80,18 @@ func TestManagedSSHUsesOnlyDedicatedIdentity(t *testing.T) {
 	}
 }
 
+func TestManagedSSHConnectTimeoutAllowsTCG(t *testing.T) {
+	p := paths.New(t.TempDir())
+	srv := NewServer(p, &config.Config{}, &qemu.Toolchain{}, qemu.AccelTCG, nil)
+	args, _, err := srv.sshBaseArgs(&vm.Spec{Name: "dev1", User: "dev", Role: "gateway", SSHPort: 10022})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(args, " "), "ConnectTimeout=10") {
+		t.Fatalf("managed SSH timeout does not match the CLI: %v", args)
+	}
+}
+
 func TestSnapshotExistingArtifactsRejectedBeforeGuestChanges(t *testing.T) {
 	p := paths.New(t.TempDir())
 	if err := p.Ensure(); err != nil {

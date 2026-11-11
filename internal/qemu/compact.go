@@ -17,6 +17,14 @@ type CompactResult struct {
 	Changed     bool  `json:"changed"`
 }
 
+func convertBackingFlag(version [3]int) string {
+	// QEMU 11 renamed convert's backing option from -B to -b.
+	if version != [3]int{} && version[0] < 11 {
+		return "-B"
+	}
+	return "-b"
+}
+
 type diskImageInfo struct {
 	VirtualSize           int64  `json:"virtual-size"`
 	ActualSize            int64  `json:"actual-size"`
@@ -64,7 +72,7 @@ func CompactDisk(tc *Toolchain, path string) (*CompactResult, error) {
 		if before.BackingFilenameFormat == "" {
 			return nil, fmt.Errorf("disk %s has an unknown backing format", path)
 		}
-		args = append(args, "-b", BackingPath(backing), "-F", before.BackingFilenameFormat)
+		args = append(args, convertBackingFlag(tc.Version), BackingPath(backing), "-F", before.BackingFilenameFormat)
 	}
 	args = append(args, path, tmp)
 	convCmd := exec.Command(tc.Img, args...)

@@ -2,6 +2,26 @@ package cli
 
 import "testing"
 
+func TestParseImageBuildArgs(t *testing.T) {
+	for _, args := range [][]string{
+		{"ubuntu:24.04", "--keep-vm", "--cpus", "2", "--mem", "2048", "--disk", "10"},
+		{"--keep-vm", "--cpus", "2", "--mem", "2048", "--disk", "10", "ubuntu:24.04"},
+	} {
+		opts, ok := parseImageBuildArgs(args)
+		if !ok {
+			t.Fatalf("parseImageBuildArgs(%v) failed", args)
+		}
+		if opts.spec != "ubuntu:24.04" || !opts.keep || opts.cpus != 2 || opts.mem != 2048 || opts.disk != 10 {
+			t.Errorf("parseImageBuildArgs(%v) = %+v", args, opts)
+		}
+	}
+	for _, args := range [][]string{{}, {"ubuntu:24.04", "debian:13"}, {"--cpus", "2"}} {
+		if _, ok := parseImageBuildArgs(args); ok {
+			t.Errorf("parseImageBuildArgs(%v) unexpectedly passed", args)
+		}
+	}
+}
+
 func TestResolveImageSpec(t *testing.T) {
 	cases := []struct {
 		name, image, distro, version, want string

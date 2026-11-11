@@ -150,6 +150,7 @@ func CmdClone(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
+	warnTCG(c)
 
 	var allMaps []srcMapView
 	if err := c.Get("/v1/maps", &allMaps); err != nil {

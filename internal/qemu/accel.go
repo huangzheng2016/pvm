@@ -50,7 +50,7 @@ func Detect(t *Toolchain, goos string) Accel {
 			return AccelKVM
 		}
 	case "windows":
-		if probe(t, "-machine", "q35,accel=whpx,kernel-irqchip=off", "-L", t.FirmwareDir) {
+		if windowsHypervisorPlatformEnabled() && probe(t, "-machine", "q35,accel=whpx,kernel-irqchip=off", "-L", t.FirmwareDir) {
 			return AccelWHPX
 		}
 	}

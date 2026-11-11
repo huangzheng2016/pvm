@@ -125,7 +125,8 @@ func CmdMount(args []string) int {
 		if err != nil {
 			return fatalf("%v", err)
 		}
-		path := "/v1/vms/" + args[1] + "/mounts?guest=" + url.QueryEscape(args[2])
+		guest := gitBashGuestPath(args[2])
+		path := "/v1/vms/" + args[1] + "/mounts?guest=" + url.QueryEscape(guest)
 		if err := c.Delete(path, nil); err != nil {
 			return fatalf("mount rm: %v", err)
 		}

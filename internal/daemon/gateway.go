@@ -528,7 +528,7 @@ func (s *Server) sshBaseArgs(spec *vm.Spec) ([]string, string, error) {
 		"-o", "StrictHostKeyChecking=no",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "LogLevel=ERROR",
-		"-o", "ConnectTimeout=5",
+		"-o", "ConnectTimeout=10",
 		"-o", "ConnectionAttempts=1",
 		"-o", "BatchMode=yes",
 	}
