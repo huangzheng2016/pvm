@@ -44,6 +44,30 @@ func TestWindowsToWSLPath(t *testing.T) {
 	}
 }
 
+func TestRestoreGitBashPosixPath(t *testing.T) {
+	exePath := `C:\Program Files\Git\bin`
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{`C:\Program Files\Git\home\dev\work`, "/home/dev/work"},
+		{"C:/Program Files/Git/home/dev", "/home/dev"},
+		{"c:/program files/git/home/dev", "/home/dev"},
+		{"C:/Program Files/Git", "/"},
+		{"C:/Program Files/Git2/home/dev", "C:/Program Files/Git2/home/dev"},
+		{"C:/work/proj", "C:/work/proj"},
+		{"/home/dev", "/home/dev"},
+	}
+	for _, tc := range cases {
+		if got := restoreGitBashPosixPath(tc.in, exePath); got != tc.want {
+			t.Errorf("restoreGitBashPosixPath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if got := restoreGitBashPosixPath("C:/Program Files/Git/home/dev", ""); got != "C:/Program Files/Git/home/dev" {
+		t.Errorf("path changed without Git Bash environment: %q", got)
+	}
+}
+
 func TestRewriteArgsForWSL(t *testing.T) {
 	in := []string{"mount", "dev1", "--profile", "readahead", `C:\Users\dev\proj:/home/dev/proj`}
 	want := []string{"mount", "dev1", "--profile", "readahead", "/mnt/c/Users/dev/proj:/home/dev/proj"}
@@ -53,5 +77,11 @@ func TestRewriteArgsForWSL(t *testing.T) {
 	lsIn := []string{"mount", "ls", "dev1"}
 	if got := RewriteArgsForWSL(lsIn); !reflect.DeepEqual(got, lsIn) {
 		t.Fatalf("RewriteArgsForWSL(ls) mutated: %v", got)
+	}
+	t.Setenv("EXEPATH", `C:\Program Files\Git\bin`)
+	rmIn := []string{"mount", "rm", "dev1", "C:/Program Files/Git/home/dev/proj"}
+	rmWant := []string{"mount", "rm", "dev1", "/home/dev/proj"}
+	if got := RewriteArgsForWSL(rmIn); !reflect.DeepEqual(got, rmWant) {
+		t.Fatalf("RewriteArgsForWSL(rm) = %v, want %v", got, rmWant)
 	}
 }

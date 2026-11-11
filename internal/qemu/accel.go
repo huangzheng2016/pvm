@@ -88,7 +88,8 @@ func (a Accel) Args() []string {
 	case AccelTCG:
 		return []string{"-accel", "tcg,thread=multi", "-cpu", "max"}
 	case AccelWHPX:
-		return []string{"-accel", "whpx", "-cpu", "host"}
+		// Some WHPX hosts reject the feature set exposed by host/max.
+		return []string{"-accel", "whpx", "-cpu", "qemu64"}
 	default:
 		return []string{"-accel", string(a), "-cpu", "host"}
 	}

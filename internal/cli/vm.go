@@ -49,6 +49,28 @@ type vmInfoView struct {
 	} `json:"stages"`
 }
 
+type imageBuildOptions struct {
+	spec            string
+	keep            bool
+	cpus, mem, disk int
+}
+
+func parseImageBuildArgs(args []string) (imageBuildOptions, bool) {
+	fs := newFlagSet("image build", "<distro:version> [--keep-vm] [--cpus 4] [--mem 6144] [--disk 25]")
+	keep := fs.Bool("keep-vm", false, "keep the build VM for debugging")
+	cpus := fs.Int("cpus", 4, "build vm vcpus")
+	mem := fs.Int("mem", 6144, "build vm memory MB")
+	disk := fs.Int("disk", 25, "build vm disk GB")
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		args = append(append([]string{}, args[1:]...), args[0])
+	}
+	if err := fs.Parse(args); err != nil || fs.NArg() != 1 {
+		fs.Usage()
+		return imageBuildOptions{}, false
+	}
+	return imageBuildOptions{spec: fs.Arg(0), keep: *keep, cpus: *cpus, mem: *mem, disk: *disk}, true
+}
+
 func CmdImage(args []string) int {
 	if len(args) == 0 {
 		return fatalf("usage: pvm image fetch <distro:version> | pvm image build <distro:version> [--keep-vm] | pvm image list")
@@ -83,19 +105,11 @@ func CmdImage(args []string) int {
 		fmt.Printf("ok: %s\n", path)
 		return 0
 	case "build":
-		fs := newFlagSet("image build", "<distro:version> [--keep-vm] [--cpus 4] [--mem 6144] [--disk 25]")
-		keep := fs.Bool("keep-vm", false, "keep the build VM for debugging")
-		cpus := fs.Int("cpus", 4, "build vm vcpus")
-		mem := fs.Int("mem", 6144, "build vm memory MB")
-		disk := fs.Int("disk", 25, "build vm disk GB")
-		if err := fs.Parse(args[1:]); err != nil {
+		opts, ok := parseImageBuildArgs(args[1:])
+		if !ok {
 			return 2
 		}
-		if fs.NArg() < 1 {
-			fs.Usage()
-			return 2
-		}
-		return cmdImageBuild(p, fs.Arg(0), *keep, *cpus, *mem, *disk)
+		return cmdImageBuild(p, opts.spec, opts.keep, opts.cpus, opts.mem, opts.disk)
 	case "list":
 		imgs, err := image.List(p.Images)
 		if err != nil {

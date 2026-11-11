@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func requireCompactTools(t *testing.T) (string, string) {
+func requireCompactTools(t *testing.T) (string, string, [3]int) {
 	t.Helper()
 	img, err := exec.LookPath("qemu-img")
 	if err != nil {
@@ -18,7 +18,11 @@ func requireCompactTools(t *testing.T) (string, string) {
 	if err != nil {
 		t.Skip("qemu-io not installed")
 	}
-	return img, io
+	system, err := exec.LookPath(exeSuffix("qemu-system-" + QemuArch()))
+	if err != nil {
+		t.Skip("qemu-system not installed")
+	}
+	return img, io, probeVersion(system)
 }
 
 func runCompactTool(t *testing.T, name string, args ...string) {
@@ -29,8 +33,26 @@ func runCompactTool(t *testing.T, name string, args ...string) {
 	}
 }
 
+func TestConvertBackingFlag(t *testing.T) {
+	cases := []struct {
+		version [3]int
+		want    string
+	}{
+		{[3]int{}, "-b"},
+		{[3]int{8, 2, 2}, "-B"},
+		{[3]int{10, 0, 3}, "-B"},
+		{[3]int{11, 0, 0}, "-b"},
+		{[3]int{11, 1, 0}, "-b"},
+	}
+	for _, tc := range cases {
+		if got := convertBackingFlag(tc.version); got != tc.want {
+			t.Errorf("convertBackingFlag(%v) = %q, want %q", tc.version, got, tc.want)
+		}
+	}
+}
+
 func TestCompactDiskReclaimsSpace(t *testing.T) {
-	img, io := requireCompactTools(t)
+	img, io, version := requireCompactTools(t)
 	disk := filepath.Join(t.TempDir(), "disk.qcow2")
 	runCompactTool(t, img, "create", "-f", "qcow2", disk, "64M")
 	runCompactTool(t, io, "-f", "qcow2",
@@ -38,7 +60,7 @@ func TestCompactDiskReclaimsSpace(t *testing.T) {
 		"-c", "write -P 0x00 0 16M",
 		disk,
 	)
-	tc := &Toolchain{Img: img}
+	tc := &Toolchain{Img: img, Version: version}
 	before, err := readDiskImageInfo(tc, disk)
 	if err != nil {
 		t.Fatal(err)
@@ -66,13 +88,13 @@ func TestCompactDiskReclaimsSpace(t *testing.T) {
 }
 
 func TestCompactDiskPreservesBacking(t *testing.T) {
-	img, _ := requireCompactTools(t)
+	img, _, version := requireCompactTools(t)
 	dir := t.TempDir()
 	base := filepath.Join(dir, "base.qcow2")
 	disk := filepath.Join(dir, "disk.qcow2")
 	runCompactTool(t, img, "create", "-f", "qcow2", base, "32M")
 	runCompactTool(t, img, "create", "-f", "qcow2", "-b", base, "-F", "qcow2", disk)
-	tc := &Toolchain{Img: img}
+	tc := &Toolchain{Img: img, Version: version}
 	if _, err := CompactDisk(tc, disk); err != nil {
 		t.Fatal(err)
 	}
@@ -89,12 +111,12 @@ func TestCompactDiskPreservesBacking(t *testing.T) {
 }
 
 func TestCompactDiskRejectsRaw(t *testing.T) {
-	img, _ := requireCompactTools(t)
+	img, _, version := requireCompactTools(t)
 	disk := filepath.Join(t.TempDir(), "disk.raw")
 	if err := os.WriteFile(disk, make([]byte, 1<<20), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := CompactDisk(&Toolchain{Img: img}, disk)
+	_, err := CompactDisk(&Toolchain{Img: img, Version: version}, disk)
 	if err == nil || !strings.Contains(err.Error(), "want qcow2") {
 		t.Fatalf("raw disk error = %v", err)
 	}
