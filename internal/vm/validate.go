@@ -47,11 +47,23 @@ func ValidateSpec(spec *Spec, mounts []GuestMount) error {
 			return err
 		}
 	}
+	if err := ValidateKernelArgs(spec.KernelArgs); err != nil {
+		return err
+	}
 	if gitUnsafeRe.MatchString(spec.GitEmail) {
 		return fmt.Errorf("invalid git email %q: no $, backquote, backslash or newlines", spec.GitEmail)
 	}
 	if gitUnsafeRe.MatchString(spec.GitName) {
 		return fmt.Errorf("invalid git name %q: no $, backquote, backslash or newlines", spec.GitName)
+	}
+	return nil
+}
+
+var kernelArgsRe = regexp.MustCompile(`^[a-z0-9_.,=-]+( [a-z0-9_.,=-]+)*$`)
+
+func ValidateKernelArgs(args string) error {
+	if args != "" && !kernelArgsRe.MatchString(args) {
+		return fmt.Errorf("invalid guest kernel args %q", args)
 	}
 	return nil
 }

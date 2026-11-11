@@ -1,5 +1,7 @@
 # pvm
 
+English | [简体中文](README.zh-CN.md)
+
 Personal QEMU dev VMs in a single binary: create an isolated Linux development machine with one command and route all of its traffic through your own VPS.
 
 ## Features
@@ -8,18 +10,39 @@ Personal QEMU dev VMs in a single binary: create an isolated Linux development m
 - **Fail-closed exit routing:** Route TCP, UDP, and ICMP through WireGuard to your VPS over UDP or TCP, or to Cloudflare WARP over UDP. Only explicit direct/internal rules bypass the selected exit; if the tunnel goes down, traffic is dropped instead of falling back to host egress.
 - **Real-IP full-tunnel DNS and split routing:** Default-exit domains resolve through the selected exit to real IPv4 addresses and use direct L3 tunnel forwarding. Only explicit domain proxy rules use fake-ip relays. Direct/internal domains keep their real addresses and direct path, and domain or CIDR rules take effect without a restart.
 - **Native browser desktop:** `pvm desktop` serves the VM's own XFCE desktop through TigerVNC and noVNC. It uses a loopback URL by default; `--public` optionally listens on `0.0.0.0` with VNC authentication still required. It is the same machine as SSH, not a container.
-- **Host-shaped defaults:** New VMs default to all host CPU cores and half of host RAM, with a balloon driver returning idle memory to the host. Sparse qcow2 disks default to 20 GB, grow with `pvm resize`, and release unused host space with `pvm compact`.
+- **Host-shaped defaults:** New VMs default to a quarter of the host's logical CPUs (rounded up) and a quarter of host RAM, with a balloon driver returning idle memory to the host. Sparse qcow2 disks default to 20 GB, grow with `pvm resize`, and release unused host space with `pvm compact`.
 - **Complete VM workflows:** RAM snapshots restore in seconds, clones regenerate machine identifiers, read-only `pvm audit` checks route and TCP/UDP/ICMP/DNS health, and loopback port maps, bidirectional `/share` plus custom host mounts, and virtio-serial exec cover daily development and recovery.
 
 ## Installation
 
-pvm supports macOS on arm64, Linux on amd64, and Windows on amd64 (native QEMU or WSL2). Install GitHub CLI (`gh`) and Python 3 first, then install the latest release with `curl` (on Windows, run this in Git Bash):
+pvm supports macOS on arm64, Linux on amd64, and Windows on amd64 (native QEMU or WSL2).
+
+**Windows:** download `pvm_windows_amd64_setup.msi` or `pvm_windows_amd64_setup.exe` from [Releases](https://github.com/huangzheng2016/pvm/releases) and run it. Both are per-user installers that need no administrator rights and include the bundled QEMU runtime. See [Windows installers](#windows-installers) for details. The `curl` script below also works in Git Bash, but the installers are the recommended way on Windows.
+
+**macOS and Linux:** install GitHub CLI (`gh`) and Python 3 first, then install the latest release with `curl`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/huangzheng2016/pvm/master/scripts/install.sh | sh
 ```
 
 The installer places `pvm` in `~/.local/bin` by default; set `INSTALL_DIR` to change this. On macOS, Linux, and Windows it also installs the bundled QEMU runtime unless `PVM_SKIP_QEMU=1` is set, in which case pvm uses the system QEMU. The installer verifies the release checksum and GitHub build attestation, including the repository, workflow, and tag. Releases without this proof are rejected. All downloads and executable checks finish before replacement; previous binaries and QEMU runtimes are retained. You can also download an archive from [Releases](https://github.com/huangzheng2016/pvm/releases) and verify it with `gh attestation verify` before use.
+
+### Windows installers
+
+Releases ship two per-user Windows installers that need no administrator rights: `pvm_windows_amd64_setup.msi` and `pvm_windows_amd64_setup.exe`, with the bundled QEMU runtime included. Pick either one. Both install `pvm.exe` to `%LOCALAPPDATA%\pvm`, add that folder to the user `PATH`, and install the runtime to `%USERPROFILE%\.pvm\runtime\qemu\x86_64`, or to `PVM_HOME\runtime\qemu\x86_64` when `PVM_HOME` is set. Open a new terminal afterwards so the `PATH` change applies. Verify a download first with `gh attestation verify pvm_windows_amd64_setup.exe --repo huangzheng2016/pvm`.
+
+- Files in use by a running pvm or VM cannot be replaced. When run interactively, both installers and their uninstallers detect a running daemon or QEMU and offer to stop the daemon, which also stops running VMs. Silent runs (`/S`, `msiexec /qn`) refuse instead, so run `pvm daemon stop` first.
+- MSI silent install: `msiexec /i pvm_windows_amd64_setup.msi /qn`. The MSI sees only a persistent user `PVM_HOME`; pass `PVMHOME=D:\pvm-home` to choose the location explicitly. Upgrades and uninstalls reuse the recorded location.
+- Uninstalling from Settings > Apps removes `pvm.exe`, the runtime and the `PATH` entry. VM disks, keys and configuration under `~/.pvm` are kept.
+- Use one installer type per machine. `pvm upgrade` updates an installed copy in place either way.
+
+Known limitations of the Windows installers:
+
+- Installing, and uninstalling from Settings > Apps, are tested while pvm is stopped. The prompt that offers to stop a running daemon has not been tested end to end in either installer. If it does not appear, or setup still reports that pvm is running, cancel, run `pvm daemon stop`, and run setup again.
+- Stopping the daemon from setup waits for running VMs to shut down, up to about three minutes, and setup shows no progress meanwhile.
+- VMs left running without a daemon cannot be stopped by setup. Setup lists them and refuses; shut them down, then run setup again.
+- Antivirus software scans the freshly unpacked files and briefly locks them. Setup retries each file move for up to 10 seconds; if the lock lasts longer, setup stops with an error and keeps the previous version. Run setup again.
+- After `pvm upgrade`, Settings > Apps still shows the version the installer put there.
 
 ### Windows backend selection
 
@@ -134,6 +157,16 @@ go install mvdan.cc/garble@v0.18.0
 ./script/build.sh
 go test ./...
 ```
+
+On Windows, install Git for Windows, Go 1.27.4 and garble v0.18.0, then run the wrapper from PowerShell. It runs `script/build.sh` through Git Bash and writes `pvm.exe`. Bundled QEMU is not packed on Windows (`script/qemu/pack-windows-runtime.sh` builds that runtime separately), so the wrapper defaults to `PVM_PACK_QEMU=0` and the runtime already installed under `~/.pvm/runtime` keeps being used.
+
+```powershell
+go install mvdan.cc/garble@v0.18.0
+.\script\build.ps1
+.\pvm.exe version
+```
+
+Do not run the full `go test ./...` on a Windows host. The test suite is written for Unix (file permission bits, paths such as `/tmp`, symlinks, and tools like `ip`, `gh` and `bash`), so many tests fail there for reasons unrelated to your change, and the `internal/cli` tests keep respawning themselves and leave `cli.test.exe` processes behind. On Windows, run only targeted tests for what you changed, for example `go test ./internal/qemu -run Accel`, and rely on Linux or macOS (CI or WSL2) for the full suite.
 
 CI tests and builds each native platform once per commit, caches Go and build tools, and reserves QEMU packaging and signing for releases. Releases can reuse verified artifacts from a successful master run of the exact same commit. Linux namespace tests must run rather than skip.
 

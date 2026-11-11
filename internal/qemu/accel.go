@@ -3,6 +3,7 @@ package qemu
 import (
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -50,7 +51,7 @@ func Detect(t *Toolchain, goos string) Accel {
 			return AccelKVM
 		}
 	case "windows":
-		if windowsHypervisorPlatformEnabled() && probe(t, "-machine", "q35,accel=whpx") {
+		if windowsHypervisorPlatformEnabled() && probe(t, "-machine", "q35,accel=whpx,kernel-irqchip=off", "-L", t.FirmwareDir) {
 			return AccelWHPX
 		}
 	}
@@ -88,11 +89,36 @@ func (a Accel) Args() []string {
 	case AccelTCG:
 		return []string{"-accel", "tcg,thread=multi", "-cpu", "max"}
 	case AccelWHPX:
-		// Some WHPX hosts reject the feature set exposed by host/max.
-		return []string{"-accel", "whpx", "-cpu", "qemu64"}
-	default:
+		// The bundled QEMU 11.1 WHPX backend cannot sync XSAVE state with
+		// Hyper-V: exposing XSAVE corrupts FPU state when secondary vCPUs
+		// come up, and kernel-irqchip=on triple-faults at boot. Hiding
+		// XSAVE alone leaves Hyper-V's CET bits visible, so the guest also
+		// needs GuestKernelArgs. vmport reads force full register syncs,
+		// and guest-initiated resets hang, so exit instead of rebooting.
+		return []string{"-accel", "whpx,kernel-irqchip=off", "-machine", "vmport=off", "-cpu", "host,-xsave", "-no-reboot"}
+	default: // AccelHVF, AccelKVM
 		return []string{"-accel", string(a), "-cpu", "host"}
 	}
+}
+
+// ArgsForGuest keeps a WHPX guest provisioned without noxsave on qemu64:
+// its kernel may enable CET state that the host CPU model cannot switch safely.
+func (a Accel) ArgsForGuest(kernelArgs string) []string {
+	if a == AccelWHPX && !slices.Contains(strings.Fields(kernelArgs), "noxsave") {
+		return []string{"-accel", "whpx,kernel-irqchip=off", "-machine", "vmport=off", "-cpu", "qemu64", "-no-reboot"}
+	}
+	return a.Args()
+}
+
+// GuestKernelArgs are kernel parameters the guest must boot with under
+// this accelerator. Under WHPX, noxsave keeps the guest kernel from
+// enabling CET shadow stacks, whose per-task state it can only switch
+// with XSAVES.
+func (a Accel) GuestKernelArgs() string {
+	if a == AccelWHPX {
+		return "noxsave"
+	}
+	return ""
 }
 
 func (a Accel) Fallback() (Accel, bool) {

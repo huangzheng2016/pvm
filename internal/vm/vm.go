@@ -41,6 +41,10 @@ type Spec struct {
 	Golden  int  `json:"golden,omitempty"`
 	GPU     bool `json:"gpu,omitempty"`
 	Balloon bool `json:"balloon,omitempty"`
+	// KernelArgs are guest kernel parameters the accelerator requires.
+	// cloud-init installs them into grub, so they apply from the boot
+	// after the one that runs cloud-init.
+	KernelArgs string `json:"kernel_args,omitempty"`
 
 	// cluster membership (user VMs)
 	ClusterID int    `json:"cluster_id,omitempty"`
@@ -191,26 +195,27 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 		net = qemu.Network{Mode: qemu.NetSlirp, SSHHostPort: s.SSHPort}
 	}
 	return qemu.VMConfig{
-		Name:         s.Name,
-		CPUs:         s.CPUs,
-		MemMB:        s.MemMB,
-		DiskPath:     s.Disk(p),
-		SeedPath:     s.Seed(p),
-		VarsPath:     s.Vars(p),
-		ConsoleLog:   filepath.Join(dir, "console.log"),
-		QMPSock:      p.QMPSock(s.Name),
-		SerialSock:   p.SerialSock(s.Name),
-		AgentSock:    p.AgentSock(s.Name),
-		Network:      net,
-		HotplugPorts: hotplug,
-		ShareDir:     s.SharedDir(p),
-		NoShare:      s.SharedDir(p) == "",
-		MountDir:     mountDir,
-		ExtraMounts:  mounts,
-		Accel:        accel,
-		SmbiosSpoof:  s.SmbiosSpoof,
-		GPU:          s.GPU,
-		Balloon:      s.Balloon,
+		Name:            s.Name,
+		CPUs:            s.CPUs,
+		MemMB:           s.MemMB,
+		DiskPath:        s.Disk(p),
+		SeedPath:        s.Seed(p),
+		VarsPath:        s.Vars(p),
+		ConsoleLog:      filepath.Join(dir, "console.log"),
+		QMPSock:         p.QMPSock(s.Name),
+		SerialSock:      p.SerialSock(s.Name),
+		AgentSock:       p.AgentSock(s.Name),
+		Network:         net,
+		HotplugPorts:    hotplug,
+		ShareDir:        s.SharedDir(p),
+		NoShare:         s.SharedDir(p) == "",
+		MountDir:        mountDir,
+		ExtraMounts:     mounts,
+		Accel:           accel,
+		GuestKernelArgs: s.KernelArgs,
+		SmbiosSpoof:     s.SmbiosSpoof,
+		GPU:             s.GPU,
+		Balloon:         s.Balloon,
 	}
 }
 

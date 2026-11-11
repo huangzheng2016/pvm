@@ -135,6 +135,7 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 		GuestUID:  vm.HostUID(),
 		CPUs:      cpus, MemMB: mem, DiskGB: disk,
 		SSHPort: port, BaseDisk: base,
+		KernelArgs: o.Accel.GuestKernelArgs(),
 	}
 	fmt.Fprintf(o.Out, "creating build vm %s (base %s)\n", name, ref.FileName())
 	if err := vm.Create(o.P, o.TC, spec); err != nil {
@@ -165,8 +166,16 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 	}
 
 	r := &sshRunner{key: spec.SSHKeyPath(o.P), port: port, user: spec.User}
-	fmt.Fprintf(o.Out, "waiting for ssh (cloud-init first boot)...\n")
-	if err := waitSSH(r, 10*time.Minute); err != nil {
+	// TCG software emulation is extremely slow; build VM may take 20+ minutes to boot.
+	// Hardware acceleration is much faster and needs only 10 minutes.
+	sshTimeout := 10 * time.Minute
+	if o.Accel == qemu.AccelTCG {
+		sshTimeout = 30 * time.Minute
+		fmt.Fprintf(o.Out, "waiting for ssh (cloud-init first boot, TCG mode is slow — may take 20+ minutes)...\n")
+	} else {
+		fmt.Fprintf(o.Out, "waiting for ssh (cloud-init first boot)...\n")
+	}
+	if err := waitSSH(r, sshTimeout); err != nil {
 		return nil, err
 	}
 
@@ -174,7 +183,11 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(o.Out, "provisioning (apt upgrade, docker, xfce desktop — this takes a while)...\n")
+	if o.Accel == qemu.AccelTCG {
+		fmt.Fprintf(o.Out, "provisioning (apt upgrade, docker, xfce desktop — TCG mode is slow, may take 30-60 minutes)...\n")
+	} else {
+		fmt.Fprintf(o.Out, "provisioning (apt upgrade, docker, xfce desktop — this takes a while)...\n")
+	}
 	// The provision script deletes the build user as its last action, so
 	// nothing may ssh in afterwards; capture the image list from the log.
 	var provLog strings.Builder

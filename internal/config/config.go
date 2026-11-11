@@ -24,7 +24,7 @@ type Defaults struct {
 }
 
 func Default() *Config {
-	return &Config{Defaults: Defaults{CPUs: native.HostCPUs(), MemMB: native.DefaultMemMB(), DiskGB: 20}}
+	return &Config{Defaults: Defaults{CPUs: native.DefaultCPUs(), MemMB: native.DefaultMemMB(), DiskGB: 20}}
 }
 
 func Load(path string) (*Config, error) {
@@ -46,7 +46,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("config must contain exactly one YAML document")
 	}
 	if cfg.Defaults.CPUs <= 0 {
-		cfg.Defaults.CPUs = native.HostCPUs()
+		cfg.Defaults.CPUs = native.DefaultCPUs()
 	}
 	if cfg.Defaults.MemMB <= 0 {
 		cfg.Defaults.MemMB = native.DefaultMemMB()

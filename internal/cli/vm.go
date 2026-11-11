@@ -599,7 +599,7 @@ func CmdSSH(args []string) int {
 		// hop ssh WITHOUT our flags (default known_hosts, no key), so
 		// build the ProxyCommand by hand.
 		proxy := fmt.Sprintf("ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -W %%h:%%p -p %d %s@127.0.0.1",
-			sshShellQuote((&vm.Spec{SSHKeyName: info.GatewaySSHKeyName}).SSHKeyPath(p)), info.GatewaySSH, info.GatewayUser)
+			vm.ProxyCommandQuote((&vm.Spec{SSHKeyName: info.GatewaySSHKeyName}).SSHKeyPath(p)), info.GatewaySSH, info.GatewayUser)
 		sshArgs = append(sshArgs, "-o", "ProxyCommand="+proxy)
 		target = fmt.Sprintf("%s@%s", info.Spec.User, info.Spec.IP)
 	}

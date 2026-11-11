@@ -171,3 +171,47 @@ func TestUserDataWithoutSharesOmitsEmptyRuncmd(t *testing.T) {
 		t.Fatalf("golden initialization was removed with empty shares:\n%s", ud)
 	}
 }
+
+func TestUserDataKernelArgsGrubDropIn(t *testing.T) {
+	const dropIn = "/etc/default/grub.d/99-pvm-kernel-args.cfg"
+	plain := &Spec{Name: "dev1", User: "u", GuestUID: 501}
+	ud, err := userData(plain, "ssh-ed25519 AAAA", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(ud), dropIn) || strings.Contains(string(ud), "update-grub") {
+		t.Error("no kernel args must leave grub alone")
+	}
+
+	for _, spec := range []*Spec{
+		{Name: "dev1", User: "u", GuestUID: 501, KernelArgs: "noxsave"},
+		{Name: "dev1", User: "u", GuestUID: 501, KernelArgs: "noxsave", ShareMode: ShareNone},
+		{Name: "pvm-gw1", User: "pvmgw", GuestUID: 501, KernelArgs: "noxsave", Role: "gateway"},
+	} {
+		gen := userData
+		if spec.Role == "gateway" {
+			gen = func(s *Spec, pub string, _ []GuestMount) ([]byte, error) { return gatewayUserData(s, pub) }
+		}
+		ud, err := gen(spec, "ssh-ed25519 AAAA", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(ud)
+		if !strings.Contains(s, dropIn) || !strings.Contains(s, `$GRUB_CMDLINE_LINUX_DEFAULT noxsave`) {
+			t.Errorf("%s: missing grub drop-in:\n%s", spec.Name, s)
+		}
+		if !strings.Contains(s, "- update-grub") {
+			t.Errorf("%s: missing update-grub:\n%s", spec.Name, s)
+		}
+	}
+
+	for _, bad := range []string{"noxsave; reboot", "a\nb", "init=/bin/sh $(x)", "NOXSAVE"} {
+		spec := &Spec{Name: "dev1", User: "u", GuestUID: 501, KernelArgs: bad}
+		if _, err := userData(spec, "ssh-ed25519 AAAA", nil); err == nil {
+			t.Errorf("kernel args %q accepted", bad)
+		}
+		if _, err := gatewayUserData(spec, "ssh-ed25519 AAAA"); err == nil {
+			t.Errorf("gateway kernel args %q accepted", bad)
+		}
+	}
+}

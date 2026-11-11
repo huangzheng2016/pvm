@@ -47,10 +47,12 @@ for kind in gateway agent; do
 done
 
 echo "== pvm"
+pvm_out=pvm
+[ "$PVM_HOSTOS" = "windows" ] && pvm_out=pvm.exe
 GOOS="$PVM_HOSTOS" GOARCH="$PVM_HOSTARCH" go build -tags embedassets -buildvcs=false -trimpath \
   -ldflags "-s -w -buildid= -X github.com/huangzheng2016/pvm/internal/buildinfo.Version=${PVM_VERSION:-dev}" \
-  -o pvm ./cmd/pvm
-echo "built ./pvm (with embedded guest assets: $PVM_HOSTARCH)"
+  -o "$pvm_out" ./cmd/pvm
+echo "built ./$pvm_out (with embedded guest assets: $PVM_HOSTARCH)"
 
 if [ "${PVM_PACK_QEMU:-1}" = "1" ] && [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
   echo "== bundled qemu ($PVM_HOSTARCH)"
