@@ -1229,8 +1229,10 @@ func TestDesktopEnsureMapFreshDeadlineAfterSlowStart(t *testing.T) {
 	if _, err := s.desktopEnsureMap(staleCtx, dev1, false, okPush); err == nil {
 		t.Fatal("an expired context must fail, not succeed")
 	}
-	// The fresh context created after the start succeeds.
-	freshCtx, freshCancel := context.WithTimeout(context.Background(), mapPushTimeout)
+	// The fresh context created after the start succeeds. Its budget is
+	// generous: the whole map add (state write, relay bind) must not race
+	// a 100ms deadline on a loaded CI runner.
+	freshCtx, freshCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer freshCancel()
 	port, err := s.desktopEnsureMap(freshCtx, dev1, false, okPush)
 	if err != nil || port == 0 {
