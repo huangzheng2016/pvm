@@ -54,7 +54,7 @@
     <!-- "[INSTALLDIR]." avoids a trailing '\"' that would escape the quote. -->
     <CustomAction Id="AddUserPath" Property="POWERSHELL" Execute="deferred" Impersonate="yes" Return="check"
                   ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]user-path.ps1&quot; -Action add -Dir &quot;[INSTALLDIR].&quot;"/>
-    <CustomAction Id="RemoveUserPath" Property="POWERSHELL" Execute="deferred" Impersonate="yes" Return="ignore"
+    <CustomAction Id="RemoveUserPath" Property="POWERSHELL" Execute="deferred" Impersonate="yes" Return="check"
                   ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]user-path.ps1&quot; -Action remove -Dir &quot;[INSTALLDIR].&quot;"/>
 
     <InstallUISequence>

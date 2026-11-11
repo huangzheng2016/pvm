@@ -42,8 +42,7 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 # wait for the base image's own cloud-init/apt to settle
-# exit 2 means "degraded" (some modules had warnings) which is non-fatal; only exit 1 means real failure.
-if command -v cloud-init >/dev/null; then cloud-init status --wait || { rc=$?; [ $rc -eq 2 ] && echo "[provision] cloud-init degraded (non-fatal, continuing)" || { echo "[provision] cloud-init failed (exit $rc)" >&2; exit $rc; }; }; fi
+if command -v cloud-init >/dev/null; then cloud-init status --wait; fi
 for i in $(seq 1 300); do
   fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break
   sleep 2

@@ -52,6 +52,10 @@ case "$*" in
       printf blocked > "$PVM_TEST_GW_BLOCKED"
       exec /bin/sleep 60
     fi
+    if [ "${PVM_TEST_GW_CLOUD_INIT_FAIL:-0}" = 1 ]; then
+      printf 'status: degraded\n'
+      exit 2
+    fi
     ;;
 esac
 `
@@ -103,6 +107,25 @@ func TestGatewayAgentDeploymentRestartsForNewBinary(t *testing.T) {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("missing %q in gateway deployment:\n%s", want, data)
 		}
+	}
+}
+
+func TestGatewayAgentDeploymentFailsWhenCloudInitFails(t *testing.T) {
+	s, log, bin := setupGatewayDeployTest(t, "old gateway")
+	if err := os.WriteFile(bin, []byte("new gateway"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PVM_TEST_GW_CLOUD_INIT_FAIL", "1")
+	err := s.deployGatewayAgentCtx(context.Background(), s.Clusters.Get(1))
+	if err == nil || !strings.Contains(err.Error(), "cloud-init wait") || !strings.Contains(err.Error(), "status: degraded") {
+		t.Fatalf("cloud-init failure must stop deployment with diagnostics: %v", err)
+	}
+	data, readErr := os.ReadFile(log)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Contains(string(data), "install -m 0755") || strings.Contains(string(data), "systemctl restart") {
+		t.Fatalf("deployment continued after cloud-init failure:\n%s", data)
 	}
 }
 

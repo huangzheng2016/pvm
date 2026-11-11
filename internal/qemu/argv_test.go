@@ -374,6 +374,7 @@ func TestBuildArgsRejectsLongUnixSockets(t *testing.T) {
 
 func TestBuildArgsTCPEndpointsAndWHPX(t *testing.T) {
 	cfg := testCfg(AccelWHPX)
+	cfg.GuestKernelArgs = AccelWHPX.GuestKernelArgs()
 	cfg.QMPSock = "tcp:127.0.0.1:45001"
 	cfg.SerialSock = "tcp:127.0.0.1:45002"
 	cfg.AgentSock = "tcp:127.0.0.1:45003"
@@ -393,5 +394,16 @@ func TestBuildArgsTCPEndpointsAndWHPX(t *testing.T) {
 		if !strings.Contains(j, want) {
 			t.Errorf("args missing %q\nargs: %s", want, j)
 		}
+	}
+}
+
+func TestBuildArgsWHPXWithoutNoxsaveKeepsQemu64(t *testing.T) {
+	args, err := BuildArgs(&Toolchain{FirmwareDir: "/fw"}, testCfg(AccelWHPX))
+	if err != nil {
+		t.Fatal(err)
+	}
+	j := joined(args)
+	if !strings.Contains(j, "-cpu qemu64") || strings.Contains(j, "-cpu host") {
+		t.Fatalf("guest without noxsave must keep qemu64: %s", j)
 	}
 }

@@ -67,8 +67,8 @@ func (s *Server) ensureCluster(id int) (*cluster.Cluster, error) {
 // gate, so the restarted gateway's own deploy waits for this one.
 func (s *Server) ensureGatewayKernelArgs(ctx context.Context, gw *vm.Spec) (bool, error) {
 	// /etc/pvm and the grub drop-in only exist once runcmd finishes.
-	if _, err := s.sshRunCtx(ctx, gw, "sudo cloud-init status --wait >/dev/null 2>&1 || true"); err != nil {
-		return false, fmt.Errorf("cloud-init wait: %w", err)
+	if out, err := s.sshRunCtx(ctx, gw, "sudo cloud-init status --wait"); err != nil {
+		return false, fmt.Errorf("cloud-init wait: %v%s", err, indentOutput(out))
 	}
 	st, err := s.instance(gw).Running()
 	if err != nil {
@@ -374,8 +374,8 @@ func (s *Server) deployGatewayAgentCtx(ctx context.Context, cl *cluster.Cluster)
 	// sshd wins the race against cloud-init; /etc/pvm and the systemd
 	// unit only exist once runcmd finishes. Slow TCG/cloud mirrors can
 	// take several minutes, so do not kill a valid provisioning run at 2min.
-	if _, err := s.sshRunCtx(ctx, gwSpec, "sudo cloud-init status --wait >/dev/null 2>&1 || true"); err != nil {
-		return fmt.Errorf("cloud-init wait: %w", err)
+	if out, err := s.sshRunCtx(ctx, gwSpec, "sudo cloud-init status --wait"); err != nil {
+		return fmt.Errorf("cloud-init wait: %v%s", err, indentOutput(out))
 	}
 	if err := s.scpToCtx(ctx, gwSpec, bin, "/tmp/pvm-gateway"); err != nil {
 		return fmt.Errorf("scp agent: %w", err)
@@ -558,7 +558,7 @@ func (s *Server) sshBaseArgs(spec *vm.Spec) ([]string, string, error) {
 // sshRun executes cmd in the guest over the gateway jump. Only stdout is
 // returned on success: banners and remote-shell warnings land on stderr
 // and would otherwise corrupt machine-parsed output (json, version
-// strings, region profiles). Failures include stderr for diagnosis.
+// strings, region profiles). Failures include stderr and preserve stdout for diagnosis.
 func (s *Server) sshRun(spec *vm.Spec, cmd string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -579,7 +579,7 @@ func (s *Server) sshRunCtx(ctx context.Context, spec *vm.Spec, cmd string) (stri
 	c.Stdout = &stdout
 	c.Stderr = &stderr
 	if err := c.Run(); err != nil {
-		return "", fmt.Errorf("%v: %s", err, strings.TrimSpace(stderr.String()))
+		return stdout.String(), fmt.Errorf("%v: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.String(), nil
 }

@@ -59,37 +59,9 @@ func (r *sshRunner) args(extra ...string) []string {
 func (r *sshRunner) runScript(script string, out io.Writer) error {
 	cmd := exec.Command("ssh", r.args("sudo", "bash", "-s")...)
 	cmd.Stdin = strings.NewReader(script)
-
-	// Use StdoutPipe and StderrPipe for real-time output
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	// Copy output in real-time
-	done := make(chan error, 2)
-	go func() {
-		_, err := io.Copy(out, stdout)
-		done <- err
-	}()
-	go func() {
-		_, err := io.Copy(out, stderr)
-		done <- err
-	}()
-
-	// Wait for both pipes to finish
-	<-done
-	<-done
-
-	return cmd.Wait()
+	cmd.Stdout = out
+	cmd.Stderr = out
+	return cmd.Run()
 }
 
 func (r *sshRunner) output(args ...string) (string, error) {

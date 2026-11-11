@@ -14,6 +14,33 @@ import (
 	"github.com/huangzheng2016/pvm/internal/paths"
 )
 
+func TestSSHRunnerRunScriptCombinedOutput(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/sh
+cat >/dev/null
+i=0
+while [ "$i" -lt 200 ]; do
+  printf 'stdout-%s\n' "$i"
+  printf 'stderr-%s\n' "$i" >&2
+  i=$((i + 1))
+done
+`
+	if err := os.WriteFile(filepath.Join(dir, "ssh"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	var out strings.Builder
+	if err := (&sshRunner{key: "key", port: 22, user: "baker"}).runScript("true", &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(out.String(), "stdout-"); got != 200 {
+		t.Fatalf("stdout lines = %d", got)
+	}
+	if got := strings.Count(out.String(), "stderr-"); got != 200 {
+		t.Fatalf("stderr lines = %d", got)
+	}
+}
+
 func TestProvisionRejectsInjectedInputs(t *testing.T) {
 	for _, user := range []string{"baker;id", "baker\ntrue", "--help"} {
 		if _, err := renderProvision("ubuntu", user, ProxyConfig{}); err == nil {

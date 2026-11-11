@@ -72,12 +72,13 @@ type VMConfig struct {
 	// HotplugPorts pre-creates pcie-root-ports rp10..rp(9+N) so NICs can
 	// be hot-added later (pcie.0 itself does not support hotplug).
 	// Gateway VMs get one port per possible cluster VM IP octet.
-	HotplugPorts int
-	ShareDir     string // selected host directory mounted at /share
-	NoShare      bool
-	MountDir     string // daemon-controlled symlinks/junctions for dynamic mount backends
-	ExtraMounts  []Mount
-	Accel        Accel
+	HotplugPorts    int
+	ShareDir        string // selected host directory mounted at /share
+	NoShare         bool
+	MountDir        string // daemon-controlled symlinks/junctions for dynamic mount backends
+	ExtraMounts     []Mount
+	Accel           Accel
+	GuestKernelArgs string
 	// Incoming, when set, appends `-incoming <value>` (RAM snapshot
 	// restore, e.g. "exec:/path/pvm __snapshot-pipe-in <file>").
 	Incoming string
@@ -169,7 +170,7 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 	if t != nil && t.FirmwareDir != "" {
 		args = append(args, "-L", t.FirmwareDir)
 	}
-	args = append(args, c.Accel.Args()...)
+	args = append(args, c.Accel.ArgsForGuest(c.GuestKernelArgs)...)
 	if c.SmbiosSpoof {
 		// A coherent desktop persona: VMs have no battery/ACPI power
 		// supply, so a laptop model would contradict itself.

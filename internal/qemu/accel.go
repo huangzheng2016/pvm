@@ -3,6 +3,7 @@ package qemu
 import (
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"time"
 
@@ -98,6 +99,15 @@ func (a Accel) Args() []string {
 	default: // AccelHVF, AccelKVM
 		return []string{"-accel", string(a), "-cpu", "host"}
 	}
+}
+
+// ArgsForGuest keeps a WHPX guest provisioned without noxsave on qemu64:
+// its kernel may enable CET state that the host CPU model cannot switch safely.
+func (a Accel) ArgsForGuest(kernelArgs string) []string {
+	if a == AccelWHPX && !slices.Contains(strings.Fields(kernelArgs), "noxsave") {
+		return []string{"-accel", "whpx,kernel-irqchip=off", "-machine", "vmport=off", "-cpu", "qemu64", "-no-reboot"}
+	}
+	return a.Args()
 }
 
 // GuestKernelArgs are kernel parameters the guest must boot with under
