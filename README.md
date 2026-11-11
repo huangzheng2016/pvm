@@ -1,5 +1,7 @@
 # pvm
 
+English | [简体中文](README.zh-CN.md)
+
 Personal QEMU dev VMs in a single binary: create an isolated Linux development machine with one command and route all of its traffic through your own VPS.
 
 ## Features
