@@ -46,7 +46,7 @@
 ## Build & Test
 
 - Go 使用 1.27；只构建宿主原生架构（darwin/arm64、linux/amd64、windows/amd64 host，其中 Windows 支持 WSL2 桥接与原生 WHPX/QEMU 双模式）。Linux amd64/arm64 release 二进制用于对应 VPS，不做跨架构 host 模拟。
-- 完整构建使用 Go 1.27.3 和 garble v0.18.0：`go install mvdan.cc/garble@v0.18.0`；CI 固定这两个版本。
+- 完整构建使用 Go 1.27.4 和 garble v0.18.0：`go install mvdan.cc/garble@v0.18.0`；CI 固定这两个版本。
 - `./script/build.sh` 从 `./cmd/agent` 构建专用 guest，使用 garble `-tiny`、固定 seed、`-trimpath`、`-buildvcs=false` 和空 build ID，再构建 gateway、assetpack 和带 `embedassets` 的 host 二进制；macOS 默认追加 bundled QEMU，`PVM_PACK_QEMU=0` 可跳过。根目录 `./pvm` 是构建产物，不是源码，验证后必须删除。
 - 常规提交和发布默认通过 `go test ./...`、`go vet ./...`、`sh -n scripts/install.sh` 和必要构建，不把全仓 `go test -race` 作为门槛。
 - 修改并发或状态路径时，仍须完成相关包的定向测试和必要行为验证；仅在专项任务或用户明确要求时，对相关包运行 `go test -race`。

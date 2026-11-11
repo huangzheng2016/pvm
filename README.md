@@ -127,7 +127,7 @@ This creates a new client key, enrolls it with the exit agent, writes the config
 
 ## Development
 
-A full build uses Go 1.27.3 and garble v0.18.0, with both versions pinned in CI. The build uses the dedicated `cmd/agent` entry point and reproducible obfuscation settings.
+A full build uses Go 1.27.4 and garble v0.18.0, with both versions pinned in CI. The build uses the dedicated `cmd/agent` entry point and reproducible obfuscation settings.
 
 ```bash
 go install mvdan.cc/garble@v0.18.0
@@ -135,7 +135,7 @@ go install mvdan.cc/garble@v0.18.0
 go test ./...
 ```
 
-On Windows, install Git for Windows, Go 1.27.3 and garble v0.18.0, then run the wrapper from PowerShell. It runs `script/build.sh` through Git Bash and writes `pvm.exe`. Bundled QEMU is not packed on Windows (`script/qemu/pack-windows-runtime.sh` builds that runtime separately), so the wrapper defaults to `PVM_PACK_QEMU=0` and the runtime already installed under `~/.pvm/runtime` keeps being used.
+On Windows, install Git for Windows, Go 1.27.4 and garble v0.18.0, then run the wrapper from PowerShell. It runs `script/build.sh` through Git Bash and writes `pvm.exe`. Bundled QEMU is not packed on Windows (`script/qemu/pack-windows-runtime.sh` builds that runtime separately), so the wrapper defaults to `PVM_PACK_QEMU=0` and the runtime already installed under `~/.pvm/runtime` keeps being used.
 
 ```powershell
 go install mvdan.cc/garble@v0.18.0
