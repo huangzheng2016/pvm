@@ -163,6 +163,7 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 		GuestUID:  vm.HostUID(),
 		CPUs:      cpus, MemMB: mem, DiskGB: disk,
 		SSHPort: port, BaseDisk: base,
+		KernelArgs: o.Accel.GuestKernelArgs(),
 	}
 	fmt.Fprintf(o.Out, "creating build vm %s (base %s)\n", name, ref.FileName())
 	if err := vm.Create(o.P, o.TC, spec); err != nil {

@@ -88,12 +88,27 @@ func (a Accel) Args() []string {
 	case AccelTCG:
 		return []string{"-accel", "tcg,thread=multi", "-cpu", "max"}
 	case AccelWHPX:
-		// kernel-irqchip=off required on Windows 11 with QEMU 9+;
-		// -xsave suppresses "failed to get xsave state" crashes (QEMU+WHPX bug on Win11 24H2+).
-		return []string{"-accel", "whpx,kernel-irqchip=off", "-cpu", "host,-xsave"}
+		// The bundled QEMU 11.1 WHPX backend cannot sync XSAVE state with
+		// Hyper-V: exposing XSAVE corrupts FPU state when secondary vCPUs
+		// come up, and kernel-irqchip=on triple-faults at boot. Hiding
+		// XSAVE alone leaves Hyper-V's CET bits visible, so the guest also
+		// needs GuestKernelArgs. vmport reads force full register syncs,
+		// and guest-initiated resets hang, so exit instead of rebooting.
+		return []string{"-accel", "whpx,kernel-irqchip=off", "-machine", "vmport=off", "-cpu", "host,-xsave", "-no-reboot"}
 	default: // AccelHVF, AccelKVM
 		return []string{"-accel", string(a), "-cpu", "host"}
 	}
+}
+
+// GuestKernelArgs are kernel parameters the guest must boot with under
+// this accelerator. Under WHPX, noxsave keeps the guest kernel from
+// enabling CET shadow stacks, whose per-task state it can only switch
+// with XSAVES.
+func (a Accel) GuestKernelArgs() string {
+	if a == AccelWHPX {
+		return "noxsave"
+	}
+	return ""
 }
 
 func (a Accel) Fallback() (Accel, bool) {

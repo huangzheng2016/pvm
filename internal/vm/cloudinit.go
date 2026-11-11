@@ -155,6 +155,11 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 			"content":     content,
 		})
 	}
+	if f := grubKernelArgsFile(spec); f != nil {
+		writeFiles = append(writeFiles, f)
+		rc, _ := doc["runcmd"].([]string)
+		doc["runcmd"] = append([]string{"update-grub"}, rc...)
+	}
 	doc["write_files"] = writeFiles
 	out, err := yaml.Marshal(doc)
 	if err != nil {
@@ -167,7 +172,23 @@ func metaData(spec *Spec) []byte {
 	return []byte(fmt.Sprintf("instance-id: pvm-%s\nlocal-hostname: %s\n", spec.Name, spec.Name))
 }
 
+// grubKernelArgsFile is the grub drop-in carrying spec.KernelArgs; nil
+// when the accelerator needs none.
+func grubKernelArgsFile(spec *Spec) map[string]any {
+	if spec.KernelArgs == "" {
+		return nil
+	}
+	return map[string]any{
+		"path":        "/etc/default/grub.d/99-pvm-kernel-args.cfg",
+		"permissions": "0644",
+		"content":     fmt.Sprintf("GRUB_CMDLINE_LINUX_DEFAULT=\"$GRUB_CMDLINE_LINUX_DEFAULT %s\"\n", spec.KernelArgs),
+	}
+}
+
 func gatewayUserData(spec *Spec, sshPub string) ([]byte, error) {
+	if err := ValidateKernelArgs(spec.KernelArgs); err != nil {
+		return nil, err
+	}
 	unit := `[Unit]
 Description=pvm gateway agent
 After=network-online.target
@@ -213,6 +234,11 @@ WantedBy=multi-user.target
 			"content":     fmt.Sprintf("[Resolve]\nDNS=100.99.%d.1\n", spec.ClusterID),
 			"permissions": "0644",
 		})
+	}
+	if f := grubKernelArgsFile(spec); f != nil {
+		doc["write_files"] = append(doc["write_files"].([]map[string]any), f)
+		rc, _ := doc["runcmd"].([]string)
+		doc["runcmd"] = append([]string{"update-grub"}, rc...)
 	}
 	out, err := yaml.Marshal(doc)
 	if err != nil {

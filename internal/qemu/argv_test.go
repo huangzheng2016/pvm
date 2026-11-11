@@ -384,7 +384,7 @@ func TestBuildArgsTCPEndpointsAndWHPX(t *testing.T) {
 	}
 	j := joined(args)
 	for _, want := range []string{
-		"-accel whpx", "-cpu host",
+		"-accel whpx,kernel-irqchip=off -machine vmport=off -cpu host,-xsave -no-reboot",
 		"-qmp tcp:127.0.0.1:45001,server=on,wait=off",
 		"socket,id=ser0,host=127.0.0.1,port=45002,server=on,wait=off",
 		"socket,id=pvmagent,host=127.0.0.1,port=45003,server=on,wait=off",

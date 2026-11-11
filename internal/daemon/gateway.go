@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -57,6 +58,63 @@ func (s *Server) ensureCluster(id int) (*cluster.Cluster, error) {
 		go s.onGatewayStarted(cl)
 	}
 	return cl, nil
+}
+
+// ensureGatewayKernelArgs cold-boots the gateway when the running kernel
+// lacks spec.KernelArgs: cloud-init installs them into grub during the
+// first boot, which itself still runs without them, and -no-reboot
+// guests cannot restart themselves. The caller holds the gateway deploy
+// gate, so the restarted gateway's own deploy waits for this one.
+func (s *Server) ensureGatewayKernelArgs(ctx context.Context, gw *vm.Spec) (bool, error) {
+	// /etc/pvm and the grub drop-in only exist once runcmd finishes.
+	if _, err := s.sshRunCtx(ctx, gw, "sudo cloud-init status --wait >/dev/null 2>&1 || true"); err != nil {
+		return false, fmt.Errorf("cloud-init wait: %w", err)
+	}
+	st, err := s.instance(gw).Running()
+	if err != nil {
+		return false, err
+	}
+	if st == nil {
+		return false, fmt.Errorf("gateway %s not running", gw.Name)
+	}
+	cmdline, err := s.sshRunCtx(ctx, gw, "cat /proc/cmdline")
+	if err != nil {
+		return false, fmt.Errorf("read guest kernel cmdline: %w", err)
+	}
+	have := strings.Fields(cmdline)
+	missing := false
+	check := "sync"
+	for _, arg := range strings.Fields(gw.KernelArgs) {
+		if !slices.Contains(have, arg) {
+			missing = true
+		}
+		check += " && sudo grep -qwF -- '" + arg + "' /boot/grub/grub.cfg"
+	}
+	if !missing {
+		return false, nil
+	}
+	if out, err := s.sshRunCtx(ctx, gw, check); err != nil {
+		return false, fmt.Errorf("guest grub lacks kernel args %q: %v\n%s", gw.KernelArgs, err, out)
+	}
+	lock := qemu.LockVM(gw.Name)
+	lock.Lock()
+	defer lock.Unlock()
+	inst := s.instance(gw)
+	cur, err := inst.Running()
+	if err != nil {
+		return false, err
+	}
+	if cur == nil || cur.PID != st.PID {
+		return false, fmt.Errorf("gateway %s changed state during kernel-args check", gw.Name)
+	}
+	log.Printf("gateway %s: cold boot to apply guest kernel args %q", gw.Name, gw.KernelArgs)
+	if err := inst.Stop(); err != nil {
+		return false, fmt.Errorf("stop gateway for kernel args: %w", err)
+	}
+	if _, _, err := s.startVM(ctx, gw); err != nil {
+		return false, fmt.Errorf("restart gateway for kernel args: %w", err)
+	}
+	return true, nil
 }
 
 func (s *Server) onGatewayStarted(cl *cluster.Cluster) {
@@ -181,6 +239,7 @@ func (s *Server) createGatewayVM(cl *cluster.Cluster) (*vm.Spec, error) {
 		// Current Ubuntu initramfs decompression exceeds a 512 MiB guest.
 		CPUs: 1, MemMB: 1024, DiskGB: 10,
 		SSHPort: port, BaseDisk: base, ClusterID: cl.ID,
+		KernelArgs: s.Accel.GuestKernelArgs(),
 	}
 	if err := vm.Create(s.P, s.TC, spec); err != nil {
 		return nil, err
@@ -293,6 +352,17 @@ func (s *Server) deployGatewayAgentCtx(ctx context.Context, cl *cluster.Cluster)
 	localSHA := hex.EncodeToString(digest[:])
 	if err := s.waitSSHCtx(ctx, gwSpec, 6*time.Minute); err != nil {
 		return fmt.Errorf("gateway %s ssh: %w", cl.Gateway, err)
+	}
+	if gwSpec.KernelArgs != "" {
+		restarted, err := s.ensureGatewayKernelArgs(ctx, gwSpec)
+		if err != nil {
+			return err
+		}
+		if restarted {
+			if err := s.waitSSHCtx(ctx, gwSpec, 6*time.Minute); err != nil {
+				return fmt.Errorf("gateway %s ssh after kernel-args cold boot: %w", cl.Gateway, err)
+			}
+		}
 	}
 	out, err := s.sshRunCtx(ctx, gwSpec, "if systemctl is-active --quiet pvm-gateway.service && test -x /usr/local/bin/pvm-gateway; then sha256sum /usr/local/bin/pvm-gateway; fi")
 	if err != nil {
@@ -481,7 +551,7 @@ func (s *Server) sshBaseArgs(spec *vm.Spec) ([]string, string, error) {
 		return nil, "", err
 	}
 	args = append(args, "-o", fmt.Sprintf("ProxyCommand=ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -W %%h:%%p -p %d %s@127.0.0.1",
-		shellQuote(gw.SSHKeyPath(s.P)), gw.SSHPort, gw.User))
+		vm.ProxyCommandQuote(gw.SSHKeyPath(s.P)), gw.SSHPort, gw.User))
 	return args, fmt.Sprintf("%s@%s", spec.User, spec.IP), nil
 }
 

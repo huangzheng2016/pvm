@@ -41,6 +41,10 @@ type Spec struct {
 	Golden  int  `json:"golden,omitempty"`
 	GPU     bool `json:"gpu,omitempty"`
 	Balloon bool `json:"balloon,omitempty"`
+	// KernelArgs are guest kernel parameters the accelerator requires.
+	// cloud-init installs them into grub, so they apply from the boot
+	// after the one that runs cloud-init.
+	KernelArgs string `json:"kernel_args,omitempty"`
 
 	// cluster membership (user VMs)
 	ClusterID int    `json:"cluster_id,omitempty"`
