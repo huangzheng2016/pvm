@@ -216,7 +216,7 @@ func windowsDoctorChecks(p *paths.Paths) []auditCheck {
 		if accel == qemu.AccelWHPX {
 			checks = append(checks, auditCheck{"windows_accel", "ok", "native QEMU with WHPX hardware acceleration available"})
 		} else {
-			checks = append(checks, auditCheck{"windows_accel", "warn", "native QEMU found but WHPX is unavailable (using TCG); enable Windows Hypervisor Platform or use PVM_BACKEND=wsl"})
+			checks = append(checks, auditCheck{"windows_accel", "warn", "native QEMU found but WHPX is unavailable (using TCG); enable HypervisorPlatform and reboot, or configure WSL2 nested virtualization and use PVM_BACKEND=wsl"})
 		}
 	case wslOK:
 		checks = append(checks, auditCheck{"windows_accel", "ok", "WSL2 pvm backend available"})

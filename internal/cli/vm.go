@@ -148,6 +148,7 @@ func cmdImageBuild(p *paths.Paths, spec string, keep bool, cpus, mem, disk int) 
 		return fatalf("%v", err)
 	}
 	accel := qemu.Detect(tc, runtime.GOOS)
+	warnTCGAccel(accel)
 	entry, err := image.Bake(&image.BakeOptions{
 		Spec: spec, P: p, TC: tc, Accel: accel,
 		Out:    os.Stderr,
@@ -279,6 +280,7 @@ func CmdCreate(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
+	warnTCG(c)
 	body := map[string]any{
 		"name": *name, "image": spec, "user": *user,
 		"cpus": *cpus, "mem_mb": *mem, "disk_gb": *disk,
@@ -460,6 +462,7 @@ func CmdStart(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
+	warnTCG(c)
 	if err := c.Post(fmt.Sprintf("/v1/vms/%s/start", name), nil, nil); err != nil {
 		return fatalf("%v", err)
 	}

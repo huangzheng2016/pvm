@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/assets"
@@ -13,6 +14,42 @@ import (
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 )
+
+var tcgWarningOnce sync.Once
+
+func shouldWarnTCG(accel qemu.Accel, forced string) bool {
+	return accel == qemu.AccelTCG && forced != "tcg"
+}
+
+func tcgHint(goos, wslDistro string) string {
+	if goos == "windows" {
+		return "warning: using TCG software emulation; for WHPX run `Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All` in elevated PowerShell and reboot; for WSL2 set nestedVirtualization=true in %UserProfile%\\.wslconfig, run `wsl --shutdown`, verify /dev/kvm, and use PVM_BACKEND=wsl"
+	}
+	if goos == "linux" && wslDistro != "" {
+		return "warning: using TCG software emulation in WSL2; add [wsl2] nestedVirtualization=true to %UserProfile%\\.wslconfig, run `wsl --shutdown`, restart WSL, and verify /dev/kvm"
+	}
+	return ""
+}
+
+func warnTCGAccel(accel qemu.Accel) {
+	if !shouldWarnTCG(accel, os.Getenv("PVM_QEMU_ACCEL")) {
+		return
+	}
+	hint := tcgHint(runtime.GOOS, os.Getenv("WSL_DISTRO_NAME"))
+	if hint == "" {
+		return
+	}
+	tcgWarningOnce.Do(func() { fmt.Fprintln(os.Stderr, hint) })
+}
+
+func warnTCG(c *daemon.Client) {
+	var st struct {
+		Accel qemu.Accel `json:"accel"`
+	}
+	if err := c.Get("/v1/status", &st); err == nil {
+		warnTCGAccel(st.Accel)
+	}
+}
 
 func CmdDaemon(args []string) int {
 	if len(args) == 0 {
@@ -90,9 +127,12 @@ func CmdDaemon(args []string) int {
 		if n, _ := st["tcg_fallback"].(float64); n > 0 {
 			hint := "on macOS a reboot usually restores it"
 			if runtime.GOOS == "windows" {
-				hint = "enable Windows Hypervisor Platform (WHPX) and reboot, or use PVM_BACKEND=wsl"
+				hint = "enable HypervisorPlatform and reboot; for WSL2 set nestedVirtualization=true in .wslconfig and verify /dev/kvm"
 			} else if runtime.GOOS == "linux" {
 				hint = "check /dev/kvm permissions"
+				if os.Getenv("WSL_DISTRO_NAME") != "" {
+					hint = "set nestedVirtualization=true in .wslconfig, run `wsl --shutdown`, restart WSL, and verify /dev/kvm"
+				}
 			}
 			fmt.Printf("  warning: %v vm(s) running under tcg fallback; host accel %v is unavailable (%s)\n", n, st["accel"], hint)
 		}
