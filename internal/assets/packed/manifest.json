@@ -1,12 +1,12 @@
 [
   {
     "path": "agent-linux-arm64",
-    "sha256": "bf9520fc82611d9db3957a0329604474dc0942d770b522c68a0b52ffc68d5156",
+    "sha256": "9b81788bd71c5b6be795b43f52f7c2cf4f9733af01b7c00b7946d7716d33b853",
     "mode": 493
   },
   {
     "path": "gateway-linux-arm64",
-    "sha256": "bfd81350c2b9cc3a2297340d3584d9de2bb304c4c91c00c11dd312bb85538222",
+    "sha256": "f7bef25c07a5ebbef7df69b7b6b3805771519d8620fa4ddfd1edc5d1c740b686",
     "mode": 493
   }
 ]

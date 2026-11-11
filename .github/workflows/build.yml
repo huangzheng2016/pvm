@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
-  GO_VERSION: '1.27.3'
+  GO_VERSION: '1.27.4'
   GARBLE_VERSION: 'v0.18.0'
   GOVULNCHECK_VERSION: 'v1.9.0'
   CYCLONEDX_VERSION: 'v1.12.0'
@@ -265,11 +265,11 @@ jobs:
           chmod +x pvm
           test "$(./pvm version)" = "$(cat VERSION)"
           go version -m pvm > "$RUNNER_TEMP/build-info.txt"
-          grep -F 'go1.27.3' "$RUNNER_TEMP/build-info.txt"
+          grep -F 'go1.27.4' "$RUNNER_TEMP/build-info.txt"
           grep -F 'github.com/huangzheng2016/pvm/cmd/pvm' "$RUNNER_TEMP/build-info.txt"
           if [ '${{ matrix.out }}' = 'pvm_linux_amd64' ]; then
             go version -m pvm.exe > "$RUNNER_TEMP/build-info-win.txt"
-            grep -F 'go1.27.3' "$RUNNER_TEMP/build-info-win.txt"
+            grep -F 'go1.27.4' "$RUNNER_TEMP/build-info-win.txt"
             grep -F 'github.com/huangzheng2016/pvm/cmd/pvm' "$RUNNER_TEMP/build-info-win.txt"
           fi
       - name: Record QEMU package inputs
