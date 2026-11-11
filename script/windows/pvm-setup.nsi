@@ -31,35 +31,50 @@ ShowUninstDetails show
 
 Var RuntimeRoot
 
-; Stops a running daemon through the given pvm.exe. Running VMs stop with it,
-; so ask first; silent installs refuse instead of stopping VMs unasked.
-!macro StopDaemon un
-Function ${un}StopDaemon
-  Exch $0
-  ${IfNot} ${FileExists} "$0"
-    Pop $0
-    Return
+; Files under a running daemon or VM cannot be replaced. pvm-running.ps1
+; finds them by path; interactively it offers to stop the daemon (which stops
+; running VMs) and waits for them to exit, silent runs refuse instead.
+!macro EnsureStopped un
+Function ${un}EnsureStopped
+  InitPluginsDir
+  File "/oname=$PLUGINSDIR\pvm-running.ps1" "${__FILEDIR__}\pvm-running.ps1"
+  StrCpy $3 "prompt"
+  ${If} ${Silent}
+    StrCpy $3 "check"
   ${EndIf}
-  nsExec::ExecToStack /OEM '"$0" daemon status'
+  DetailPrint "Checking for a running pvm..."
+  nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\pvm-running.ps1" -InstallDir "$INSTDIR" -RuntimeDir "$RuntimeRoot\x86_64" -Mode $3'
   Pop $1
-  Pop $2
-  StrCpy $2 $2 15
-  ${If} $2 == "daemon: running"
-    MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "The pvm daemon is running. It must be stopped to continue, which also stops all running VMs.$\r$\n$\r$\nStop it now?" /SD IDCANCEL IDOK stop
-    Abort "pvm daemon is running; stop it with 'pvm daemon stop' and retry"
-    stop:
-    DetailPrint "Stopping pvm daemon..."
-    nsExec::ExecToLog '"$0" daemon stop'
-    Pop $1
-    ${If} $1 != 0
-      Abort "'pvm daemon stop' failed (exit $1)"
-    ${EndIf}
+  ${If} $1 != 0
+    Abort "pvm or its VMs are still running; run 'pvm daemon stop' and start setup again"
   ${EndIf}
-  Pop $0
 FunctionEnd
 !macroend
-!insertmacro StopDaemon ""
-!insertmacro StopDaemon "un."
+!insertmacro EnsureStopped ""
+!insertmacro EnsureStopped "un."
+
+; Defender scans freshly written files and briefly holds them open, so a
+; rename right after staging can fail with a sharing violation. Retry for up
+; to 10s; the error flag is set only if the last attempt failed.
+!macro RenameRetry src dst
+  StrCpy $R9 0
+  ${Do}
+    ClearErrors
+    Rename "${src}" "${dst}"
+    ${IfNot} ${Errors}
+      ${Break}
+    ${EndIf}
+    IntOp $R9 $R9 + 1
+    ${If} $R9 >= 100
+      ${Break}
+    ${EndIf}
+    Sleep 100
+  ${Loop}
+  ClearErrors
+  ${If} $R9 >= 100
+    SetErrors
+  ${EndIf}
+!macroend
 
 !macro UserPath action dir
   InitPluginsDir
@@ -79,8 +94,7 @@ Section "pvm"
   ${EndIf}
   StrCpy $RuntimeRoot "$RuntimeRoot\runtime\qemu"
 
-  Push "$INSTDIR\pvm.exe"
-  Call StopDaemon
+  Call EnsureStopped
 
   ; Stage both components and verify them before replacing anything.
   DetailPrint "Staging pvm ${VERSION}..."
@@ -115,20 +129,24 @@ Section "pvm"
   ; Swap the runtime, keeping the previous one until the binary is in place.
   RMDir /r "$RuntimeRoot\.x86_64.old"
   ${If} ${FileExists} "$RuntimeRoot\x86_64\*.*"
-    ClearErrors
-    Rename "$RuntimeRoot\x86_64" "$RuntimeRoot\.x86_64.old"
+    !insertmacro RenameRetry "$RuntimeRoot\x86_64" "$RuntimeRoot\.x86_64.old"
     ${If} ${Errors}
       RMDir /r "$RuntimeRoot\.x86_64.new"
       Delete "$INSTDIR\pvm.new.exe"
       Abort "cannot replace $RuntimeRoot\x86_64 (a QEMU process may still be using it)"
     ${EndIf}
   ${EndIf}
-  Rename "$RuntimeRoot\.x86_64.new" "$RuntimeRoot\x86_64"
+  !insertmacro RenameRetry "$RuntimeRoot\.x86_64.new" "$RuntimeRoot\x86_64"
+  ${If} ${Errors}
+    Rename "$RuntimeRoot\.x86_64.old" "$RuntimeRoot\x86_64"
+    RMDir /r "$RuntimeRoot\.x86_64.new"
+    Delete "$INSTDIR\pvm.new.exe"
+    Abort "cannot move the new runtime into $RuntimeRoot\x86_64; the previous runtime was restored"
+  ${EndIf}
 
   Delete "$INSTDIR\pvm.old.exe"
   ${If} ${FileExists} "$INSTDIR\pvm.exe"
-    ClearErrors
-    Rename "$INSTDIR\pvm.exe" "$INSTDIR\pvm.old.exe"
+    !insertmacro RenameRetry "$INSTDIR\pvm.exe" "$INSTDIR\pvm.old.exe"
     ${If} ${Errors}
       RMDir /r "$RuntimeRoot\x86_64"
       Rename "$RuntimeRoot\.x86_64.old" "$RuntimeRoot\x86_64"
@@ -136,7 +154,14 @@ Section "pvm"
       Abort "cannot replace $INSTDIR\pvm.exe (is pvm still running?)"
     ${EndIf}
   ${EndIf}
-  Rename "$INSTDIR\pvm.new.exe" "$INSTDIR\pvm.exe"
+  !insertmacro RenameRetry "$INSTDIR\pvm.new.exe" "$INSTDIR\pvm.exe"
+  ${If} ${Errors}
+    Rename "$INSTDIR\pvm.old.exe" "$INSTDIR\pvm.exe"
+    RMDir /r "$RuntimeRoot\x86_64"
+    Rename "$RuntimeRoot\.x86_64.old" "$RuntimeRoot\x86_64"
+    Delete "$INSTDIR\pvm.new.exe"
+    Abort "cannot move the new pvm.exe into place; the previous version was restored"
+  ${EndIf}
   Delete "$INSTDIR\pvm.old.exe"
   RMDir /r "$RuntimeRoot\.x86_64.old"
   DetailPrint "Installed $INSTDIR\pvm.exe and $RuntimeRoot\x86_64"
@@ -159,10 +184,9 @@ SectionEnd
 ; Removes only what the installer placed: VM disks, keys and config under
 ; ~/.pvm are user data and stay.
 Section "Uninstall"
-  Push "$INSTDIR\pvm.exe"
-  Call un.StopDaemon
-
   ReadRegStr $RuntimeRoot HKCU "${UNINST_KEY}" "RuntimeRoot"
+  Call un.EnsureStopped
+
   ${If} $RuntimeRoot != ""
     RMDir /r "$RuntimeRoot\x86_64"
     RMDir "$RuntimeRoot"

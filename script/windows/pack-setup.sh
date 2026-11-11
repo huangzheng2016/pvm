@@ -76,8 +76,11 @@ if n == 0 or 'Guid="*"' in out:
     sys.exit("error: could not assign stable component GUIDs")
 open(sys.argv[2], "w", encoding="utf-8").write(out)
 PY
+  local running_b64
+  running_b64=$(base64 < "$SCRIPT_DIR/pvm-running.ps1" | tr -d '\r\n')
   wixl -a x64 \
     -D "Version=$VERSION" -D "MsiVersion=$MSI_VERSION" -D Win64=yes \
+    -D "RunningPs1B64=$running_b64" \
     -D "PvmExe=$PVM_EXE" -D "RuntimeDir=$RUNTIME_DIR" -D "UserPathPs1=$SCRIPT_DIR/user-path.ps1" \
     -o "$OUT.msi" "$SCRIPT_DIR/pvm-setup.wxs" "$work/runtime.wxs"
   echo "built $OUT.msi"

@@ -38,11 +38,19 @@
     <CustomAction Id="SetPowerShell" Property="POWERSHELL" Value="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"/>
 
     <!-- Replacing files under a running daemon or VM would defer them to the
-         next reboot and leave a mixed install, so refuse instead. The exit
-         code is the number of matching processes; the command avoids [ ] and
-         { }, which MSI formatted strings would rewrite. -->
+         next reboot and leave a mixed install. pvm-running.ps1 (shared with
+         the NSIS installer) runs before any file exists on disk, so it is
+         embedded as base64; "[\[]" and "[\]]" are MSI's escapes for literal
+         brackets. Interactive runs offer to stop pvm: full and reduced UI
+         (double-click installs) in the UI sequence, basic UI (Settings >
+         Apps uninstalls, /qb), which skips that sequence, in the execute
+         sequence. Silent runs (/qn) only check and refuse. -->
+    <CustomAction Id="StopRunningUI" Property="POWERSHELL" Execute="immediate" Return="check"
+                  ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;&amp; ([\[]scriptblock[\]]::Create([\[]Text.Encoding[\]]::UTF8.GetString([\[]Convert[\]]::FromBase64String('$(var.RunningPs1B64)')))) -InstallDir '[INSTALLDIR].' -RuntimeDir '[RUNTIMEDIR].' -Mode prompt; exit $$LASTEXITCODE&quot;"/>
+    <CustomAction Id="StopRunningBasicUI" Property="POWERSHELL" Execute="immediate" Return="check"
+                  ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;&amp; ([\[]scriptblock[\]]::Create([\[]Text.Encoding[\]]::UTF8.GetString([\[]Convert[\]]::FromBase64String('$(var.RunningPs1B64)')))) -InstallDir '[INSTALLDIR].' -RuntimeDir '[RUNTIMEDIR].' -Mode prompt; exit $$LASTEXITCODE&quot;"/>
     <CustomAction Id="CheckNotRunning" Property="POWERSHELL" Execute="immediate" Return="check"
-                  ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;$$p = (Get-Process pvm,qemu-system-x86_64 -ErrorAction SilentlyContinue).Path; exit (@($$p -like '[INSTALLDIR]*') + @($$p -like '[RUNTIMEDIR]*')).Count&quot;"/>
+                  ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;&amp; ([\[]scriptblock[\]]::Create([\[]Text.Encoding[\]]::UTF8.GetString([\[]Convert[\]]::FromBase64String('$(var.RunningPs1B64)')))) -InstallDir '[INSTALLDIR].' -RuntimeDir '[RUNTIMEDIR].' -Mode check; exit $$LASTEXITCODE&quot;"/>
     <!-- "[INSTALLDIR]." avoids a trailing '\"' that would escape the quote. -->
     <CustomAction Id="AddUserPath" Property="POWERSHELL" Execute="deferred" Impersonate="yes" Return="check"
                   ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]user-path.ps1&quot; -Action add -Dir &quot;[INSTALLDIR].&quot;"/>
@@ -53,12 +61,15 @@
       <Custom Action="SetPvmHomeEnv" Sequence="985">NOT PVMHOME AND %PVM_HOME</Custom>
       <Custom Action="SetPvmHomeProfile" Sequence="986">NOT PVMHOME</Custom>
       <Custom Action="SetRuntimeDir" Sequence="990"/>
+      <Custom Action="SetPowerShell" Sequence="992"/>
+      <Custom Action="StopRunningUI" Sequence="1010"/>
     </InstallUISequence>
     <InstallExecuteSequence>
       <Custom Action="SetPvmHomeEnv" Sequence="985">NOT PVMHOME AND %PVM_HOME</Custom>
       <Custom Action="SetPvmHomeProfile" Sequence="986">NOT PVMHOME</Custom>
       <Custom Action="SetRuntimeDir" Sequence="990"/>
       <Custom Action="SetPowerShell" Sequence="992"/>
+      <Custom Action="StopRunningBasicUI" Sequence="1009">UILevel = 3</Custom>
       <Custom Action="CheckNotRunning" Sequence="1010"/>
       <!-- During an upgrade the old version is removed after the new one has
            added the PATH entry; it must not take that entry away. -->

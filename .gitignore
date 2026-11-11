@@ -2,6 +2,8 @@
 /pvm
 /pvm.exe
 /assetpack.exe
+/pvm_windows_amd64_setup.exe
+/pvm_windows_amd64_setup.msi
 internal/assets/packed/*.zst
 internal/assets/packed/gateway-*
 internal/assets/packed/agent-*

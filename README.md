@@ -13,7 +13,11 @@ Personal QEMU dev VMs in a single binary: create an isolated Linux development m
 
 ## Installation
 
-pvm supports macOS on arm64, Linux on amd64, and Windows on amd64 (native QEMU or WSL2). Install GitHub CLI (`gh`) and Python 3 first, then install the latest release with `curl` (on Windows, run this in Git Bash):
+pvm supports macOS on arm64, Linux on amd64, and Windows on amd64 (native QEMU or WSL2).
+
+**Windows:** download `pvm_windows_amd64_setup.msi` or `pvm_windows_amd64_setup.exe` from [Releases](https://github.com/huangzheng2016/pvm/releases) and run it. Both are per-user installers that need no administrator rights and include the bundled QEMU runtime. See [Windows installers](#windows-installers) for details. The `curl` script below also works in Git Bash, but the installers are the recommended way on Windows.
+
+**macOS and Linux:** install GitHub CLI (`gh`) and Python 3 first, then install the latest release with `curl`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/huangzheng2016/pvm/master/scripts/install.sh | sh
@@ -23,12 +27,20 @@ The installer places `pvm` in `~/.local/bin` by default; set `INSTALL_DIR` to ch
 
 ### Windows installers
 
-Releases also ship per-user Windows installers that need no administrator rights: `pvm_windows_amd64_setup.exe` and `pvm_windows_amd64_setup.msi`, with the bundled QEMU runtime included. Both install `pvm.exe` to `%LOCALAPPDATA%\pvm`, add that folder to the user `PATH`, and install the runtime to `%USERPROFILE%\.pvm\runtime\qemu\x86_64`, or to `PVM_HOME\runtime\qemu\x86_64` when `PVM_HOME` is set. Open a new terminal afterwards so the `PATH` change applies. Verify a download first with `gh attestation verify pvm_windows_amd64_setup.exe --repo huangzheng2016/pvm`.
+Releases ship two per-user Windows installers that need no administrator rights: `pvm_windows_amd64_setup.msi` and `pvm_windows_amd64_setup.exe`, with the bundled QEMU runtime included. Pick either one. Both install `pvm.exe` to `%LOCALAPPDATA%\pvm`, add that folder to the user `PATH`, and install the runtime to `%USERPROFILE%\.pvm\runtime\qemu\x86_64`, or to `PVM_HOME\runtime\qemu\x86_64` when `PVM_HOME` is set. Open a new terminal afterwards so the `PATH` change applies. Verify a download first with `gh attestation verify pvm_windows_amd64_setup.exe --repo huangzheng2016/pvm`.
 
-- The `.exe` asks before stopping a running pvm daemon, which also stops running VMs. A silent install (`/S`) refuses instead.
-- The `.msi` refuses to install, upgrade or uninstall while pvm or its QEMU is running, so run `pvm daemon stop` first. Silent install: `msiexec /i pvm_windows_amd64_setup.msi /qn`. The MSI sees only a persistent user `PVM_HOME`; pass `PVMHOME=D:\pvm-home` to choose the location explicitly. Upgrades and uninstalls reuse the recorded location.
+- Files in use by a running pvm or VM cannot be replaced. When run interactively, both installers and their uninstallers detect a running daemon or QEMU and offer to stop the daemon, which also stops running VMs. Silent runs (`/S`, `msiexec /qn`) refuse instead, so run `pvm daemon stop` first.
+- MSI silent install: `msiexec /i pvm_windows_amd64_setup.msi /qn`. The MSI sees only a persistent user `PVM_HOME`; pass `PVMHOME=D:\pvm-home` to choose the location explicitly. Upgrades and uninstalls reuse the recorded location.
 - Uninstalling from Settings > Apps removes `pvm.exe`, the runtime and the `PATH` entry. VM disks, keys and configuration under `~/.pvm` are kept.
 - Use one installer type per machine. `pvm upgrade` updates an installed copy in place either way.
+
+Known limitations of the Windows installers:
+
+- Installing, and uninstalling from Settings > Apps, are tested while pvm is stopped. The prompt that offers to stop a running daemon has not been tested end to end in either installer. If it does not appear, or setup still reports that pvm is running, cancel, run `pvm daemon stop`, and run setup again.
+- Stopping the daemon from setup waits for running VMs to shut down, up to about three minutes, and setup shows no progress meanwhile.
+- VMs left running without a daemon cannot be stopped by setup. Setup lists them and refuses; shut them down, then run setup again.
+- Antivirus software scans the freshly unpacked files and briefly locks them. Setup retries each file move for up to 10 seconds; if the lock lasts longer, setup stops with an error and keeps the previous version. Run setup again.
+- After `pvm upgrade`, Settings > Apps still shows the version the installer put there.
 
 ### Windows backend selection
 
