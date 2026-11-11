@@ -21,6 +21,7 @@ env:
   GARBLE_VERSION: 'v0.18.0'
   GOVULNCHECK_VERSION: 'v1.9.0'
   CYCLONEDX_VERSION: 'v1.12.0'
+  UBUNTU_MIRROR: 'https://mirrors.edge.kernel.org/ubuntu/'
   COPYFILE_DISABLE: '1'
   GARBLE_CACHE: ${{ github.workspace }}/.cache/garble
 
@@ -174,7 +175,10 @@ jobs:
           key: go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ env.GO_VERSION }}-${{ env.GARBLE_VERSION }}-${{ hashFiles('go.sum') }}-${{ github.sha }}
           restore-keys: |
             go-${{ github.job }}-${{ runner.os }}-${{ runner.arch }}-${{ env.GO_VERSION }}-${{ env.GARBLE_VERSION }}-${{ hashFiles('go.sum') }}-
-      - run: sudo apt-get update && sudo apt-get install -y iproute2 nftables iputils-ping
+      - run: |
+          printf '%s\n' "$UBUNTU_MIRROR" | sudo tee /etc/apt/apt-mirrors.txt
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends iproute2 nftables iputils-ping
       - run: python3 script/ci/netns.py
 
   vulnerabilities:
@@ -324,8 +328,9 @@ jobs:
             tar -czf pvm-qemu-runtime-aarch64.tar.gz -C "$HOME/.pvm/runtime/qemu" aarch64
           fi
           if [ '${{ matrix.out }}' = 'pvm_linux_amd64' ]; then
+            printf '%s\n' "$UBUNTU_MIRROR" | sudo tee /etc/apt/apt-mirrors.txt
             sudo apt-get update
-            sudo apt-get install -y p7zip-full qemu-system-x86 qemu-system-common qemu-system-data seabios ipxe-qemu qemu-utils patchelf nsis wixl
+            sudo apt-get install -y --no-install-recommends p7zip-full qemu-system-x86 qemu-system-common qemu-system-data seabios ipxe-qemu qemu-utils patchelf nsis wixl
             QEMU_METADATA_JSON=qemu-windows.json ./script/qemu/pack-windows-runtime.sh "$RUNNER_TEMP/win-qemu/x86_64"
             tar -czf pvm-qemu-runtime-windows-x86_64.tar.gz -C "$RUNNER_TEMP/win-qemu" x86_64
             ./script/windows/pack-setup.sh pvm.exe "$RUNNER_TEMP/win-qemu/x86_64" pvm_windows_amd64_setup
