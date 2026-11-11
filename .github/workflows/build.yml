@@ -94,7 +94,7 @@ jobs:
           GOOS=windows GOARCH=amd64 go vet ./...
           GOOS=windows GOARCH=amd64 go build ./...
           sh -n scripts/install.sh
-          bash -n script/build.sh script/pack_assets.sh script/qemu/*.sh
+          bash -n script/build.sh script/pack_assets.sh script/qemu/*.sh script/windows/*.sh
           python3 -B -m unittest discover -s script/ci -p 'test_*.py'
       - name: Test and vet native VPS agent
         if: ${{ !matrix.host }}
@@ -325,9 +325,10 @@ jobs:
           fi
           if [ '${{ matrix.out }}' = 'pvm_linux_amd64' ]; then
             sudo apt-get update
-            sudo apt-get install -y p7zip-full qemu-system-x86 qemu-system-common qemu-system-data seabios ipxe-qemu qemu-utils patchelf
+            sudo apt-get install -y p7zip-full qemu-system-x86 qemu-system-common qemu-system-data seabios ipxe-qemu qemu-utils patchelf nsis wixl
             QEMU_METADATA_JSON=qemu-windows.json ./script/qemu/pack-windows-runtime.sh "$RUNNER_TEMP/win-qemu/x86_64"
             tar -czf pvm-qemu-runtime-windows-x86_64.tar.gz -C "$RUNNER_TEMP/win-qemu" x86_64
+            ./script/windows/pack-setup.sh pvm.exe "$RUNNER_TEMP/win-qemu/x86_64" pvm_windows_amd64_setup
             QEMU_METADATA_JSON=qemu-linux.json ./script/qemu/pack-linux-runtime.sh "$RUNNER_TEMP/linux-qemu/x86_64"
             tar -czf pvm-qemu-runtime-linux-x86_64.tar.gz -C "$RUNNER_TEMP/linux-qemu" x86_64
             tar -czf pvm_windows_amd64.tar.gz pvm.exe
@@ -344,6 +345,8 @@ jobs:
             *.tar.gz
             *.cdx.json
             qemu-*.json
+            *_setup.exe
+            *_setup.msi
       - name: Remove temporary signing credentials
         if: always() && runner.os == 'macOS'
         run: |
@@ -367,7 +370,7 @@ jobs:
           merge-multiple: true
       - name: Hash release artifacts
         working-directory: release
-        run: sha256sum *.tar.gz *.json > SHA256SUMS
+        run: sha256sum *.tar.gz *.json *_setup.exe *_setup.msi > SHA256SUMS
       - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: release/*

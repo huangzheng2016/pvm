@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  pvm-setup.wxs: per-user MSI for pvm and its bundled QEMU runtime, built with
+  wixl (msitools) by script/windows/pack-setup.sh. Runtime file components
+  come from wixl-heat (RuntimeFiles).
+
+  wixl limits shape this file: there is no Environment element, so
+  user-path.ps1 (shared with the NSIS installer) edits the user PATH, and EXE
+  custom actions must take their path from a property (SetPowerShell).
+  Deferred actions use explicit sequence numbers so they land inside the
+  install script. A literal "$" must be written "$$" for the preprocessor.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="pvm" Language="1033" Version="$(var.MsiVersion)" Manufacturer="pvm"
+           UpgradeCode="6B0E7B6C-3C1F-4E36-9B4E-2E5A9E0D6F31">
+    <Package InstallerVersion="500" Compressed="yes" InstallScope="perUser"
+             Description="pvm $(var.Version)" Comments="pvm $(var.Version) with bundled QEMU runtime"/>
+    <!-- Remove the old version after installing the new one: removed first,
+         same-version DLLs are costed as already present (Action Null) and
+         then deleted with the old product. Needs stable component GUIDs,
+         which pack-setup.sh assigns to the runtime files. wixl ignores
+         Schedule, so InstallExecuteSequence pins the actions below. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of pvm is already installed."/>
+    <Media Id="1" Cabinet="pvm.cab" EmbedCab="yes"/>
+    <Property Id="ARPNOMODIFY" Value="1"/>
+    <Property Id="ARPNOREPAIR" Value="1"/>
+
+    <!-- PVMHOME decides where the runtime goes. Maintenance and upgrades reuse
+         the recorded value, so uninstall never resolves a different directory
+         than the one installed into; a new install takes PVMHOME=... from the
+         command line, else a persistent PVM_HOME, else ~/.pvm. -->
+    <Property Id="PVMHOME">
+      <RegistrySearch Id="RecordedPvmHome" Root="HKCU" Key="Software\pvm\msi" Name="PvmHome" Type="raw"/>
+    </Property>
+    <CustomAction Id="SetPvmHomeEnv" Property="PVMHOME" Value="[%PVM_HOME]"/>
+    <CustomAction Id="SetPvmHomeProfile" Property="PVMHOME" Value="[%USERPROFILE]\.pvm"/>
+    <CustomAction Id="SetRuntimeDir" Property="RUNTIMEDIR" Value="[PVMHOME]\runtime\qemu\x86_64\"/>
+    <CustomAction Id="SetPowerShell" Property="POWERSHELL" Value="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"/>
+
+    <!-- Replacing files under a running daemon or VM would defer them to the
+         next reboot and leave a mixed install, so refuse instead. The exit
+         code is the number of matching processes; the command avoids [ ] and
+         { }, which MSI formatted strings would rewrite. -->
+    <CustomAction Id="CheckNotRunning" Property="POWERSHELL" Execute="immediate" Return="check"
+                  ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;$$p = (Get-Process pvm,qemu-system-x86_64 -ErrorAction SilentlyContinue).Path; exit (@($$p -like '[INSTALLDIR]*') + @($$p -like '[RUNTIMEDIR]*')).Count&quot;"/>
+    <!-- "[INSTALLDIR]." avoids a trailing '\"' that would escape the quote. -->
+    <CustomAction Id="AddUserPath" Property="POWERSHELL" Execute="deferred" Impersonate="yes" Return="check"
+                  ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]user-path.ps1&quot; -Action add -Dir &quot;[INSTALLDIR].&quot;"/>
+    <CustomAction Id="RemoveUserPath" Property="POWERSHELL" Execute="deferred" Impersonate="yes" Return="ignore"
+                  ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]user-path.ps1&quot; -Action remove -Dir &quot;[INSTALLDIR].&quot;"/>
+
+    <InstallUISequence>
+      <Custom Action="SetPvmHomeEnv" Sequence="985">NOT PVMHOME AND %PVM_HOME</Custom>
+      <Custom Action="SetPvmHomeProfile" Sequence="986">NOT PVMHOME</Custom>
+      <Custom Action="SetRuntimeDir" Sequence="990"/>
+    </InstallUISequence>
+    <InstallExecuteSequence>
+      <Custom Action="SetPvmHomeEnv" Sequence="985">NOT PVMHOME AND %PVM_HOME</Custom>
+      <Custom Action="SetPvmHomeProfile" Sequence="986">NOT PVMHOME</Custom>
+      <Custom Action="SetRuntimeDir" Sequence="990"/>
+      <Custom Action="SetPowerShell" Sequence="992"/>
+      <Custom Action="CheckNotRunning" Sequence="1010"/>
+      <!-- During an upgrade the old version is removed after the new one has
+           added the PATH entry; it must not take that entry away. -->
+      <Custom Action="RemoveUserPath" Sequence="3490">REMOVE~="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="AddUserPath" Sequence="4010">NOT REMOVE~="ALL"</Custom>
+      <InstallExecute Sequence="6500"/>
+      <RemoveExistingProducts Sequence="6550"/>
+    </InstallExecuteSequence>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="INSTALLDIR" Name="pvm"/>
+      </Directory>
+      <!-- Placeholder; SetRuntimeDir redirects it to [PVMHOME]\runtime\qemu\x86_64. -->
+      <Directory Id="RUNTIMEDIR" Name="pvm-runtime"/>
+    </Directory>
+
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="PvmExe" Guid="3E8F0C6A-9D51-4B7A-8E2B-7C4D1F5A6B90">
+        <File Id="PvmExe" Name="pvm.exe" Source="$(var.PvmExe)" KeyPath="yes"/>
+        <RemoveFolder Id="RemoveInstallDir" On="uninstall"/>
+      </Component>
+      <Component Id="UserPath" Guid="A1C4E2B7-5F38-4D9C-B6A0-3E7F2D8C9B14">
+        <File Id="UserPathPs1" Name="user-path.ps1" Source="$(var.UserPathPs1)" KeyPath="yes"/>
+      </Component>
+      <Component Id="InstallState" Guid="5D2B9E47-81C3-4F6A-A0D8-6B1E3C7F9A25">
+        <RegistryValue Root="HKCU" Key="Software\pvm\msi" Name="PvmHome" Type="string" Value="[PVMHOME]" KeyPath="yes"/>
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="Main" Level="1" Title="pvm">
+      <ComponentRef Id="PvmExe"/>
+      <ComponentRef Id="UserPath"/>
+      <ComponentRef Id="InstallState"/>
+      <ComponentGroupRef Id="RuntimeFiles"/>
+    </Feature>
+  </Product>
+</Wix>

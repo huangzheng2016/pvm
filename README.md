@@ -21,6 +21,15 @@ curl -fsSL https://raw.githubusercontent.com/huangzheng2016/pvm/master/scripts/i
 
 The installer places `pvm` in `~/.local/bin` by default; set `INSTALL_DIR` to change this. On macOS, Linux, and Windows it also installs the bundled QEMU runtime unless `PVM_SKIP_QEMU=1` is set, in which case pvm uses the system QEMU. The installer verifies the release checksum and GitHub build attestation, including the repository, workflow, and tag. Releases without this proof are rejected. All downloads and executable checks finish before replacement; previous binaries and QEMU runtimes are retained. You can also download an archive from [Releases](https://github.com/huangzheng2016/pvm/releases) and verify it with `gh attestation verify` before use.
 
+### Windows installers
+
+Releases also ship per-user Windows installers that need no administrator rights: `pvm_windows_amd64_setup.exe` and `pvm_windows_amd64_setup.msi`, with the bundled QEMU runtime included. Both install `pvm.exe` to `%LOCALAPPDATA%\pvm`, add that folder to the user `PATH`, and install the runtime to `%USERPROFILE%\.pvm\runtime\qemu\x86_64`, or to `PVM_HOME\runtime\qemu\x86_64` when `PVM_HOME` is set. Open a new terminal afterwards so the `PATH` change applies. Verify a download first with `gh attestation verify pvm_windows_amd64_setup.exe --repo huangzheng2016/pvm`.
+
+- The `.exe` asks before stopping a running pvm daemon, which also stops running VMs. A silent install (`/S`) refuses instead.
+- The `.msi` refuses to install, upgrade or uninstall while pvm or its QEMU is running, so run `pvm daemon stop` first. Silent install: `msiexec /i pvm_windows_amd64_setup.msi /qn`. The MSI sees only a persistent user `PVM_HOME`; pass `PVMHOME=D:\pvm-home` to choose the location explicitly. Upgrades and uninstalls reuse the recorded location.
+- Uninstalling from Settings > Apps removes `pvm.exe`, the runtime and the `PATH` entry. VM disks, keys and configuration under `~/.pvm` are kept.
+- Use one installer type per machine. `pvm upgrade` updates an installed copy in place either way.
+
 ### Windows backend selection
 
 Windows supports two backends, selected with `PVM_BACKEND` or `backend` in `~/.pvm/config.yaml`:
