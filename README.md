@@ -164,6 +164,8 @@ go install mvdan.cc/garble@v0.18.0
 .\pvm.exe version
 ```
 
+Do not run the full `go test ./...` on a Windows host. The test suite is written for Unix (file permission bits, paths such as `/tmp`, symlinks, and tools like `ip`, `gh` and `bash`), so many tests fail there for reasons unrelated to your change, and the `internal/cli` tests keep respawning themselves and leave `cli.test.exe` processes behind. On Windows, run only targeted tests for what you changed, for example `go test ./internal/qemu -run Accel`, and rely on Linux or macOS (CI or WSL2) for the full suite.
+
 CI tests and builds each native platform once per commit, caches Go and build tools, and reserves QEMU packaging and signing for releases. Releases can reuse verified artifacts from a successful master run of the exact same commit. Linux namespace tests must run rather than skip.
 
 Security boundaries: user VMs share a layer-2 network; global shares and extra host mounts are explicit trust boundaries. They are not isolated hostile tenants. Explicit direct/internal rules can bypass a default exit. See [SECURITY.md](SECURITY.md) for guarantees, limitations, and deployment checks.
