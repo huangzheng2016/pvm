@@ -102,10 +102,20 @@ func TestRenderProvision(t *testing.T) {
 		"truncate -s 0 /etc/machine-id",
 		"sed -i '/^pvmshare /d' /etc/fstab",
 		"userdel -rf baker",
+		"sshfs firefox",
+		"Signed-By: /etc/apt/keyrings/packages.mozilla.org.asc",
+		"Pin: origin packages.mozilla.org",
+		`if [ "$mozfpr" != "` + mozillaKeyFingerprint + `" ]`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("provision script missing %q", want)
 		}
+	}
+	if p, u := strings.Index(s, "\npvm_prefetch\n"), strings.Index(s, "apt-get -y upgrade"); p < 0 || p > u {
+		t.Error("packages must be prefetched before the upgrade")
+	}
+	if strings.Index(s, "/etc/apt/sources.list.d/mozilla.sources") > strings.Index(s, "updating package lists") {
+		t.Error("the Mozilla repository must be added before the main apt-get update")
 	}
 	if strings.Contains(s, "docker system prune -af") {
 		t.Error("provision script must not nuke the docker images it just pulled")
