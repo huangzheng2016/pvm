@@ -6,7 +6,7 @@
 
 ## 功能
 
-- **快速、开箱即用的虚拟机：** Golden 镜像预装 Docker、常用开发工具和桌面。`pvm create` 会自动下载基础镜像并烘焙缺失的 golden；首次烘焙只需一次，约十分钟，之后新建虚拟机通常约 30 秒就绪。
+- **快速、开箱即用的虚拟机：** Golden 镜像预装 Docker、常用开发工具、Firefox 和桌面。`pvm create` 会自动下载基础镜像并烘焙缺失的 golden；首次烘焙只需一次，约十分钟，之后新建虚拟机通常约 30 秒就绪。
 - **失败即阻断（fail-closed）的出口路由：** TCP、UDP 和 ICMP 经 WireGuard 发往你的 VPS（UDP 或 TCP 承载），或发往 Cloudflare WARP（UDP）。只有显式的 direct/internal 规则可以绕过所选出口；隧道断开时流量直接丢弃，不会回落到宿主机出口。
 - **真实 IP 的全隧道 DNS 与分流：** 走默认出口的域名经所选出口解析为真实 IPv4 地址，并通过三层隧道直接转发。只有显式的域名代理规则才使用 fake-ip 中继。direct/internal 域名保留真实地址和直连路径；域名与 CIDR 规则无需重启即可生效。
 - **原生浏览器桌面：** `pvm desktop` 通过 TigerVNC 和 noVNC 提供虚拟机自身的 XFCE 桌面。默认只给出回环地址的 URL；`--public` 可选择监听 `0.0.0.0`，但仍需 VNC 认证。它和 SSH 登录的是同一台机器，不是容器。
@@ -106,6 +106,26 @@ pvm route dev1 --via my-warp
 pvm route default --via my-exit
 pvm route ls
 ```
+
+### 工作区
+
+工作区把一个宿主机目录绑定到一台虚拟机的 `/workspace/<id>`。创建时选择模式：
+
+- `mount`：只有一份共享副本。Linux、macOS 和 WSL2 使用 `pvm mount` 背后的 9p；原生 Windows 后端使用反向 sshfs，由 pvm 通过已有的 SSH 连接提供文件。宿主机上的修改不会在虚拟机中触发 inotify 事件，监听文件的工具需要改用轮询（例如 `CHOKIDAR_USEPOLLING=1`）。
+- `sync`：两端各有一份完整副本，虚拟机这份放在它自己的磁盘上。用 `push` 和 `pull` 搬运改动，三方比较发现冲突时会停止，直到你传入 `--prefer host`、`--prefer vm` 或 `--keep-both`。
+- `copy`：上传一次，在虚拟机中工作，结束后用 `clone` 下载结果。
+
+```bash
+cd ~/src/web
+pvm workspace create web dev1 --mode sync
+pvm workspace ssh web 'npm install && npm test'
+pvm workspace status web
+pvm workspace pull web
+pvm workspace clone web ~/src/web-result
+pvm workspace rm web
+```
+
+上传会跳过 `.gitignore` 匹配的路径和 `node_modules`；`.pvmignore` 文件可以追加规则或重新包含路径。pvm 拒绝上传或挂载主目录、文件系统根目录、它自己的数据目录，以及包含 `.ssh`、`.aws` 等凭据的目录树。下载内容会逐项校验后才写入宿主机。`pvm workspace rm` 从不删除宿主机文件。详见 [docs/design/workspace.md](docs/design/workspace.md)。
 
 ## 架构
 

@@ -33,6 +33,7 @@ type vmInfoView struct {
 		IP            string `json:"ip"`
 		CPUs          int    `json:"cpus"`
 		MemMB         int    `json:"mem_mb"`
+		DiskGB        int    `json:"disk_gb"`
 		IdentityReset bool   `json:"identity_reset,omitempty"`
 		SSHKeyName    string `json:"ssh_key_name,omitempty"`
 	} `json:"spec"`
@@ -519,14 +520,9 @@ func CmdRm(args []string) int {
 		return 2
 	}
 	name := fs.Arg(0)
-	if !*yes && !*force {
-		if !stdinIsTTY() {
-			return fatalf("refusing to delete %q without confirmation (non-interactive stdin); use -y to confirm", name)
-		}
-		if !confirmAction(os.Stdin, os.Stderr, fmt.Sprintf("delete VM '%s' (disk + metadata)?", name)) {
-			fmt.Fprintln(os.Stderr, "aborted")
-			return 1
-		}
+	confirmed := *yes || *force
+	if !confirmed && !stdinIsTTY() {
+		return fatalf("refusing to delete %q without confirmation (non-interactive stdin); use -y to confirm", name)
 	}
 	p, err := mustPaths()
 	if err != nil {
@@ -535,6 +531,17 @@ func CmdRm(args []string) int {
 	c, err := daemon.Ensure(p)
 	if err != nil {
 		return fatalf("%v", err)
+	}
+	prefix := "note: "
+	if !confirmed {
+		prefix = "  "
+	}
+	for _, n := range vmRmWorkspaceNotes(p, c, name) {
+		fmt.Fprintln(os.Stderr, prefix+n)
+	}
+	if !confirmed && !confirmAction(os.Stdin, os.Stderr, fmt.Sprintf("delete VM '%s' (disk + metadata)?", name)) {
+		fmt.Fprintln(os.Stderr, "aborted")
+		return 1
 	}
 	if err := c.Delete("/v1/vms/"+name, nil); err != nil {
 		return fatalf("%v", err)
@@ -576,33 +583,7 @@ func CmdSSH(args []string) int {
 		return fatalf("vm %s is not running; `pvm start %s`", info.Spec.Name, info.Spec.Name)
 	}
 
-	sshArgs := []string{
-		"-F", "/dev/null",
-		"-o", "IdentitiesOnly=yes",
-		"-o", "IdentityAgent=none",
-		"-o", "ForwardAgent=no",
-		"-i", (&vm.Spec{SSHKeyName: info.Spec.SSHKeyName}).SSHKeyPath(p),
-		// host keys rotate freely (fresh VMs, reused IPs/ports)
-		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
-		"-o", "LogLevel=ERROR",
-		"-o", "BatchMode=yes",
-		"-o", "ConnectTimeout=10",
-		"-o", "ConnectionAttempts=1",
-	}
-	target := ""
-	if info.Spec.Role == "gateway" {
-		sshArgs = append(sshArgs, "-p", strconv.Itoa(info.Spec.SSHPort))
-		target = fmt.Sprintf("%s@127.0.0.1", info.Spec.User)
-	} else {
-		// user VMs live behind the cluster gateway. -J would spawn the
-		// hop ssh WITHOUT our flags (default known_hosts, no key), so
-		// build the ProxyCommand by hand.
-		proxy := fmt.Sprintf("ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -W %%h:%%p -p %d %s@127.0.0.1",
-			vm.ProxyCommandQuote((&vm.Spec{SSHKeyName: info.GatewaySSHKeyName}).SSHKeyPath(p)), info.GatewaySSH, info.GatewayUser)
-		sshArgs = append(sshArgs, "-o", "ProxyCommand="+proxy)
-		target = fmt.Sprintf("%s@%s", info.Spec.User, info.Spec.IP)
-	}
+	sshArgs, target := vmSSHArgs(p, &info)
 	tty := !disableTTY && (forceTTY || sshWantsTTY(args[1:], stdinIsTTY(), isTTY(os.Stdout)))
 	if tty {
 		sshArgs = append(sshArgs, "-tt")
@@ -640,6 +621,39 @@ func CmdSSH(args []string) int {
 		return fatalf("ssh: %v", err)
 	}
 	return 0
+}
+
+// vmSSHArgs returns the ssh options and login target for a VM, shared by
+// `pvm ssh` and workspace transfers.
+func vmSSHArgs(p *paths.Paths, info *vmInfoView) ([]string, string) {
+	sshArgs := []string{
+		"-F", "/dev/null",
+		"-o", "IdentitiesOnly=yes",
+		"-o", "IdentityAgent=none",
+		"-o", "ForwardAgent=no",
+		"-i", (&vm.Spec{SSHKeyName: info.Spec.SSHKeyName}).SSHKeyPath(p),
+		// host keys rotate freely (fresh VMs, reused IPs/ports)
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=10",
+		"-o", "ConnectionAttempts=1",
+	}
+	target := ""
+	if info.Spec.Role == "gateway" {
+		sshArgs = append(sshArgs, "-p", strconv.Itoa(info.Spec.SSHPort))
+		target = fmt.Sprintf("%s@127.0.0.1", info.Spec.User)
+	} else {
+		// user VMs live behind the cluster gateway. -J would spawn the
+		// hop ssh WITHOUT our flags (default known_hosts, no key), so
+		// build the ProxyCommand by hand.
+		proxy := fmt.Sprintf("ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=none -o ForwardAgent=no -i %s -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 -W %%h:%%p -p %d %s@127.0.0.1",
+			vm.ProxyCommandQuote((&vm.Spec{SSHKeyName: info.GatewaySSHKeyName}).SSHKeyPath(p)), info.GatewaySSH, info.GatewayUser)
+		sshArgs = append(sshArgs, "-o", "ProxyCommand="+proxy)
+		target = fmt.Sprintf("%s@%s", info.Spec.User, info.Spec.IP)
+	}
+	return sshArgs, target
 }
 
 func sshLoginCommand(command []string, tty bool) string {

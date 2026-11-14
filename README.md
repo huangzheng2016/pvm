@@ -6,7 +6,7 @@ Personal QEMU dev VMs in a single binary: create an isolated Linux development m
 
 ## Features
 
-- **Fast, ready-to-use VMs:** Golden images include Docker, common development tools, and a desktop. `pvm create` automatically downloads the base image and bakes a missing golden; the one-time first bake takes about ten minutes, while later VMs are usually ready in about 30 seconds.
+- **Fast, ready-to-use VMs:** Golden images include Docker, common development tools, Firefox, and a desktop. `pvm create` automatically downloads the base image and bakes a missing golden; the one-time first bake takes about ten minutes, while later VMs are usually ready in about 30 seconds.
 - **Fail-closed exit routing:** Route TCP, UDP, and ICMP through WireGuard to your VPS over UDP or TCP, or to Cloudflare WARP over UDP. Only explicit direct/internal rules bypass the selected exit; if the tunnel goes down, traffic is dropped instead of falling back to host egress.
 - **Real-IP full-tunnel DNS and split routing:** Default-exit domains resolve through the selected exit to real IPv4 addresses and use direct L3 tunnel forwarding. Only explicit domain proxy rules use fake-ip relays. Direct/internal domains keep their real addresses and direct path, and domain or CIDR rules take effect without a restart.
 - **Native browser desktop:** `pvm desktop` serves the VM's own XFCE desktop through TigerVNC and noVNC. It uses a loopback URL by default; `--public` optionally listens on `0.0.0.0` with VNC authentication still required. It is the same machine as SSH, not a container.
@@ -106,6 +106,26 @@ To route every VM without an explicit route, set the cluster default:
 pvm route default --via my-exit
 pvm route ls
 ```
+
+### Workspaces
+
+A workspace binds one host folder to one VM at `/workspace/<id>`. Pick a mode when you create it:
+
+- `mount`: one shared copy. Linux, macOS and WSL2 use the 9p path behind `pvm mount`; the native Windows backend uses reverse sshfs, served by pvm over the existing SSH connection. Host changes do not raise inotify events in the VM, so file watchers need polling (for example `CHOKIDAR_USEPOLLING=1`).
+- `sync`: a full copy on each side on the VM's own disk. `push` and `pull` move changes, with a three-way check that stops on conflicts until you pass `--prefer host`, `--prefer vm` or `--keep-both`.
+- `copy`: upload once, work in the VM, then download the result with `clone`.
+
+```bash
+cd ~/src/web
+pvm workspace create web dev1 --mode sync
+pvm workspace ssh web 'npm install && npm test'
+pvm workspace status web
+pvm workspace pull web
+pvm workspace clone web ~/src/web-result
+pvm workspace rm web
+```
+
+Uploads skip `.gitignore` matches and `node_modules`; a `.pvmignore` file adds or re-includes paths. pvm refuses to upload or mount the home directory, a file system root, its own data directory, or a tree that contains credentials such as `.ssh` or `.aws`. Downloads are checked entry by entry before anything is written to the host. `pvm workspace rm` never deletes host files. See [docs/design/workspace.md](docs/design/workspace.md).
 
 ## Architecture
 

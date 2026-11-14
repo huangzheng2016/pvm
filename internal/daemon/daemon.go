@@ -75,6 +75,9 @@ type Server struct {
 
 	gwPushLocks  sync.Map // clusterID -> chan struct{} (cap 1), serializes gateway config pushes
 	gwAgentLocks sync.Map // clusterID -> chan struct{} (cap 1), serializes gateway agent deployments
+
+	wsMountOnce sync.Once
+	wsMount     *mountSupervisor
 }
 
 type vmInfo struct {
@@ -276,6 +279,9 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/vms/{name}/console", s.handleConsole)
 	mux.HandleFunc("GET /v1/vms/{name}/audit", s.handleVMAudit)
 	mux.HandleFunc("GET /v1/dns", s.handleDNSList)
+	mux.HandleFunc("GET /v1/workspaces/{id}/mount", s.handleWorkspaceMountGet)
+	mux.HandleFunc("POST /v1/workspaces/{id}/mount", s.handleWorkspaceMountStart)
+	mux.HandleFunc("DELETE /v1/workspaces/{id}/mount", s.handleWorkspaceMountStop)
 	mux.HandleFunc("POST /v1/shutdown", s.handleShutdown)
 	return mux
 }
@@ -1105,6 +1111,11 @@ func Run(p *paths.Paths, srv *Server) error {
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpSrv.Serve(ln) }()
 	go srv.recoverClusters()
+	wsMountsDone := make(chan struct{})
+	go func() {
+		srv.workspaceMounts().run(serveCtx, 5*time.Second)
+		close(wsMountsDone)
+	}()
 
 	select {
 	case <-sigCh:
@@ -1114,6 +1125,7 @@ func Run(p *paths.Paths, srv *Server) error {
 	}
 
 	cancelServe()
+	<-wsMountsDone
 	log.Println("daemon shutting down: stopping VMs")
 	srv.StopAllVMs()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

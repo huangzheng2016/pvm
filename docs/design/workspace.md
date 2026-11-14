@@ -1,6 +1,6 @@
 # Workspaces
 
-Status: proposed, not implemented. Planned in phases; see [Phases](#phases).
+Status: implemented on master, not yet released. All three phases landed together; see [Implementation notes](#implementation-notes) for where the implementation differs from or refines this design.
 
 ## Motivation
 
@@ -125,9 +125,10 @@ The VM controls these contents, so pvm treats every entry as untrusted and write
 
 - is an absolute path, or contains `..`;
 - is a device, FIFO or socket;
-- is a symlink that is absolute or points outside the workspace. Where the host cannot create symlinks, they are skipped and listed;
+- is a symlink that is absolute, points outside the workspace, or has `..` after a name in its target. Where the host cannot create symlinks, they are skipped and listed;
+- lies below a symlink or another non-directory on the host;
 - uses a name Windows does not allow, such as `CON`, `aux.c`, or a name containing `:`;
-- differs from another entry only by case, on a case-insensitive host file system.
+- differs only by case from another entry or from an existing host path, on a case-insensitive host file system.
 
 After writing, pvm lists changed files that tools on the host may execute: `.git/hooks/*`, `.git/config`, `.vscode/*.json` and `.envrc`.
 
@@ -163,6 +164,24 @@ After writing, pvm lists changed files that tools on the host may execute: `.git
 3. `mount` mode:
    - first the virtio-9p backend on Linux, macOS and WSL2;
    - then reverse sshfs on native Windows, with the SFTP server in pvm.exe.
+
+## Implementation notes
+
+- Mount transport: `runtime.GOOS == "windows"` (the native backend) uses reverse sshfs; every other host, including the WSL2 backend, uses 9p. Metadata records the transport. The daemon serves `/v1/workspaces/<id>/mount` (GET status, POST start, DELETE stop and unmount) and reconciles sessions every 5 seconds, so a mount comes back after the VM restarts. `create` waits up to 90 seconds for the first mount and removes the metadata again when it does not appear.
+- A 9p mount with `--read-only` is added while the VM is stopped, like `pvm mount --read-only`; every other `create` needs the VM running. `create` refuses a guest path that already exists and is not an empty directory, in every mode.
+- `rm` of an sftp mount stops and unmounts it before deleting the metadata, because the daemon finds the mount through the metadata. `--delete-guest` refuses while anything is mounted at or below the guest path and deletes with `rm --one-file-system`, so it can never delete host files through a mount.
+- Ignore rules: sync uses the host's `.gitignore` and `.pvmignore` files for both sides. `clone` of a sync or copy workspace, and the unsaved-changes check for copy mode, read the guest's own ignore files instead. `clone` of a mount workspace copies the host folder with the host's ignore rules.
+- `push`, and a `pull` that uploads host versions to resolve conflicts, repeat the upload guard of `create`, so a credential directory added to the folder later is refused too. The guard also matches `.netrc` and `.git-credentials`.
+- Mount mode runs the upload guard too, without ignore rules, because a mount shares every file. Under the WSL2 backend, pvm.exe passes the Windows profile into WSL so the guard protects it like the home directory, and `/mnt/<drive>` counts as a file system root.
+- `--keep-both` on a conflict that involves a directory keeps the losing side's whole subtree under the conflict name.
+- The native Windows host has no exec bits, so a file keeps the exec bit it last had in the VM, even after a host edit.
+- A native Windows mount derives modes for the VM, the way Cygwin does: directories and files that start with an ELF header or `#!` are 755, other files 644, and the read-only attribute clears the write bits. `chmod` cannot change the exec bit there, so git in the VM sets `core.filemode=false` on its own.
+- Names that are not valid UTF-8 cannot be stored in the baseline; scans skip and list them.
+- The SFTP server of a native Windows mount refuses symlinks below a symlinked directory, and renames or hard links that would move a relative symlink to where its target leaves the folder.
+- `clone` of a copy workspace records the cloned tree as saved, so `rm` and `pvm rm` warn only about later VM changes. `clone` of a sync workspace leaves the sync baseline alone.
+- "Unsaved" means the VM copy differs from the last baseline: not pulled in sync mode, not cloned since the upload or the last clone in copy mode. The check needs the VM running; otherwise `pvm rm` notes that it could not check.
+- Push deletes a directory in the VM with `rmdir`. When the directory still holds ignored files, such as `node_modules`, push stops with an error naming it instead of deleting them. A pull stops the same way on the host.
+- A push that fails partway can leave some paths applied; the baseline is not updated, so rerunning it is safe. Uploads by `create` are a single rename and are all-or-nothing.
 
 ## Non-goals
 

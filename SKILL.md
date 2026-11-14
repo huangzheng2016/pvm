@@ -72,7 +72,7 @@ pvm ssh dev1 'whoami && ls /share'
 
 - Always pass `--user` explicitly. Interactive create prompts when it is omitted; non-interactive create rejects a missing `--user` instead of silently choosing one.
 - create follows progress by default (image, disk, boot, cloud-init and agent readiness); `--no-wait` returns immediately.
-- Golden images come with Docker, common dev tools, and a native XFCE desktop (TigerVNC + noVNC) preinstalled. User VMs get a virtio-gpu display device by default (`/dev/dri` in the guest); gateway and build VMs stay headless.
+- Golden images come with Docker, common dev tools, Firefox (from Mozilla's APT repository, not the snap), sshfs, and a native XFCE desktop (TigerVNC + noVNC) preinstalled. Images baked before Firefox was added do not have it; rebake with `pvm image build`. User VMs get a virtio-gpu display device by default (`/dev/dri` in the guest); gateway and build VMs stay headless.
 - New VMs use per-VM pvm management keypairs, no password; existing VMs retain their original key. `pvm ssh dev1` opens an interactive shell; when both local stdin/stdout are terminals, `pvm ssh dev1 codex` and other interactive commands also get a TTY automatically. Use `pvm ssh -t dev1 <cmd>` to force one or `-T` to disable it. SSH remote commands run through the user's login shell, loading `~/.profile`, Bash login files, or `~/.zprofile`; TTY commands also request interactive mode so `.bashrc`/`.zshrc` follow the shell's normal startup rules. When SSH is unreachable the virtio-serial agent channel takes over automatically (or use `pvm exec dev1 <cmd...>` explicitly - it needs no network).
 - create/start pushes the VM's IP/MAC mapping to the gateway DHCP **synchronously** before booting and deploys the gateway agent before the user VM starts (new VMs get a DHCP offer on their first request); if the gateway is unreachable, start fails instead of booting a network-less VM.
 - Cluster addressing: VMs live in `100.99.<cluster>.0/24` (CGNAT space), the gateway is `100.99.<cluster>.1`.
@@ -172,7 +172,30 @@ pvm clone dev1 dev2             # source VM must be stopped; --no-start clones w
 - clone inherits mounts, CPU/memory, user, timezone, SMBIOS, and the GPU device; the effective default exit is explicitly inherited before boot; port maps are not inherited by default but can be interactively carried over with new ports (`--inherit-ports` / `--no-inherit-ports`).
 - On first boot a clone regenerates its hostname, machine-id, SSH host keys, and management key. Other authorized keys and application identities remain copied. A private `/share` starts empty in the clone; extra mounts still refer to the explicitly configured host sources.
 
-### 8. Disk capacity and host space
+### 8. Workspaces (pvm workspace)
+
+A workspace binds one host folder to one VM at `/workspace/<id>` (id: lowercase letters, digits, `-`).
+
+```bash
+pvm workspace create web dev1 --mode mount|sync|copy [--path DIR] [--read-only] [-y]
+pvm workspace ls
+pvm workspace status web                 # sync only: changes on each side and conflicts
+pvm workspace push web [--prefer host|vm | --keep-both]
+pvm workspace pull web [--prefer host|vm | --keep-both]
+pvm workspace clone web ./web-result     # dest must be missing or empty; never overwrites
+pvm workspace ssh web [command...]       # like pvm ssh, starting in /workspace/web
+pvm workspace rm web [--delete-guest] [-y]
+```
+
+- `--path` defaults to the current directory. `create`, `status`, `push`, `pull`, `clone` of a sync or copy workspace and `rm --delete-guest` need the VM running (`pvm start dev1`); a read-only 9p mount is created while the VM is stopped.
+- `mount`: one shared copy. 9p on Linux, macOS and WSL2; reverse sshfs on the native Windows backend (pvm serves SFTP over the existing SSH connection, the daemon remounts after drops, and `sshfs` is installed in the guest on first use). `--read-only` is enforced on the host. Host edits raise no inotify events in the VM; file watchers need polling, for example `CHOKIDAR_USEPOLLING=1`.
+- `sync`: a copy on each side. push/pull use a three-way comparison with the last baseline; on any conflict they write nothing and list the paths. Resolve with `--prefer host`, `--prefer vm`, or `--keep-both` (the other side's version is kept as `<name>.pvm-conflict-<host|vm>`). Run git on one side only.
+- `copy`: one upload, then `clone` downloads the VM copy.
+- Uploads skip `.gitignore` matches and `node_modules`; `.pvmignore` adds patterns and `!pattern` re-includes. `.git` is transferred. Create refuses the home directory, a file system root, `~/.pvm`, and trees containing `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.netrc` or `.git-credentials` unless `.pvmignore` excludes them; mount mode refuses the same folders and ignores `.pvmignore`, since a mount shares every file. Uploads above 1 GiB need confirmation (`-y` in scripts). A full guest disk fails with a `pvm resize` hint.
+- Downloads reject absolute or `..` paths, devices, escaping symlinks, paths below a host symlink, Windows-reserved names and case clashes (with each other or with existing host files), and list them; the command then exits non-zero and the baseline is not updated. After a download pvm lists changed `.git/hooks/*`, `.git/config`, `.vscode/*.json` and `.envrc` files for review.
+- `rm` never deletes host files and keeps the VM copy unless `--delete-guest`, which refuses while anything is mounted below the VM copy. It warns when the VM copy has changes not yet pulled or cloned. `pvm rm <vm>` lists the VM's workspaces and keeps them as orphans for `pvm workspace rm`.
+
+### 9. Disk capacity and host space
 
 - VM disks use sparse qcow2 files. `--disk` at create and `pvm resize` set the virtual capacity ceiling; neither allocates the full size on the host up front. `resize` is grow-only and never shrinks the guest partition or filesystem.
 - QEMU enables `discard=unmap` and `detect-zeroes=unmap`. Deleting files alone can leave historical allocations and metadata behind, so run `sudo fstrim -av` in the guest before offline compaction for the best result.
@@ -185,7 +208,7 @@ pvm clone dev1 dev2             # source VM must be stopped; --no-start clones w
   ```
 - `pvm compact` requires a stopped VM and refuses an unconsumed RAM snapshot. It validates the new image, virtual capacity, and backing chain, then atomically replaces the original only when the new file uses less host space. It does not enable compression or reduce virtual capacity.
 
-### 9. Snapshots and troubleshooting
+### 10. Snapshots and troubleshooting
 
 ```bash
 pvm snapshot create dev1        # capture RAM+disk state and stop (VM must be running)

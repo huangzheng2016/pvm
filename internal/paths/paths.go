@@ -21,6 +21,8 @@ type Paths struct {
 	Keys     string
 	Run      string
 	Runtime  string
+	// Workspaces holds workspace metadata; created on first use.
+	Workspaces string
 }
 
 func Default() (*Paths, error) {
@@ -36,14 +38,15 @@ func Default() (*Paths, error) {
 
 func New(home string) *Paths {
 	return &Paths{
-		Home:     home,
-		Images:   filepath.Join(home, "images"),
-		VMs:      filepath.Join(home, "vms"),
-		Clusters: filepath.Join(home, "clusters"),
-		Share:    filepath.Join(home, "share"),
-		Keys:     filepath.Join(home, "keys"),
-		Run:      filepath.Join(home, "run"),
-		Runtime:  filepath.Join(home, "runtime"),
+		Home:       home,
+		Images:     filepath.Join(home, "images"),
+		VMs:        filepath.Join(home, "vms"),
+		Clusters:   filepath.Join(home, "clusters"),
+		Share:      filepath.Join(home, "share"),
+		Keys:       filepath.Join(home, "keys"),
+		Run:        filepath.Join(home, "run"),
+		Runtime:    filepath.Join(home, "runtime"),
+		Workspaces: filepath.Join(home, "workspaces"),
 	}
 }
 

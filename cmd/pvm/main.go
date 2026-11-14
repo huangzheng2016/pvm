@@ -30,8 +30,19 @@ vm:
   doctor        diagnose local state consistency and permissions (read-only, redacted)
   audit         read-only health audit: pvm audit dev1 [--privacy] (vm, route, tcp/udp/icmp probes, dns, ipv6, timezone, locale)
 
+workspace:
+  workspace create  bind a host folder to a vm at /workspace/<id>:
+                    pvm workspace create web dev1 --mode mount|sync|copy [--path DIR] [--read-only] [-y]
+                    mount: one shared copy (9p; reverse sshfs on native windows)
+                    sync: a copy on each side, moved by push/pull; copy: upload once, clone back
+  workspace ls      list workspaces
+  workspace status|push|pull  sync mode: pvm workspace push web [--prefer host|vm | --keep-both]
+  workspace clone   download the vm copy into a new folder: pvm workspace clone web ./web-result
+  workspace ssh     ssh into the workspace directory: pvm workspace ssh web [cmd...]
+  workspace rm      forget a workspace (host files kept): pvm workspace rm web [--delete-guest] [-y]
+
 network:
-  map           map ports: pvm map dev1 8080:80 [--udp] | ls | rm <port> [--udp]
+  map          map ports: pvm map dev1 8080:80 [--udp] | ls | rm <port> [--udp]
   route         vm default route: pvm route dev1 --via my-exit|direct
                 split rules: pvm route add direct|proxy|internal [--domain-suffix|--domain-prefix|--domain-keyword|--cidr] <v> [--via <exit>] [--dns <srv>]
                 inspect: pvm route ls | pvm route explain dev1 example.com | pvm route rm <index>
@@ -43,7 +54,7 @@ network:
 
 image:
   image fetch   download a base image (ubuntu:26.04, debian:13)
-  image build   bake a golden image (docker + xfce desktop preinstalled; ubuntu/debian only)
+  image build   bake a golden image (docker + firefox + xfce desktop preinstalled; ubuntu/debian only)
                 flags: --keep-vm --cpus N --mem MB --disk GB
   image list    list base and golden images
 
@@ -145,6 +156,8 @@ func main() {
 		code = cli.CmdResize(args)
 	case "compact":
 		code = cli.CmdCompact(args)
+	case "workspace":
+		code = cli.CmdWorkspace(args)
 	case "mount":
 		code = cli.CmdMount(args)
 	case "clone":
