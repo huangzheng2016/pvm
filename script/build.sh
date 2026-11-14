@@ -31,7 +31,8 @@ if ! go version -m "$agent_bin" >/dev/null 2>&1; then
   echo "error: cannot read guest Go metadata" >&2
   exit 1
 fi
-if { strings "$agent_bin"; go version -m "$agent_bin"; } | grep -Ei 'github\.com/huangzheng2016|huangzheng' >/dev/null; then
+# grep -a instead of strings(1), which Git Bash on Windows lacks
+if LC_ALL=C grep -aqEi 'github\.com/huangzheng2016|huangzheng' "$agent_bin" || go version -m "$agent_bin" | grep -Ei 'github\.com/huangzheng2016|huangzheng' >/dev/null; then
   echo "error: obfuscated guest contains repository identifiers" >&2
   exit 1
 fi
@@ -47,12 +48,14 @@ for kind in gateway agent; do
 done
 
 echo "== pvm"
+# PVM_OUT puts the binary elsewhere, e.g. a dev copy outside the repo.
 pvm_out=pvm
 [ "$PVM_HOSTOS" = "windows" ] && pvm_out=pvm.exe
+pvm_out=${PVM_OUT:-$pvm_out}
 GOOS="$PVM_HOSTOS" GOARCH="$PVM_HOSTARCH" go build -tags embedassets -buildvcs=false -trimpath \
   -ldflags "-s -w -buildid= -X github.com/huangzheng2016/pvm/internal/buildinfo.Version=${PVM_VERSION:-dev}" \
   -o "$pvm_out" ./cmd/pvm
-echo "built ./$pvm_out (with embedded guest assets: $PVM_HOSTARCH)"
+echo "built $pvm_out (with embedded guest assets: $PVM_HOSTARCH)"
 
 if [ "${PVM_PACK_QEMU:-1}" = "1" ] && [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
   echo "== bundled qemu ($PVM_HOSTARCH)"
