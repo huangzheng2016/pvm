@@ -495,8 +495,8 @@ func TestPushRejectsSymlinkedParent(t *testing.T) {
 }
 
 func TestPrepareLinksHomeWorkspace(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Git Bash has no real symlinks or uids")
+	if runtime.GOOS != "linux" {
+		t.Skip("the script runs in Linux guests and needs GNU stat")
 	}
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")

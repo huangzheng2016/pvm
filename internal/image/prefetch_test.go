@@ -15,8 +15,8 @@ import (
 // file:// URLs, covering a good download, a hash mismatch, a failed
 // download, an unsupported hash type and a file already in the cache.
 func TestPrefetchScript(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Git Bash curl cannot read file:// URLs of MSYS paths")
+	if runtime.GOOS != "linux" {
+		t.Skip("the script runs in Linux guests and needs GNU coreutils")
 	}
 	for _, tool := range []string{"bash", "curl", "sha512sum", "xargs"} {
 		if _, err := exec.LookPath(tool); err != nil {
