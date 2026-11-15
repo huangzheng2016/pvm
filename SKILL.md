@@ -137,7 +137,7 @@ pvm app config dev1 --clipboard both --drop on
 ```
 
 - Uses Xpra: one Xpra server per VM runs as the VM user, and each app is a window on it. The page or program runs in the VM, so cookies, fingerprint and egress stay with the VM and its route; the host only shows pixels.
-- The host needs the Xpra 6.5.x client from xpra.org: on Windows pvm looks in `xpra\Xpra.exe` next to `pvm.exe` and in `Program Files\Xpra`, on macOS in `/Applications/Xpra.app`, elsewhere on `PATH`; `PVM_XPRA` overrides the path. A client from another release line is refused. The first app in a VM without Xpra installs it from xpra.org's APT repository, which takes a few minutes and needs the VM's network; golden images built from this version on include it.
+- The host needs the Xpra 6.5.x client from xpra.org; the Windows installers include it. On Windows pvm looks in `xpra\Xpra.exe` next to `pvm.exe` and in `Program Files\Xpra`, on macOS in `/Applications/Xpra.app`, elsewhere on `PATH`; `PVM_XPRA` overrides the path. A client from another release line is refused. The first app in a VM without Xpra installs it from xpra.org's APT repository, which takes a few minutes and needs the VM's network; golden images built from this version on include it.
 - Type with the host's own input method, such as Microsoft Pinyin: committed text reaches the app.
 - The command must be installed in the VM; `pvm app` does not install it. Window titles end in `[dev1]`.
 - Closing a window closes that app. Quitting the Xpra client leaves apps running; `pvm app attach` brings them back. A VM restart ends its apps.

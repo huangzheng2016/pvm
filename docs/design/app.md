@@ -43,7 +43,7 @@ Rejected:
 - ssh -X to an X server on Windows: weak isolation, text-only clipboard.
 - SPICE, Selkies, KasmVNC, Guacamole and noVNC: whole desktops in a browser tab.
 
-The guest runs Xpra 6.5 from xpra.org's APT repository, pinned to the 6.5 line, with the signing key fingerprint checked. Golden images include it, and `pvm app` installs it on first use in older VMs. The host needs the matching Windows client, 6.5.x.
+The guest runs Xpra 6.5 from xpra.org's APT repository, pinned to the 6.5 line, with the signing key fingerprint checked. Golden images include it, and `pvm app` installs it on first use in older VMs. The host needs the matching Windows client, 6.5.x. The Windows installers include it in `%LOCALAPPDATA%\pvm\xpra`: the release job downloads a pinned zip from xpra.org (`script/windows/fetch-xpra-client.sh`), checks its SHA256 and its signature by the same key as the APT repository, and ships it unmodified with its GPL text and a note on where to get the source.
 
 ### Session model
 

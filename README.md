@@ -30,7 +30,7 @@ The installer places `pvm` in `~/.local/bin` by default; set `INSTALL_DIR` to ch
 
 ### Windows installers
 
-Releases ship two per-user Windows installers that need no administrator rights: `pvm_windows_amd64_setup.msi` and `pvm_windows_amd64_setup.exe`, with the bundled QEMU runtime included. Pick either one. Both install `pvm.exe` to `%LOCALAPPDATA%\pvm`, add that folder to the user `PATH`, and install the runtime to `%USERPROFILE%\.pvm\runtime\qemu\x86_64`, or to `PVM_HOME\runtime\qemu\x86_64` when `PVM_HOME` is set. Open a new terminal afterwards so the `PATH` change applies. Verify a download first with `gh attestation verify pvm_windows_amd64_setup.exe --repo huangzheng2016/pvm`.
+Releases ship two per-user Windows installers that need no administrator rights: `pvm_windows_amd64_setup.msi` and `pvm_windows_amd64_setup.exe`, with the bundled QEMU runtime and the Xpra client for `pvm app` included. Pick either one. Both install `pvm.exe` to `%LOCALAPPDATA%\pvm` and the Xpra client to `%LOCALAPPDATA%\pvm\xpra`, add that folder to the user `PATH`, and install the runtime to `%USERPROFILE%\.pvm\runtime\qemu\x86_64`, or to `PVM_HOME\runtime\qemu\x86_64` when `PVM_HOME` is set. Open a new terminal afterwards so the `PATH` change applies. Verify a download first with `gh attestation verify pvm_windows_amd64_setup.exe --repo huangzheng2016/pvm`.
 
 - Files in use by a running pvm or VM cannot be replaced. When run interactively, both installers and their uninstallers detect a running daemon or QEMU and offer to stop the daemon, which also stops running VMs. Silent runs (`/S`, `msiexec /qn`) refuse instead, so run `pvm daemon stop` first.
 - MSI silent install: `msiexec /i pvm_windows_amd64_setup.msi /qn`. The MSI sees only a persistent user `PVM_HOME`; pass `PVMHOME=D:\pvm-home` to choose the location explicitly. Upgrades and uninstalls reuse the recorded location.
@@ -128,7 +128,7 @@ Uploads skip `.gitignore` matches and `node_modules`; a `.pvmignore` file adds o
 
 ### Apps as host windows
 
-`pvm app` shows single programs or web pages from a VM as host windows through [Xpra](https://xpra.org). The host needs the Xpra 6.5 client; the first app in a VM installs the Xpra server there from xpra.org's repository.
+`pvm app` shows single programs or web pages from a VM as host windows through [Xpra](https://xpra.org). The host needs the Xpra 6.5 client, which the Windows installers include; the first app in a VM installs the Xpra server there from xpra.org's repository.
 
 ```bash
 pvm app dev1 -- gedit

@@ -315,7 +315,7 @@ func findXpraClient() (string, error) {
 		}
 	}
 	hint := map[string]string{
-		"windows": "install the official Windows client from https://xpra.org, or unpack its zip into an xpra folder next to pvm.exe",
+		"windows": "the Windows installers include it; or install the official client from https://xpra.org, or unpack its zip into an xpra folder next to pvm.exe",
 		"darwin":  "install Xpra.app from https://xpra.org",
 	}[runtime.GOOS]
 	if hint == "" {

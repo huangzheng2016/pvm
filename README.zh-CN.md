@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/huangzheng2016/pvm/master/scripts/i
 
 ### Windows 安装包
 
-每个发布都附带两个按用户安装、不需要管理员权限的 Windows 安装包：`pvm_windows_amd64_setup.msi` 和 `pvm_windows_amd64_setup.exe`，都自带 QEMU 运行时，任选其一即可。两者都会把 `pvm.exe` 安装到 `%LOCALAPPDATA%\pvm`，把该目录加入用户 `PATH`，并把运行时安装到 `%USERPROFILE%\.pvm\runtime\qemu\x86_64`（设置了 `PVM_HOME` 时为 `PVM_HOME\runtime\qemu\x86_64`）。安装后请打开新的终端，让 `PATH` 变更生效。下载后可先用 `gh attestation verify pvm_windows_amd64_setup.exe --repo huangzheng2016/pvm` 校验。
+每个发布都附带两个按用户安装、不需要管理员权限的 Windows 安装包：`pvm_windows_amd64_setup.msi` 和 `pvm_windows_amd64_setup.exe`，都自带 QEMU 运行时和 `pvm app` 所需的 Xpra 客户端，任选其一即可。两者都会把 `pvm.exe` 安装到 `%LOCALAPPDATA%\pvm`、Xpra 客户端安装到 `%LOCALAPPDATA%\pvm\xpra`，把该目录加入用户 `PATH`，并把运行时安装到 `%USERPROFILE%\.pvm\runtime\qemu\x86_64`（设置了 `PVM_HOME` 时为 `PVM_HOME\runtime\qemu\x86_64`）。安装后请打开新的终端，让 `PATH` 变更生效。下载后可先用 `gh attestation verify pvm_windows_amd64_setup.exe --repo huangzheng2016/pvm` 校验。
 
 - 正在运行的 pvm 或虚拟机占用的文件无法替换。交互运行时，两种安装包及其卸载程序都会检测正在运行的 daemon 或 QEMU，并提示停止 daemon（同时会停止正在运行的虚拟机）。静默运行（`/S`、`msiexec /qn`）则直接拒绝，请先执行 `pvm daemon stop`。
 - MSI 静默安装：`msiexec /i pvm_windows_amd64_setup.msi /qn`。MSI 只能读到持久化的用户级 `PVM_HOME`；可传入 `PVMHOME=D:\pvm-home` 显式指定位置。升级和卸载会沿用记录下来的位置。
@@ -128,7 +128,7 @@ pvm workspace rm web
 
 ### 虚拟机应用作为宿主机窗口
 
-`pvm app` 通过 [Xpra](https://xpra.org) 把虚拟机里的单个程序或网页显示为宿主机窗口。宿主机需要 Xpra 6.5 客户端；虚拟机里第一次运行 app 时，会从 xpra.org 的仓库安装 Xpra 服务端。
+`pvm app` 通过 [Xpra](https://xpra.org) 把虚拟机里的单个程序或网页显示为宿主机窗口。宿主机需要 Xpra 6.5 客户端，Windows 安装包已自带；虚拟机里第一次运行 app 时，会从 xpra.org 的仓库安装 Xpra 服务端。
 
 ```bash
 pvm app dev1 -- gedit
