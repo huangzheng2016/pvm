@@ -176,7 +176,7 @@ func guestUID(hostUID int) int {
 	return hostUID
 }
 
-func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poolBase, poolSize int) qemu.VMConfig {
+func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string) qemu.VMConfig {
 	dir := s.dir(p)
 	mountDir := ""
 	if s.Role != "gateway" {
@@ -191,7 +191,7 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 	hotplug := 0
 	switch {
 	case s.Role == "gateway":
-		net = qemu.Network{Mode: qemu.NetSlirp, SSHHostPort: s.SSHPort, PoolBase: poolBase, PoolSize: poolSize}
+		net = qemu.Network{Mode: qemu.NetSlirp, SSHHostPort: s.SSHPort}
 		hotplug = 64 // rp10..rp73, one per cluster VM slot
 	case linkSock != "":
 		net = qemu.Network{Mode: qemu.NetCluster, LinkSock: linkSock, MAC: s.MAC}

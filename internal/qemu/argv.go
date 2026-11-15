@@ -51,8 +51,6 @@ const (
 type Network struct {
 	Mode        NetMode
 	SSHHostPort int
-	PoolBase    int // gateway only: hostfwd pool start (tcp+udp)
-	PoolSize    int
 	LinkSock    string // unix socket or tcp:host:port the gateway listens on
 	MAC         string
 }
@@ -322,13 +320,12 @@ func netArgs(n Network) []string {
 			"-device", fmt.Sprintf("virtio-net-pci,id=nic0,netdev=net0,mac=%s,bus=rp-link", keyval(n.MAC)),
 		}
 	default: // NetSlirp
+		// Port maps are added over QMP as they are created
+		// (QMP.AddHostForward). Windows QEMU polls slirp's sockets with
+		// select(), whose fd_set holds 64; libslirp lists listening TCP
+		// sockets first, so forwarding the whole map pool up front left
+		// UDP and even ssh unpolled.
 		fwd := fmt.Sprintf("hostfwd=tcp:127.0.0.1:%d-:22", n.SSHHostPort)
-		if n.PoolBase > 0 && n.PoolSize > 0 {
-			for p := n.PoolBase; p < n.PoolBase+n.PoolSize; p++ {
-				fwd += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-:%d", p, p)
-				fwd += fmt.Sprintf(",hostfwd=udp:127.0.0.1:%d-:%d", p, p)
-			}
-		}
 		return []string{
 			"-netdev", "user,id=net0,ipv6=off," + fwd,
 			"-device", "virtio-net-pci,netdev=net0",

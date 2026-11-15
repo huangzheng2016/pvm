@@ -117,7 +117,7 @@ func TestReadOnlyMountStoppedLifecycle(t *testing.T) {
 	if len(loaded.Mounts) != 1 || !loaded.Mounts[0].ReadOnly {
 		t.Fatalf("mounts = %+v", loaded.Mounts)
 	}
-	cfg := loaded.QEMUConfig(s.P, s.Accel, "", 0, 0)
+	cfg := loaded.QEMUConfig(s.P, s.Accel, "")
 	if len(cfg.ExtraMounts) != 1 || !cfg.ExtraMounts[0].ReadOnly {
 		t.Fatal("read-only not passed to QEMU backend")
 	}

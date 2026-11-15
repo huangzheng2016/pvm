@@ -237,3 +237,26 @@ func TestMapEntryJSONShape(t *testing.T) {
 		t.Fatalf("guest map entry leaks host fields: %s", data)
 	}
 }
+
+// On native Windows a cluster's port maps stop at maxGatewayMaps, with an
+// error instead of silently starving the gateway's UDP.
+func TestAddMapStopsAtGatewayLimit(t *testing.T) {
+	limit := maxGatewayMaps()
+	if limit == 0 {
+		t.Skip("no map limit on this host")
+	}
+	s, dev1, _ := newMapTestServer(t)
+	noRelay := func(string, int, int) error { return nil }
+	for i := range limit {
+		if _, _, err := s.addMap(context.Background(), dev1, 0, 40000+i, "tcp", noRelay, okPush); err != nil {
+			t.Fatalf("map %d: %v", i+1, err)
+		}
+	}
+	_, code, err := s.addMap(context.Background(), dev1, 0, 41000, "udp", noRelay, okPush)
+	if err == nil || code != 409 || !strings.Contains(err.Error(), "pvm map rm") {
+		t.Fatalf("map past the limit: code %d, %v", code, err)
+	}
+	if got := len(s.Clusters.Get(dev1.ClusterID).Maps); got != limit {
+		t.Fatalf("%d maps stored, want %d", got, limit)
+	}
+}

@@ -20,7 +20,6 @@ pvm supports only the host's native architecture: darwin/arm64 runs arm64 VMs, l
 - Native Windows QEMU does not provide virtio-9p. `create` therefore uses `--share none` and prints a warning; explicitly requesting `private` or `global` fails with guidance to use WSL2. Use WSL2 when host/guest file sharing is required.
 - Native mode uses WHPX only when Windows Hypervisor Platform is enabled and its probe succeeds. Otherwise it uses TCG and reports the fallback. `PVM_QEMU_ACCEL=whpx` forces a WHPX attempt; `PVM_QEMU_ACCEL=tcg` forces emulation. When `create`, `start`, `clone`, or `image build` detects TCG, pvm prints backend-specific acceleration guidance. To enable WSL2 nested virtualization, set `nestedVirtualization=true` under `[wsl2]` in `%UserProfile%\.wslconfig`, run `wsl --shutdown`, restart WSL, and verify `/dev/kvm`. Explicitly setting `PVM_QEMU_ACCEL=tcg` suppresses the warning. Native Windows resolves through DNS-over-TCP to avoid Windows QEMU UDP DNS failures. Set `PVM_DNS_UPSTREAM` to override the upstream (for example `tcp://192.0.2.53:53`); Linux and WSL2 retain the default slirp resolver.
 - `PVM_BACKEND=auto` is the default and chooses a running native daemon or native QEMU first, then WSL2 if pvm is installed there. Run `pvm doctor` to inspect backend, OpenSSH, QEMU, WSL2, and acceleration readiness.
-- Native mode: an exit on the UDP transport may never complete its handshake from the gateway VM (gateway log repeats `no recent handshake`, routed VMs have no network) while `pvm exit test` on the host passes, since the host bypasses the gateway's QEMU user-mode network. `--transport auto` probes from the host and can still pick UDP. Add the exit with `--transport tcp`. The cause is not yet confirmed.
 
 ## Prerequisites
 
@@ -158,6 +157,7 @@ pvm map ls
 ```
 
 - The host listens on loopback only; the path is host relay -> gateway -> VM.
+- Native Windows backend: at most 32 maps per cluster, TCP and UDP counted separately. Each map is a socket in the gateway's QEMU user network, and Windows QEMU polls at most 64 of those; past that the gateway's own UDP (DNS, UDP exits) silently stops, so pvm refuses the 33rd map instead.
 - Deleting a VM cleans up its relays, desktop state, and agent connections.
 
 ### 7. DNS and split-routing rules

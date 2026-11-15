@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -445,6 +446,13 @@ func (s *Server) pushGatewayConfigCtx(ctx context.Context, clusterID int) error 
 		return err
 	}
 	return s.renderGatewayConfigLocked(ctx, clusterID, func(cfg []byte) error {
+		// forwards first: once the guest DNATs a pool port, its host side
+		// must already reach the gateway
+		if cl := s.Clusters.Get(clusterID); cl != nil {
+			if err := s.syncGatewayForwards(cl); err != nil {
+				return fmt.Errorf("gateway port forwards: %w", err)
+			}
+		}
 		tmp, err := os.CreateTemp("", "pvm-gwcfg-*.json")
 		if err != nil {
 			return err
@@ -658,4 +666,43 @@ func (s *Server) scpToCtx(ctx context.Context, spec *vm.Spec, local, remote stri
 		return fmt.Errorf("scp: %v\n%s", err, out)
 	}
 	return nil
+}
+
+// syncGatewayForwards makes the gateway's user-network forwards match the
+// cluster's port maps: one forward per pool port and protocol, added and
+// removed over QMP. QEMU starts the gateway with only its ssh forward.
+func (s *Server) syncGatewayForwards(cl *cluster.Cluster) error {
+	gw, err := s.getSpec(cl.Gateway)
+	if err != nil {
+		return err
+	}
+	want := map[qemu.HostForward]bool{}
+	for _, m := range cl.Maps {
+		want[qemu.HostForward{Proto: m.Proto, Port: m.PoolPort}] = true
+	}
+	q, err := qemu.DialQMP(s.P.QMPSock(gw.Name))
+	if err != nil {
+		return fmt.Errorf("gateway qmp: %w", err)
+	}
+	defer q.Close()
+	have, err := q.HostForwards()
+	if err != nil {
+		return err
+	}
+	inPool := func(f qemu.HostForward) bool { return f.Port >= cl.PoolBase && f.Port < cl.PoolBase+cl.PoolSize }
+	var errs []error
+	for _, f := range have {
+		if inPool(f) && !want[f] {
+			if err := q.RemoveHostForward(f); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		delete(want, f)
+	}
+	for f := range want {
+		if err := q.AddHostForward(f); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }

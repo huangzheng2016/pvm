@@ -2,6 +2,7 @@ package qemu
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -197,21 +198,31 @@ func TestQemuArch(t *testing.T) {
 	}
 }
 
-func TestNetArgsSlirpPool(t *testing.T) {
-	args := joined(netArgs(Network{Mode: NetSlirp, SSHHostPort: 10022, PoolBase: 30000, PoolSize: 2}))
-	for _, want := range []string{
-		"user,id=net0,ipv6=off,",
-		"hostfwd=tcp:127.0.0.1:10022-:22",
-		"hostfwd=tcp:127.0.0.1:30000-:30000",
-		"hostfwd=udp:127.0.0.1:30000-:30000",
-		"hostfwd=tcp:127.0.0.1:30001-:30001",
-	} {
-		if !strings.Contains(args, want) {
-			t.Errorf("slirp pool args missing %q", want)
-		}
+// The gateway starts with only its ssh forward; port maps are added over
+// QMP, because Windows QEMU starves sockets past the 64th.
+func TestNetArgsSlirpForwardsOnlySSH(t *testing.T) {
+	args := joined(netArgs(Network{Mode: NetSlirp, SSHHostPort: 10022}))
+	if !strings.Contains(args, "user,id=net0,ipv6=off,hostfwd=tcp:127.0.0.1:10022-:22 ") {
+		t.Errorf("slirp args = %s", args)
 	}
-	if strings.Contains(args, "30002") {
-		t.Errorf("pool overflow: %s", args)
+	if strings.Count(args, "hostfwd=") != 1 {
+		t.Errorf("slirp forwards more than ssh: %s", args)
+	}
+}
+
+func TestParseHostForwards(t *testing.T) {
+	out := `Hub -1 (net0):
+  Protocol[State]    FD  Source Address  Port   Dest. Address  Port RecvQ SendQ
+  TCP[ESTABLISHED]  2248       10.0.2.15 60214    192.0.2.10 18444     0     0
+  TCP[HOST_FORWARD] 838       127.0.0.1 10022       10.0.2.15    22     0     0
+  TCP[HOST_FORWARD] 834       127.0.0.1 30000       10.0.2.15 30000     0     0
+  UDP[HOST_FORWARD] 7a0       127.0.0.1 30001       10.0.2.15 30001     0     0
+  UDP[236 sec]      9f4       10.0.2.15 41234     192.0.2.53    53     0     0
+`
+	got := parseHostForwards(out)
+	want := []HostForward{{"tcp", 10022}, {"tcp", 30000}, {"udp", 30001}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("parseHostForwards = %v, want %v", got, want)
 	}
 }
 

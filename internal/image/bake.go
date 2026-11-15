@@ -147,7 +147,7 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 	if err := vm.Create(o.P, o.TC, spec); err != nil {
 		return nil, err
 	}
-	cfg := spec.QEMUConfig(o.P, o.Accel, "", 0, 0)
+	cfg := spec.QEMUConfig(o.P, o.Accel, "")
 	inst := &qemu.Instance{
 		Cfg:       firstBootConfig(cfg),
 		StatePath: filepath.Join(o.P.VMDir(name), "run.json"),

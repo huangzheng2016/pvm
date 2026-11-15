@@ -117,11 +117,11 @@ func TestListAllRejectsCorruptSpec(t *testing.T) {
 func TestQEMUConfigKernelArgsPending(t *testing.T) {
 	p := paths.New(t.TempDir())
 	spec := &Spec{Name: "dev1", KernelArgs: "noxsave", KernelArgsPending: true}
-	if got := spec.QEMUConfig(p, qemu.AccelWHPX, "", 0, 0).GuestKernelArgs; got != "" {
+	if got := spec.QEMUConfig(p, qemu.AccelWHPX, "").GuestKernelArgs; got != "" {
 		t.Errorf("pending: boot kernel args %q, want none", got)
 	}
 	spec.KernelArgsPending = false
-	if got := spec.QEMUConfig(p, qemu.AccelWHPX, "", 0, 0).GuestKernelArgs; got != "noxsave" {
+	if got := spec.QEMUConfig(p, qemu.AccelWHPX, "").GuestKernelArgs; got != "noxsave" {
 		t.Errorf("applied: boot kernel args %q, want noxsave", got)
 	}
 }

@@ -184,17 +184,10 @@ func (s *Server) invalidateAgent(name string) {
 
 func (s *Server) instance(spec *vm.Spec) *qemu.Instance {
 	var linkSock string
-	poolBase, poolSize := 0, 0
-	if spec.Role == "gateway" {
-		if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
-			poolBase, poolSize = cl.PoolBase, cl.PoolSize
-		} else if cl := s.clustersByGatewayName(spec.Name); cl != nil {
-			poolBase, poolSize = cl.PoolBase, cl.PoolSize
-		}
-	} else if spec.ClusterID > 0 {
+	if spec.Role != "gateway" && spec.ClusterID > 0 {
 		linkSock = s.Clusters.LinkSock(spec.ClusterID, spec.Name)
 	}
-	cfg := spec.QEMUConfig(s.P, s.Accel, linkSock, poolBase, poolSize)
+	cfg := spec.QEMUConfig(s.P, s.Accel, linkSock)
 	vmDir := s.P.VMDir(spec.Name)
 	cfg.DiskPath = qemu.ActiveDisk(vmDir, cfg.DiskPath)
 	return &qemu.Instance{

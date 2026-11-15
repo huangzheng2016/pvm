@@ -55,8 +55,6 @@ Windows 支持两种后端，通过 `PVM_BACKEND` 或 `~/.pvm/config.yaml` 中�
 
 只有在 Windows Hypervisor Platform 已启用且 QEMU 探测成功时才使用 WHPX；否则原生模式使用 TCG 并给出提示。设置 `PVM_QEMU_ACCEL=whpx` 可强制尝试 WHPX，设置 `PVM_QEMU_ACCEL=tcg` 可强制使用软件模拟。`create`、`start`、`clone` 或 `image build` 检测到 TCG 时，pvm 会输出针对当前后端的加速建议。要启用 WSL2 嵌套虚拟化，在 `%UserProfile%\.wslconfig` 的 `[wsl2]` 下设置 `nestedVirtualization=true`，执行 `wsl --shutdown`，重启 WSL，并确认 `/dev/kvm` 存在。显式设置 `PVM_QEMU_ACCEL=tcg` 会关闭该警告。原生 Windows 使用 DNS-over-TCP，因为部分 Windows QEMU/网络组合无法传递 UDP DNS；可用 `PVM_DNS_UPSTREAM` 覆盖解析器（例如 `tcp://192.0.2.53:53`，或默认 slirp 地址 `10.0.2.3`）。`pvm doctor` 会报告后端、OpenSSH、QEMU、WSL2 和加速的就绪情况。
 
-原生后端的已知限制：使用 UDP 传输的出口，可能始终无法从 gateway 虚拟机完成 WireGuard 握手。gateway 日志反复出现 `no recent handshake`，经该出口路由的虚拟机无法联网，而宿主机上的 `pvm exit test` 却能通过，因为宿主机不经过 gateway 的 QEMU 用户态网络。`--transport auto` 在宿主机上探测，因此仍可能选中 UDP。请改用 `--transport tcp` 添加出口。原因尚未确认。
-
 ## 快速开始
 
 daemon 会在需要时自动启动。首次 `create` 可能需要下载并烘焙镜像，之后会快得多。
