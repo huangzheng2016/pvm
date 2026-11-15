@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -172,10 +173,16 @@ func (s *Server) appSecret(name string) (string, string, error) {
 func appInstallScript() string {
 	const apt = "sudo -n env DEBIAN_FRONTEND=noninteractive apt-get -q -o DPkg::Lock::Timeout=300"
 	// the mask also runs where xpra came preinstalled
-	return "{ { command -v xpra && command -v xclip && command -v wmctrl; } >/dev/null 2>&1 || { sudo -n bash -euo pipefail -c " + shellQuote(image.XpraRepoScript) +
+	return "{ { command -v xpra && command -v xclip && command -v wmctrl && command -v xdotool; } >/dev/null 2>&1 || { sudo -n bash -euo pipefail -c " + shellQuote(image.XpraRepoScript) +
 		" && " + apt + " update && " + apt + " install -y --no-install-recommends " + strings.Join(image.XpraPackages, " ") + "; }; }" +
 		" && { [ \"$(systemctl is-enabled xpra-server.socket 2>/dev/null)\" = masked ] || ! systemctl cat xpra-server.socket >/dev/null 2>&1 || sudo -n sh -c " + shellQuote(image.XpraMaskScript) + "; }"
 }
+
+// xpraStartPy starts the Xpra server and types text a host input method
+// commits; see the file.
+//
+//go:embed xpra_start.py
+var xpraStartPy string
 
 // appServerScript starts the Xpra server unit unless it runs, and waits
 // for its display. The password arrives on stdin. Linger keeps the user
@@ -201,10 +208,12 @@ d="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/pvm"
 mkdir -p "$d"
 chmod 700 "$d"
 (umask 077; cat > "$d/xpra.secret")
+cat > "$d/xpra-start.py" <<'PVMEOF'
+` + xpraStartPy + `PVMEOF
 if ! systemctl --user is-active --quiet ` + appServerUnit + `; then
   systemctl --user reset-failed ` + appServerUnit + ` >/dev/null 2>&1 || true
   rm -f "$d/xpra.sock"
-  systemd-run --user --quiet --collect --unit=` + appServerUnit + ` -- xpra start ` + appDisplay + ` --bind="$d/xpra.sock,auth=file:filename=$d/xpra.secret" ` + strings.Join(opts, " ") + `
+  systemd-run --user --quiet --collect --unit=` + appServerUnit + ` -E DISPLAY=` + appDisplay + ` -- python3 "$d/xpra-start.py" start ` + appDisplay + ` --bind="$d/xpra.sock,auth=file:filename=$d/xpra.secret" ` + strings.Join(opts, " ") + `
 fi
 for i in $(seq 1 60); do
   if [ -S "$d/xpra.sock" ] && DISPLAY=` + appDisplay + ` xset q >/dev/null 2>&1; then exit 0; fi
@@ -930,7 +939,7 @@ func (s *Server) handleAppPrepare(w http.ResponseWriter, r *http.Request) {
 }
 
 // appInstalledCheck exits 0 when the VM needs no install step.
-const appInstalledCheck = `command -v xpra >/dev/null && command -v xclip >/dev/null && command -v wmctrl >/dev/null && { [ "$(systemctl is-enabled xpra-server.socket 2>/dev/null)" = masked ] || ! systemctl cat xpra-server.socket >/dev/null 2>&1; }`
+const appInstalledCheck = `command -v xpra >/dev/null && command -v xclip >/dev/null && command -v wmctrl >/dev/null && command -v xdotool >/dev/null && { [ "$(systemctl is-enabled xpra-server.socket 2>/dev/null)" = masked ] || ! systemctl cat xpra-server.socket >/dev/null 2>&1; }`
 
 // lineWriter calls fn for every complete line written, and for the rest
 // on Close. Carriage returns from progress bars end a line too.

@@ -139,7 +139,7 @@ pvm app attach dev1
 pvm app stop dev1 --all
 ```
 
-Clipboard and drops are off until you enable them per VM. With `--clipboard to-guest` or `both`, host content enters the VM only when one of its windows comes to the front or you copy while it is there, and content that password managers mark as excluded is never sent. See [docs/design/app.md](docs/design/app.md).
+Clipboard and drops are off until you enable them per VM. With `--clipboard to-guest` or `both`, host content enters the VM only when one of its windows comes to the front or you copy while it is there, and content that password managers mark as excluded is never sent. Text typed with a host input method, such as Chinese with Microsoft Pinyin, reaches the app as well. See [docs/design/app.md](docs/design/app.md).
 
 ## Architecture
 

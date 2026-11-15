@@ -10,9 +10,10 @@ const XpraVersion = "6.5"
 
 // XpraPackages are the server side of `pvm app`: the X11 server, codecs
 // and Xvfb; xclip, which sets the guest clipboard to host content; and
-// wmctrl, which tracks and closes web app windows.
+// wmctrl, which tracks and closes web app windows; and xdotool, which
+// types text a host input method commits.
 // Ubuntu and Debian do not package a current Xpra.
-var XpraPackages = []string{"xpra-server", "xpra-x11", "xpra-codecs", "xclip", "wmctrl"}
+var XpraPackages = []string{"xpra-server", "xpra-x11", "xpra-codecs", "xclip", "wmctrl", "xdotool"}
 
 // XpraMaskScript masks the packaged system-wide Xpra service, whose socket
 // listens on every interface; pvm runs its own server per user.

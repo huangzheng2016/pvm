@@ -72,6 +72,12 @@ The video encoders gave no gain under WHPX, where the guest has no AVX, and cost
 
 For small updates (a terminal printing every 30 ms) the frame latency was 10 to 15 ms at 105 fps.
 
+## Input methods
+
+Text a host input method commits, such as Chinese from Microsoft Pinyin, reaches the Xpra server as a key event with keycode 0 and the character as its string. The server only presses keycodes its keymap already has, and the keymap it builds from the client fills every keycode, so it dropped these characters. pvm starts the server through `xpra_start.py`, which hands such presses to `xdotool type`. xdotool needs one empty keycode to borrow for each character, so keycode 254 (`XF86WWAN`) is cleared for it. The characters of one commit arrive milliseconds apart and are typed in one call, 40 ms apart; shorter gaps lost characters, as applications look the borrowed keycode up after the event. Measured on native Windows with WHPX, typing `nihao` and `zhongwen` with Microsoft Pinyin into a GTK text box: most commits arrive intact, but the latest run still lost a character from the first commit and showed stray Latin characters; the cause is not confirmed. Plain keys are unchanged.
+
+Synthetic Unicode input (`SendInput` with `KEYEVENTF_UNICODE`, used by some on-screen keyboards and automation tools) still does not arrive: the Xpra Windows client turns it into an empty key before it sends it.
+
 ## Clipboard
 
 Measured: the Xpra Windows client sends the host clipboard to the server even while none of its windows has focus, so anything copied on the host, including passwords, would enter the VM. pvm therefore splits the directions:
