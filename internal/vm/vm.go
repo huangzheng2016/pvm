@@ -210,6 +210,7 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 		QMPSock:         p.QMPSock(s.Name),
 		SerialSock:      p.SerialSock(s.Name),
 		AgentSock:       p.AgentSock(s.Name),
+		StreamSock:      p.StreamSock(s.Name),
 		Network:         net,
 		HotplugPorts:    hotplug,
 		ShareDir:        s.SharedDir(p),

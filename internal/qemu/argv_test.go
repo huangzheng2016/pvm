@@ -378,6 +378,7 @@ func TestBuildArgsTCPEndpointsAndWHPX(t *testing.T) {
 	cfg.QMPSock = "tcp:127.0.0.1:45001"
 	cfg.SerialSock = "tcp:127.0.0.1:45002"
 	cfg.AgentSock = "tcp:127.0.0.1:45003"
+	cfg.StreamSock = "tcp:127.0.0.1:45004"
 	cfg.Network = Network{Mode: NetCluster, LinkSock: "tcp:127.0.0.1:31110", MAC: "52:54:00:01:00:0a"}
 	args, err := BuildArgs(&Toolchain{FirmwareDir: "/fw"}, cfg)
 	if err != nil {
@@ -388,7 +389,8 @@ func TestBuildArgsTCPEndpointsAndWHPX(t *testing.T) {
 		"-accel whpx,kernel-irqchip=off -machine vmport=off -cpu host,-xsave -no-reboot",
 		"-qmp tcp:127.0.0.1:45001,server=on,wait=off",
 		"socket,id=ser0,host=127.0.0.1,port=45002,server=on,wait=off",
-		"socket,id=pvmagent,host=127.0.0.1,port=45003,server=on,wait=off",
+		"socket,id=pvmagent,host=127.0.0.1,port=45003,server=on,wait=off,nodelay=on",
+		"socket,id=pvmstream,host=127.0.0.1,port=45004,server=on,wait=off,nodelay=on -device " + StreamPortDevice,
 		"stream,id=net0,server=off,addr.type=inet,addr.host=127.0.0.1,addr.port=31110",
 	} {
 		if !strings.Contains(j, want) {

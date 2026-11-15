@@ -52,6 +52,8 @@ type Server struct {
 	agents         map[string]*agent.Client
 	agentSeq       map[string]uint64
 
+	streamState streamState
+
 	ctrlWatchMu sync.Mutex // guards ctrlWatch
 	ctrlWatch   map[string]uint64
 
@@ -173,6 +175,7 @@ func (s *Server) invalidateAgent(name string) {
 	if c != nil {
 		c.Close()
 	}
+	s.dropStream(name)
 }
 
 func (s *Server) instance(spec *vm.Spec) *qemu.Instance {
@@ -277,6 +280,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /v1/vms/{name}/desktop", s.handleDesktop)
 	mux.HandleFunc("DELETE /v1/vms/{name}/desktop", s.handleDesktopStop)
 	mux.HandleFunc("GET /v1/vms/{name}/console", s.handleConsole)
+	mux.HandleFunc("GET /v1/vms/{name}/stream", s.handleStream)
 	mux.HandleFunc("GET /v1/vms/{name}/audit", s.handleVMAudit)
 	mux.HandleFunc("GET /v1/dns", s.handleDNSList)
 	mux.HandleFunc("GET /v1/workspaces/{id}/mount", s.handleWorkspaceMountGet)

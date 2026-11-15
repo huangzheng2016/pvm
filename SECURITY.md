@@ -19,6 +19,8 @@ The host `pvm` binary exposes the complete pvm control plane and acts with the h
 
 The Linux guest uses a separate binary with only `agent`, `map`, and `skill`. It has no host lifecycle, route, mount, exit, or `security` commands. Every local guest user can use `map`; requests carry no VM name. The daemon derives the VM identity from that guest's virtio-serial channel and limits list, add, and remove operations to maps owned by that VM. These maps still create host loopback listeners into the current VM.
 
+Each VM also has a `pvm.stream` virtio-serial port for display and measurement streams. Only the host daemon opens streams on it, by naming a target from a fixed allowlist in the guest agent; the guest cannot open a stream, connect to host addresses, or reach the network through it, so the VM's egress path and kill-switch are unchanged. The daemon exposes these streams only through its own authenticated API.
+
 This reduced command surface is not an OS privilege sandbox. The guest agent service runs as root and accepts exec requests from the host, so the host retains full control of the guest. `pvm security` is a host command and is intentionally absent from the guest binary.
 
 ## Shared files and cache consistency

@@ -277,6 +277,35 @@ func (c *Client) PostStream(path string, body any) (*http.Response, error) {
 	return resp, nil
 }
 
+// Upgrade opens a raw byte stream on path, such as a pvm.stream target.
+// It runs without the request timeout, which would end the stream.
+func (c *Client) Upgrade(path string) (io.ReadWriteCloser, error) {
+	req, err := http.NewRequest("GET", "http://d"+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "pvm-stream")
+	c.setAuthHeader(req)
+	resp, err := (&http.Client{Transport: c.http.Transport}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		defer resp.Body.Close()
+		if err := decodeResp(resp, nil); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("upgrade %s: unexpected status %s", path, resp.Status)
+	}
+	rwc, ok := resp.Body.(io.ReadWriteCloser)
+	if !ok {
+		resp.Body.Close()
+		return nil, fmt.Errorf("upgrade %s: response body is not writable", path)
+	}
+	return rwc, nil
+}
+
 func decodeResp(resp *http.Response, out any) error {
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,6 +34,7 @@ type SnapshotManifest struct {
 	Accel       Accel     `json:"accel"`
 	GPU         bool      `json:"gpu"`
 	Balloon     bool      `json:"balloon"`
+	Stream      bool      `json:"stream,omitempty"` // the VM had the pvm.stream port
 	QEMUVersion string    `json:"qemu_version"`
 	PVMVersion  string    `json:"pvm_version"`
 	CreatedAt   time.Time `json:"created_at"`
@@ -104,6 +106,13 @@ func (m *SnapshotManifest) checkMatch(c *VMConfig, qemuVersion string) error {
 	}
 	if m.Balloon != c.Balloon {
 		return fmt.Errorf("snapshot balloon layout (%v) differs from the vm (%v); heterogeneous restore refused, delete the snapshot", m.Balloon, c.Balloon)
+	}
+	// a VM snapshotted without the port restores without it; it gets the
+	// port at its next cold boot
+	if !m.Stream {
+		c.StreamSock = ""
+	} else if c.StreamSock == "" {
+		return fmt.Errorf("snapshot has the pvm.stream port but the vm config does not; heterogeneous restore refused, delete the snapshot")
 	}
 	if m.QEMUVersion != qemuVersion {
 		return fmt.Errorf("snapshot was written by qemu %s, current runtime is %s; migration across qemu versions is not guaranteed, delete the snapshot", m.QEMUVersion, qemuVersion)
@@ -264,6 +273,7 @@ func (in *Instance) CreateSnapshot(vmDir, pvmVersion string) (retErr error) {
 		Accel:       st.Accel,
 		GPU:         in.Cfg.GPU,
 		Balloon:     in.Cfg.Balloon,
+		Stream:      slices.Contains(st.Args, StreamPortDevice),
 		QEMUVersion: in.Toolchain.versionString(),
 		PVMVersion:  pvmVersion,
 		CreatedAt:   time.Now(),

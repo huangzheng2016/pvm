@@ -92,6 +92,11 @@ func (p *Paths) AgentSock(name string) string {
 	return SocketEndpoint(filepath.Join(p.VMDir(name), "agent.sock"))
 }
 
+// StreamSock is the host end of the pvm.stream virtio-serial port.
+func (p *Paths) StreamSock(name string) string {
+	return SocketEndpoint(filepath.Join(p.VMDir(name), "stream.sock"))
+}
+
 // SocketEndpoint returns sockPath on Unix, or a stable loopback TCP endpoint
 // (tcp:127.0.0.1:<port>) on Windows where QEMU chardev/QMP/stream sockets
 // use inet sockets.

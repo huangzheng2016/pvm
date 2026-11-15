@@ -132,7 +132,7 @@ func main() {
 		os.Exit(cli.DelegateToWSL(os.Args[1:]))
 	}
 	switch os.Args[1] {
-	case "audit", "doctor", "route", "upgrade", "version", "--version", "-v", "skill", "security", "exit-agent", "agent", "gateway", "__snapshot-pipe-out", "__snapshot-pipe-in":
+	case "audit", "doctor", "route", "upgrade", "version", "--version", "-v", "skill", "security", "exit-agent", "agent", "gateway", "__snapshot-pipe-out", "__snapshot-pipe-in", "__probe-rtt":
 	default:
 		cli.MaybeNotifyUpgrade()
 	}
@@ -182,6 +182,8 @@ func main() {
 		code = cli.CmdSnapshotPipeOut(args)
 	case "__snapshot-pipe-in":
 		code = cli.CmdSnapshotPipeIn(args)
+	case "__probe-rtt":
+		code = cli.CmdProbeRTT(args)
 	case "exec":
 		code = cli.CmdExec(args)
 	case "agent":
