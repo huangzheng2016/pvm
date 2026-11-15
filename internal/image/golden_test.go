@@ -117,6 +117,15 @@ func TestRenderProvision(t *testing.T) {
 	if strings.Index(s, "/etc/apt/sources.list.d/mozilla.sources") > strings.Index(s, "updating package lists") {
 		t.Error("the Mozilla repository must be added before the main apt-get update")
 	}
+	if x := strings.Index(s, "/etc/apt/sources.list.d/xpra.sources"); x < 0 || x > strings.Index(s, "updating package lists") {
+		t.Error("the xpra repository must be added before the main apt-get update")
+	}
+	if !strings.Contains(s, xpraKeyFingerprint) || !strings.Contains(s, "Pin: version "+XpraVersion+".*") {
+		t.Error("the xpra repository must check its key and pin the release line")
+	}
+	if !strings.Contains(s, "install --no-install-recommends "+strings.Join(XpraPackages, " ")) || !strings.Contains(s, "mask --now xpra-server.socket") {
+		t.Error("golden images must install the xpra server without recommends and mask its system service")
+	}
 	if strings.Contains(s, "docker system prune -af") {
 		t.Error("provision script must not nuke the docker images it just pulled")
 	}

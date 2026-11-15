@@ -268,7 +268,7 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 		Version: version, Distro: ref.Distro, ImageVersion: ref.Version,
 		File:       goldenFileName(ref.Distro, ref.Version, version),
 		BaseDigest: digest, BuiltAt: time.Now(),
-		Packages:   append(append([]string{}, GoldenPackages...), DesktopPackages...),
+		Packages:   append(append(append([]string{}, GoldenPackages...), DesktopPackages...), XpraPackages...),
 		KernelArgs: spec.KernelArgs,
 	}
 	if err := os.MkdirAll(GoldenDir(o.P.Images), 0o755); err != nil {

@@ -120,11 +120,36 @@ pvm desktop dev1 --stop
 
 - Requires a VM built from a **golden image** (XFCE + TigerVNC + noVNC preinstalled). Base images lack the desktop packages and `pvm desktop` says so (a 503 means the VM is still booting — retry shortly).
 - This is the VM's own desktop (not a container): the filesystem, users, and processes are the same machine you see over SSH, including the `/share` mount.
-- The session persists inside the VM (closing the browser changes nothing); timezone/locale follow the VM's region profile. `--open` opens the system browser, `--size 2560x1440` changes resolution.
-- `--public` makes the host relay listen on `0.0.0.0` and returns an `0.0.0.0` URL; use the host's actual LAN/VPN IP when connecting remotely. Switching between public and loopback keeps the same desktop session.
+- The session persists inside the VM (closing the browser changes nothing); timezone/locale follow the VM's region profile. `--open` opens the system browser. The desktop follows the browser window size; `--size 2560x1440` sets the size it starts with.
+- The desktop is not a port map and does not show in `pvm map ls`: the daemon's listener carries it over the VM's `pvm.stream` channel, bypassing the gateway VM. Desktop maps created by older versions are removed the next time `pvm desktop` runs.
+- `--public` makes the daemon's listener listen on `0.0.0.0` and returns an `0.0.0.0` URL; use the host's actual LAN/VPN IP when connecting remotely. Switching between public and loopback keeps the same desktop session.
 - Clipboard is enabled by default in noVNC. Open the Clipboard panel on the left and grant clipboard read/write permission in Chrome when prompted; loopback URLs are considered secure contexts. Golden images include a small CJK font set and an IBus pinyin input method, with `ibus-daemon` started in each desktop session. This only adds Chinese display and input support; the default locale remains `en_US.UTF-8`.
 
-### 5. Port maps
+### 5. Single apps as host windows (pvm app)
+
+```bash
+pvm app dev1 -- gedit                       # an X11 program as its own host window
+pvm app dev1 https://mail.example.com       # a web page in the VM's Firefox as a window; --kiosk for full screen
+pvm app dev1 --name notes --no-attach -- gedit notes.txt
+pvm app ls [dev1]
+pvm app attach dev1                         # reopen the windows after closing the Xpra client
+pvm app stop dev1 notes                     # or --all
+pvm app config dev1 --clipboard both --drop on
+```
+
+- Uses Xpra: one Xpra server per VM runs as the VM user, and each app is a window on it. The page or program runs in the VM, so cookies, fingerprint and egress stay with the VM and its route; the host only shows pixels.
+- The host needs the Xpra 6.5.x client from xpra.org: on Windows pvm looks in `xpra\Xpra.exe` next to `pvm.exe` and in `Program Files\Xpra`, on macOS in `/Applications/Xpra.app`, elsewhere on `PATH`; `PVM_XPRA` overrides the path. A client from another release line is refused. The first app in a VM without Xpra installs it from xpra.org's APT repository, which takes a few minutes and needs the VM's network; golden images built from this version on include it.
+- The command must be installed in the VM; `pvm app` does not install it. Window titles end in `[dev1]`.
+- Closing a window closes that app. Quitting the Xpra client leaves apps running; `pvm app attach` brings them back. A VM restart ends its apps.
+- Clipboard and drops are off by default, per VM:
+  - `--clipboard to-host`: copy in the VM, paste on the host (text and images).
+  - `--clipboard to-guest`: host content enters the VM only when one of its windows comes to the front, or when you copy while it is there, never in the background. Content that password managers mark as excluded is never sent. Windows hosts only so far.
+  - `--clipboard both`: both of the above.
+  - `--drop on`: files dropped on a VM window upload into `~/Downloads` in the VM (up to 100 MB each, never opened). A file the VM tries to send asks for confirmation on the host.
+  - Changes apply to clients attached afterwards: run `pvm app attach dev1`.
+- The data goes over the VM's `pvm.stream` channel, not the gateway VM.
+
+### 6. Port maps
 
 ```bash
 pvm map dev1 8080:80
@@ -135,7 +160,7 @@ pvm map ls
 - The host listens on loopback only; the path is host relay -> gateway -> VM.
 - Deleting a VM cleans up its relays, desktop state, and agent connections.
 
-### 6. DNS and split-routing rules
+### 7. DNS and split-routing rules
 
 ```bash
 # internal domains: resolved via the host's DNS, traffic goes direct
@@ -158,7 +183,7 @@ pvm dns ls
 - Domain rules affect resolution that goes through the gateway DNS.
 - Rules take effect immediately, but established connections are not retroactively switched.
 
-### 7. Stop, delete, clone
+### 8. Stop, delete, clone
 
 ```bash
 pvm stop dev1
@@ -172,7 +197,7 @@ pvm clone dev1 dev2             # source VM must be stopped; --no-start clones w
 - clone inherits mounts, CPU/memory, user, timezone, SMBIOS, and the GPU device; the effective default exit is explicitly inherited before boot; port maps are not inherited by default but can be interactively carried over with new ports (`--inherit-ports` / `--no-inherit-ports`).
 - On first boot a clone regenerates its hostname, machine-id, SSH host keys, and management key. Other authorized keys and application identities remain copied. A private `/share` starts empty in the clone; extra mounts still refer to the explicitly configured host sources.
 
-### 8. Workspaces (pvm workspace)
+### 9. Workspaces (pvm workspace)
 
 A workspace binds one host folder to one VM at `/workspace/<id>` (id: lowercase letters, digits, `-`).
 
@@ -195,7 +220,7 @@ pvm workspace rm web [--delete-guest] [-y]
 - Downloads reject absolute or `..` paths, devices, escaping symlinks, paths below a host symlink, Windows-reserved names and case clashes (with each other or with existing host files), and list them; the command then exits non-zero and the baseline is not updated. After a download pvm lists changed `.git/hooks/*`, `.git/config`, `.vscode/*.json` and `.envrc` files for review.
 - `rm` never deletes host files and keeps the VM copy unless `--delete-guest`, which refuses while anything is mounted below the VM copy. It warns when the VM copy has changes not yet pulled or cloned. `pvm rm <vm>` lists the VM's workspaces and keeps them as orphans for `pvm workspace rm`.
 
-### 9. Disk capacity and host space
+### 10. Disk capacity and host space
 
 - VM disks use sparse qcow2 files. `--disk` at create and `pvm resize` set the virtual capacity ceiling; neither allocates the full size on the host up front. `resize` is grow-only and never shrinks the guest partition or filesystem.
 - QEMU enables `discard=unmap` and `detect-zeroes=unmap`. Deleting files alone can leave historical allocations and metadata behind, so run `sudo fstrim -av` in the guest before offline compaction for the best result.
@@ -208,7 +233,7 @@ pvm workspace rm web [--delete-guest] [-y]
   ```
 - `pvm compact` requires a stopped VM and refuses an unconsumed RAM snapshot. It validates the new image, virtual capacity, and backing chain, then atomically replaces the original only when the new file uses less host space. It does not enable compression or reduce virtual capacity.
 
-### 10. Snapshots and troubleshooting
+### 11. Snapshots and troubleshooting
 
 ```bash
 pvm snapshot create dev1        # capture RAM+disk state and stop (VM must be running)

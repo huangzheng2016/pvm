@@ -44,8 +44,12 @@ type Server struct {
 
 	started time.Time
 	ready   atomic.Bool
-	mu      sync.Mutex // guards vms cache
+	mu      sync.Mutex // guards vms cache and desktopForwards
 	vms     map[string]*vm.Spec
+
+	// desktopForwards are the per-VM pvm desktop listeners
+	desktopForwards map[string]*streamForward
+	apps            appHost
 
 	agentDialLocks sync.Map   // name -> chan struct{}
 	agentMu        sync.Mutex // guards agents
@@ -279,6 +283,13 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /v1/vms/{name}/route", s.handleVMRoute)
 	mux.HandleFunc("POST /v1/vms/{name}/desktop", s.handleDesktop)
 	mux.HandleFunc("DELETE /v1/vms/{name}/desktop", s.handleDesktopStop)
+	mux.HandleFunc("POST /v1/vms/{name}/apps", s.handleAppStart)
+	mux.HandleFunc("GET /v1/vms/{name}/apps", s.handleAppList)
+	mux.HandleFunc("GET /v1/apps", s.handleAppList)
+	mux.HandleFunc("DELETE /v1/vms/{name}/apps", s.handleAppStop)
+	mux.HandleFunc("DELETE /v1/vms/{name}/apps/{id}", s.handleAppStop)
+	mux.HandleFunc("POST /v1/vms/{name}/apps/attach", s.handleAppAttach)
+	mux.HandleFunc("PUT /v1/vms/{name}/apps/config", s.handleAppConfig)
 	mux.HandleFunc("GET /v1/vms/{name}/console", s.handleConsole)
 	mux.HandleFunc("GET /v1/vms/{name}/stream", s.handleStream)
 	mux.HandleFunc("GET /v1/vms/{name}/audit", s.handleVMAudit)
@@ -899,6 +910,8 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, fmt.Errorf("cannot stop %s safely (%v); not deleting", name, err))
 		return
 	}
+	s.stopDesktopForward(name)
+	s.stopAppForward(name)
 	s.invalidateAgent(name)
 	s.resetStages(name)
 	var cl *cluster.Cluster
@@ -1002,6 +1015,14 @@ func (s *Server) recoverClusters() {
 			healthy = false
 			log.Printf("recover relays: %v", err)
 		}
+		var members []*vm.Spec
+		for _, vn := range cl.VMs {
+			if spec, err := s.getSpec(vn.Name); err == nil {
+				members = append(members, spec)
+			}
+		}
+		s.recoverDesktopForwards(members)
+		s.recoverAppForwards(members)
 		var running []*vm.Spec
 		for _, vn := range cl.VMs {
 			spec, err := s.getSpec(vn.Name)

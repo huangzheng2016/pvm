@@ -154,10 +154,13 @@ Pin: origin packages.mozilla.org
 Pin-Priority: 1000
 EOF
 
+echo "[provision] adding the xpra APT repository..."
+` + XpraRepoScript + `
 echo "[provision] updating package lists..."
 apt-get update
 # e.g. debian forky has no tigervnc: fail before the long upgrade
 apt-cache show tigervnc-standalone-server novnc websockify >/dev/null 2>&1 || { echo "desktop packages (tigervnc/novnc/websockify) unavailable on this release" >&2; exit 1; }
+apt-cache show ` + strings.Join(XpraPackages, " ") + ` >/dev/null 2>&1 || { echo "xpra packages unavailable for this release from xpra.org" >&2; exit 1; }
 ` + prefetchScript + `
 echo "[provision] downloading packages in parallel..."
 pvm_prefetch
@@ -165,7 +168,9 @@ echo "[provision] upgrading system packages (this may take 5-10 minutes)..."
 apt-get -y upgrade
 echo "[provision] installing docker, build tools, and desktop packages (this may take 10-15 minutes)..."
 apt-get -y install ` + goldenInstallArgs() + `
-
+# without recommends: they pull in CUPS and a web client
+apt-get -y install --no-install-recommends ` + strings.Join(XpraPackages, " ") + `
+` + XpraMaskScript + `
 echo "[provision] configuring desktop environment..."
 cat > /etc/environment.d/ibus.conf <<'EOF'
 GTK_IM_MODULE=ibus

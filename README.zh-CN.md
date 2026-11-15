@@ -10,6 +10,7 @@
 - **失败即阻断（fail-closed）的出口路由：** TCP、UDP 和 ICMP 经 WireGuard 发往你的 VPS（UDP 或 TCP 承载），或发往 Cloudflare WARP（UDP）。只有显式的 direct/internal 规则可以绕过所选出口；隧道断开时流量直接丢弃，不会回落到宿主机出口。
 - **真实 IP 的全隧道 DNS 与分流：** 走默认出口的域名经所选出口解析为真实 IPv4 地址，并通过三层隧道直接转发。只有显式的域名代理规则才使用 fake-ip 中继。direct/internal 域名保留真实地址和直连路径；域名与 CIDR 规则无需重启即可生效。
 - **原生浏览器桌面：** `pvm desktop` 通过 TigerVNC 和 noVNC 提供虚拟机自身的 XFCE 桌面。默认只给出回环地址的 URL；`--public` 可选择监听 `0.0.0.0`，但仍需 VNC 认证。它和 SSH 登录的是同一台机器，不是容器。
+- **虚拟机应用作为宿主机窗口：** `pvm app dev1 -- gedit` 或 `pvm app dev1 https://example.com` 通过 Xpra 把虚拟机里的单个程序或网页显示为独立的宿主机窗口，Cookie、浏览器指纹和出口都留在虚拟机里。剪贴板（文本和图片）与文件拖放按虚拟机单独开启；宿主机剪贴板只在该虚拟机的窗口位于前台时才进入虚拟机。
 - **按宿主机配置取默认值：** 新虚拟机默认使用宿主机逻辑 CPU 数的四分之一（向上取整）和四分之一内存，并通过 balloon 驱动把空闲内存还给宿主机。稀疏 qcow2 磁盘默认 20 GB，可用 `pvm resize` 扩容，用 `pvm compact` 释放未使用的宿主机空间。
 - **完整的虚拟机工作流：** RAM 快照数秒内恢复；克隆会重新生成机器标识；只读的 `pvm audit` 检查路由及 TCP/UDP/ICMP/DNS 健康状况；回环端口映射、双向 `/share` 与自定义宿主机挂载、virtio-serial exec 覆盖日常开发与故障恢复。
 
@@ -126,6 +127,21 @@ pvm workspace rm web
 ```
 
 上传会跳过 `.gitignore` 匹配的路径和 `node_modules`；`.pvmignore` 文件可以追加规则或重新包含路径。pvm 拒绝上传或挂载主目录、文件系统根目录、它自己的数据目录，以及包含 `.ssh`、`.aws` 等凭据的目录树。下载内容会逐项校验后才写入宿主机。`pvm workspace rm` 从不删除宿主机文件。详见 [docs/design/workspace.md](docs/design/workspace.md)。
+
+### 虚拟机应用作为宿主机窗口
+
+`pvm app` 通过 [Xpra](https://xpra.org) 把虚拟机里的单个程序或网页显示为宿主机窗口。宿主机需要 Xpra 6.5 客户端；虚拟机里第一次运行 app 时，会从 xpra.org 的仓库安装 Xpra 服务端。
+
+```bash
+pvm app dev1 -- gedit
+pvm app dev1 https://mail.example.com --kiosk
+pvm app ls
+pvm app config dev1 --clipboard both --drop on
+pvm app attach dev1
+pvm app stop dev1 --all
+```
+
+剪贴板和拖放默认关闭，需按虚拟机单独开启。使用 `--clipboard to-guest` 或 `both` 时，宿主机内容只在该虚拟机的窗口切到前台、或窗口在前台时复制，才会进入虚拟机；被密码管理器标记为排除的内容永远不会发送。详见 [docs/design/app.md](docs/design/app.md)。
 
 ## 架构
 

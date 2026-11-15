@@ -1,21 +1,36 @@
 package daemon
 
 import (
+	"context"
+	"fmt"
 	"net"
+	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
 func freeRelayTestPort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "0.0.0.0:0")
+	addr := "0.0.0.0:0"
+	if runtime.GOOS == "windows" {
+		// see skipPublicBindOnWindows; tests needing 0.0.0.0 skip there
+		addr = "127.0.0.1:0"
+	}
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ln.Close()
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// skipPublicBindOnWindows skips tests that listen on 0.0.0.0: Windows
+// asks the user to allow every new test binary through the firewall.
+func skipPublicBindOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("listening on 0.0.0.0 prompts for a firewall exception on Windows")
+	}
 }
 
 func TestDesktopURLPublic(t *testing.T) {
@@ -30,6 +45,7 @@ func TestDesktopURLPublic(t *testing.T) {
 }
 
 func TestEnsurePublicRelay(t *testing.T) {
+	skipPublicBindOnWindows(t)
 	port := freeRelayTestPort(t)
 	poolPort := freeRelayTestPort(t)
 	r := newRelaySet()
@@ -56,34 +72,63 @@ func TestEnsurePublicRelay(t *testing.T) {
 	}
 }
 
-func TestDesktopRelayMatches(t *testing.T) {
-	s := newPushTestServer(t)
-	s.relays = newRelaySet()
-	if _, err := s.Clusters.Ensure(1); err != nil {
-		t.Fatal(err)
-	}
-	hostPort := freeRelayTestPort(t)
-	m, err := s.Clusters.AddMap(1, "dev1", "100.99.1.12", hostPort, desktopWebPort, "tcp")
+// Switching to or from public mode rebinds the listener on the same port,
+// so the URL keeps its port.
+func TestDesktopForwardRebindsOnPublicChange(t *testing.T) {
+	skipPublicBindOnWindows(t)
+	s := &Server{}
+	port, err := s.ensureDesktopForward("dev1", 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := &vm.Spec{Name: "dev1", ClusterID: 1}
-	st := &desktopState{HostPort: hostPort}
-	if err := s.relays.Ensure("tcp", m.HostPort, m.PoolPort); err != nil {
+	defer s.stopDesktopForward("dev1")
+	if got := s.desktopForwards["dev1"].bind; got != "127.0.0.1" {
+		t.Fatalf("private bind = %q", got)
+	}
+	if again, err := s.ensureDesktopForward("dev1", 0, false); err != nil || again != port {
+		t.Fatalf("same mode: port %d, %v; want %d", again, err, port)
+	}
+	pub, err := s.ensureDesktopForward("dev1", port, true)
+	if err != nil || pub != port {
+		t.Fatalf("public: port %d, %v; want %d", pub, err, port)
+	}
+	if got := s.desktopForwards["dev1"].bind; got != "0.0.0.0" {
+		t.Fatalf("public bind = %q", got)
+	}
+	s.stopDesktopForward("dev1")
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("port still held after stop: %v", err)
+	}
+	ln.Close()
+}
+
+// A desktop map from before pvm.stream is removed with its relay; other
+// maps of the VM stay.
+func TestRemoveDesktopMapsDropsLegacyMap(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	legacy := freeRelayTestPort(t)
+	other := freeRelayTestPort(t)
+	for _, m := range []struct{ host, guest int }{{legacy, desktopWebPort}, {other, 8080}} {
+		pm, err := s.Clusters.AddMap(dev1.ClusterID, dev1.Name, dev1.IP, m.host, m.guest, "tcp")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.relays.Ensure("tcp", pm.HostPort, pm.PoolPort); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.removeDesktopMaps(context.Background(), dev1, okPush); err != nil {
 		t.Fatal(err)
 	}
-	if !s.desktopRelayMatches(spec, st, false) {
-		t.Fatal("private relay must match private mode")
+	maps := s.Clusters.Get(dev1.ClusterID).Maps
+	if len(maps) != 1 || maps[0].GuestPort != 8080 {
+		t.Fatalf("maps after cleanup: %+v", maps)
 	}
-	if s.desktopRelayMatches(spec, st, true) {
-		t.Fatal("private relay must not match public mode")
+	if _, ok := s.relays.Binding("tcp", legacy); ok {
+		t.Fatal("legacy desktop relay still bound")
 	}
-	s.relays.Remove("tcp", m.HostPort)
-	if err := s.relays.EnsurePublic("tcp", m.HostPort, m.PoolPort); err != nil {
-		t.Fatal(err)
-	}
-	defer s.relays.Remove("tcp", m.HostPort)
-	if !s.desktopRelayMatches(spec, st, true) {
-		t.Fatal("public relay must match public mode")
+	if _, ok := s.relays.Binding("tcp", other); !ok {
+		t.Fatal("unrelated relay removed")
 	}
 }

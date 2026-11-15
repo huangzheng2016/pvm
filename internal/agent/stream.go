@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/stream"
@@ -47,7 +50,25 @@ func (keepOpen) Close() error { return nil }
 
 // streamTarget connects an allowed stream target.
 func streamTarget(target string) (io.ReadWriteCloser, error) {
+	if rest, ok := strings.CutPrefix(target, "clip:"); ok {
+		uid, kind, _ := strings.Cut(rest, ":")
+		n, err := strconv.Atoi(uid)
+		if err != nil || strconv.Itoa(n) != uid {
+			return nil, fmt.Errorf("bad uid in target %q", target)
+		}
+		return clipboardSink(n, kind)
+	}
+	if uid, ok := strings.CutPrefix(target, "xpra:"); ok {
+		n, err := strconv.Atoi(uid)
+		if err != nil || strconv.Itoa(n) != uid {
+			return nil, fmt.Errorf("bad uid in target %q", target)
+		}
+		return dialUserSocket("/", n, xpraSocket)
+	}
 	switch target {
+	case "novnc":
+		// pvm desktop's websockify, which serves noVNC and proxies RFB
+		return net.DialTimeout("tcp", "127.0.0.1:6080", 5*time.Second)
 	case "echo":
 		return newEchoConn(), nil
 	case "discard":

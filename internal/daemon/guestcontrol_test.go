@@ -902,71 +902,6 @@ func TestPushBoundedReleasesOnTimeout(t *testing.T) {
 	close(hold)
 }
 
-// desktop's map add must go through the shared membership check: a
-// delete that already removed the VM blocks the desktop map.
-func TestDesktopEnsureMapRequiresMembership(t *testing.T) {
-	s, dev1, _ := newMapTestServer(t)
-	s.mapMu.Lock(context.Background())
-	s.removeVMMapsLocked(dev1.ClusterID, "dev1")
-	s.mapMu.Unlock()
-
-	_, err := s.desktopEnsureMap(context.Background(), dev1, false, okPush)
-	if err == nil || !strings.Contains(err.Error(), "not a cluster member") {
-		t.Fatalf("desktop map for removed vm = %v, want membership error", err)
-	}
-	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 0 {
-		t.Fatalf("no map may be created for a removed vm: %+v", got)
-	}
-}
-
-// A real delete racing the desktop map add must leave no map for the
-// deleted VM, in either order.
-func TestDesktopEnsureMapInterleavesWithDelete(t *testing.T) {
-	s, dev1, _ := newMapTestServer(t)
-	for i := 0; i < 10; i++ {
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			req := httptest.NewRequest("DELETE", "/v1/vms/dev1", nil)
-			req.SetPathValue("name", "dev1")
-			s.handleDelete(httptest.NewRecorder(), req)
-		}()
-		go func() {
-			defer wg.Done()
-			s.desktopEnsureMap(context.Background(), dev1, false, okPush)
-		}()
-		wg.Wait()
-
-		for _, cl := range s.Clusters.List() {
-			for _, m := range cl.Maps {
-				if m.VM == "dev1" {
-					t.Fatalf("iter %d: map for deleted vm survives: %+v", i, m)
-				}
-			}
-		}
-		if cl := s.Clusters.Get(dev1.ClusterID); cl.VMs["dev1"] != nil {
-			t.Fatalf("iter %d: deleted vm still a member", i)
-		}
-
-		// Recreate dev1 for the next round.
-		vnet, err := s.Clusters.AddVM(dev1.ClusterID, "dev1")
-		if err != nil {
-			t.Fatal(err)
-		}
-		dev1.IP = vnet.IP
-		if err := os.MkdirAll(s.P.VMDir("dev1"), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		if err := dev1.Save(s.P); err != nil {
-			t.Fatal(err)
-		}
-		s.mu.Lock()
-		s.vms["dev1"] = dev1
-		s.mu.Unlock()
-	}
-}
-
 // clone inherit-ports shares the global port/proto ownership check: a
 // port persisted by another cluster without a live relay cannot be
 // inherited either.
@@ -1211,39 +1146,6 @@ func TestRollbackFailedCreateLockTimeoutPreservesState(t *testing.T) {
 		t.Fatal("relay must survive a lock timeout")
 	}
 	s.mapMu.Unlock()
-}
-
-// A desktop session start slower than mapPushTimeout must not fail the
-// map operation: the ensure context is created after the start.
-func TestDesktopEnsureMapFreshDeadlineAfterSlowStart(t *testing.T) {
-	s, dev1, _ := newMapTestServer(t)
-	old := mapPushTimeout
-	mapPushTimeout = 100 * time.Millisecond
-	defer func() { mapPushTimeout = old }()
-
-	// A context created before the slow session start is expired by the
-	// time the ensure runs.
-	staleCtx, staleCancel := context.WithTimeout(context.Background(), mapPushTimeout)
-	defer staleCancel()
-	time.Sleep(200 * time.Millisecond)
-	if _, err := s.desktopEnsureMap(staleCtx, dev1, false, okPush); err == nil {
-		t.Fatal("an expired context must fail, not succeed")
-	}
-	// The fresh context created after the start succeeds. Its budget is
-	// generous: the whole map add (state write, relay bind) must not race
-	// a 100ms deadline on a loaded CI runner.
-	freshCtx, freshCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer freshCancel()
-	port, err := s.desktopEnsureMap(freshCtx, dev1, false, okPush)
-	if err != nil || port == 0 {
-		t.Fatalf("fresh deadline after slow start: port=%d err=%v", port, err)
-	}
-	if got := s.Clusters.Get(dev1.ClusterID).Maps; len(got) != 1 || got[0].GuestPort != desktopWebPort {
-		t.Fatalf("desktop map must exist: %+v", got)
-	}
-	if err := portFree("tcp", port); err == nil {
-		t.Fatal("desktop relay must be bound")
-	}
 }
 
 // The clone API keeps its explicit host port range: 0 is rejected even

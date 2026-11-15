@@ -27,6 +27,9 @@ vm:
   exec          run a command via the guest agent (no network needed): pvm exec dev1 cmd...
   logs          stream a vm console: pvm logs dev1 [--follow] [--tail N]
   desktop       open the vm's native xfce desktop: pvm desktop dev1 [--open] [--stop] [--size WxH] [--public]
+  app           show one vm app as a host window (xpra): pvm app dev1 -- gedit | pvm app dev1 https://example.com
+                [--name ID] [--kiosk] [--no-attach]; pvm app ls [vm] | stop dev1 <id>|--all | attach dev1
+                pvm app config dev1 [--clipboard off|to-guest|to-host|both] [--drop on|off]
   doctor        diagnose local state consistency and permissions (read-only, redacted)
   audit         read-only health audit: pvm audit dev1 [--privacy] (vm, route, tcp/udp/icmp probes, dns, ipv6, timezone, locale)
 
@@ -198,6 +201,8 @@ func main() {
 		code = cli.CmdUpgrade(args)
 	case "desktop":
 		code = cli.CmdDesktop(args)
+	case "app":
+		code = cli.CmdApp(args)
 	case "audit":
 		code = cli.CmdAudit(args)
 	case "doctor":

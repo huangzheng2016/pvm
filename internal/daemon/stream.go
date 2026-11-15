@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/stream"
@@ -15,7 +18,21 @@ import (
 
 // streamTargets are the guest targets the host API may open. The guest
 // keeps its own allowlist; this one only keeps the API surface explicit.
-var streamTargets = map[string]bool{"echo": true, "discard": true, "source": true}
+var streamTargets = map[string]bool{"echo": true, "discard": true, "source": true, "novnc": true}
+
+// validStreamTarget also allows the per-user xpra:<uid> target and the
+// clipboard targets.
+func validStreamTarget(target string) bool {
+	switch target {
+	case "clip:text", "clip:png":
+		return true
+	}
+	if uid, ok := strings.CutPrefix(target, "xpra:"); ok {
+		n, err := strconv.Atoi(uid)
+		return err == nil && n >= 1000 && strconv.Itoa(n) == uid
+	}
+	return streamTargets[target]
+}
 
 // streamState holds the one pvm.stream session per VM: QEMU's chardev
 // socket accepts a single host connection, so every stream to a VM
@@ -100,7 +117,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	target := r.URL.Query().Get("target")
-	if !streamTargets[target] {
+	if !validStreamTarget(target) {
 		writeErr(w, 400, fmt.Errorf("unknown stream target %q", target))
 		return
 	}
@@ -110,6 +127,11 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 	if st, err := s.instance(spec).Running(); err != nil || st == nil {
 		writeErr(w, 409, fmt.Errorf("vm %s is not running", name))
+		return
+	}
+	target, code, err := s.clipTarget(spec, target)
+	if err != nil {
+		writeErr(w, code, err)
 		return
 	}
 	sess, err := s.streamSession(r.Context(), name)
@@ -161,4 +183,69 @@ func (c *hijackedConn) CloseWrite() error {
 		return cw.CloseWrite()
 	}
 	return c.Conn.Close()
+}
+
+// streamForward is a host listener that forwards every connection to one
+// guest stream target, bypassing the gateway.
+type streamForward struct {
+	ln     net.Listener
+	vm     string
+	target string
+	bind   string
+	done   chan struct{}
+	active atomic.Int32 // open connections
+}
+
+func (f *streamForward) port() int { return f.ln.Addr().(*net.TCPAddr).Port }
+
+// startStreamForward listens on bind:port (port 0 picks one) and forwards
+// connections to target in vm.
+func (s *Server) startStreamForward(vm, target, bind string, port int) (*streamForward, error) {
+	if !validStreamTarget(target) {
+		return nil, fmt.Errorf("unknown stream target %q", target)
+	}
+	ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", bind, port))
+	if err != nil {
+		return nil, fmt.Errorf("listen %s:%d: %w", bind, port, err)
+	}
+	f := &streamForward{ln: ln, vm: vm, target: target, bind: bind, done: make(chan struct{})}
+	go func() {
+		defer close(f.done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go s.forwardStreamConn(f, conn)
+		}
+	}()
+	return f, nil
+}
+
+func (s *Server) forwardStreamConn(f *streamForward, conn net.Conn) {
+	f.active.Add(1)
+	defer f.active.Add(-1)
+	if tc, ok := conn.(*net.TCPConn); ok {
+		tc.SetNoDelay(true)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	sess, err := s.streamSession(ctx, f.vm)
+	if err != nil {
+		log.Printf("stream forward %s/%s: %v", f.vm, f.target, err)
+		conn.Close()
+		return
+	}
+	st, err := sess.Open(ctx, f.target)
+	if err != nil {
+		log.Printf("stream forward %s/%s: %v", f.vm, f.target, err)
+		conn.Close()
+		return
+	}
+	stream.Pipe(st, conn)
+}
+
+func (f *streamForward) Close() {
+	f.ln.Close()
+	<-f.done
 }

@@ -10,6 +10,7 @@ Personal QEMU dev VMs in a single binary: create an isolated Linux development m
 - **Fail-closed exit routing:** Route TCP, UDP, and ICMP through WireGuard to your VPS over UDP or TCP, or to Cloudflare WARP over UDP. Only explicit direct/internal rules bypass the selected exit; if the tunnel goes down, traffic is dropped instead of falling back to host egress.
 - **Real-IP full-tunnel DNS and split routing:** Default-exit domains resolve through the selected exit to real IPv4 addresses and use direct L3 tunnel forwarding. Only explicit domain proxy rules use fake-ip relays. Direct/internal domains keep their real addresses and direct path, and domain or CIDR rules take effect without a restart.
 - **Native browser desktop:** `pvm desktop` serves the VM's own XFCE desktop through TigerVNC and noVNC. It uses a loopback URL by default; `--public` optionally listens on `0.0.0.0` with VNC authentication still required. It is the same machine as SSH, not a container.
+- **VM apps as host windows:** `pvm app dev1 -- gedit` or `pvm app dev1 https://example.com` shows one program or web page from the VM as its own host window through Xpra, so cookies, fingerprint and egress stay with the VM. Clipboard (text and images) and file drops are opt-in per VM, and host clipboard content only enters the VM while one of its windows is in front.
 - **Host-shaped defaults:** New VMs default to a quarter of the host's logical CPUs (rounded up) and a quarter of host RAM, with a balloon driver returning idle memory to the host. Sparse qcow2 disks default to 20 GB, grow with `pvm resize`, and release unused host space with `pvm compact`.
 - **Complete VM workflows:** RAM snapshots restore in seconds, clones regenerate machine identifiers, read-only `pvm audit` checks route and TCP/UDP/ICMP/DNS health, and loopback port maps, bidirectional `/share` plus custom host mounts, and virtio-serial exec cover daily development and recovery.
 
@@ -126,6 +127,21 @@ pvm workspace rm web
 ```
 
 Uploads skip `.gitignore` matches and `node_modules`; a `.pvmignore` file adds or re-includes paths. pvm refuses to upload or mount the home directory, a file system root, its own data directory, or a tree that contains credentials such as `.ssh` or `.aws`. Downloads are checked entry by entry before anything is written to the host. `pvm workspace rm` never deletes host files. See [docs/design/workspace.md](docs/design/workspace.md).
+
+### Apps as host windows
+
+`pvm app` shows single programs or web pages from a VM as host windows through [Xpra](https://xpra.org). The host needs the Xpra 6.5 client; the first app in a VM installs the Xpra server there from xpra.org's repository.
+
+```bash
+pvm app dev1 -- gedit
+pvm app dev1 https://mail.example.com --kiosk
+pvm app ls
+pvm app config dev1 --clipboard both --drop on
+pvm app attach dev1
+pvm app stop dev1 --all
+```
+
+Clipboard and drops are off until you enable them per VM. With `--clipboard to-guest` or `both`, host content enters the VM only when one of its windows comes to the front or you copy while it is there, and content that password managers mark as excluded is never sent. See [docs/design/app.md](docs/design/app.md).
 
 ## Architecture
 

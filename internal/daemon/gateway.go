@@ -592,12 +592,21 @@ func (s *Server) sshRun(spec *vm.Spec, cmd string) (string, error) {
 // sshRunCtx kills the ssh child when ctx is done, so a cancelled
 // request does not leave the process running.
 func (s *Server) sshRunCtx(ctx context.Context, spec *vm.Spec, cmd string) (string, error) {
+	return s.sshRunInputCtx(ctx, spec, cmd, "")
+}
+
+// sshRunInputCtx runs cmd with stdin as its input, which keeps secrets off
+// the guest's process list.
+func (s *Server) sshRunInputCtx(ctx context.Context, spec *vm.Spec, cmd, stdin string) (string, error) {
 	args, target, err := s.sshBaseArgs(spec)
 	if err != nil {
 		return "", err
 	}
 	c := exec.CommandContext(ctx, "ssh", append(args, target, cmd)...)
 	fsutil.ConfigureHiddenCmd(c)
+	if stdin != "" {
+		c.Stdin = strings.NewReader(stdin)
+	}
 	c.WaitDelay = 2 * time.Second
 	var stdout, stderr strings.Builder
 	c.Stdout = &stdout
