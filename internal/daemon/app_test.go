@@ -101,3 +101,16 @@ func TestClipTargetFollowsPolicy(t *testing.T) {
 		t.Errorf("other targets must pass through: %q, %v", got, err)
 	}
 }
+
+func TestLineWriterSplitsLinesAndProgress(t *testing.T) {
+	var got []string
+	lw := lineWriter(func(l string) { got = append(got, l) })
+	lw.Write([]byte("Get:1 a\nGet:2 b\r\nProgress 10%\rProgress 20%\r"))
+	lw.Write([]byte("Setting up x"))
+	lw.Write([]byte("pra\n\n  \ntail"))
+	lw.Close()
+	want := []string{"Get:1 a", "Get:2 b", "Progress 10%", "Progress 20%", "Setting up xpra", "tail"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("lines = %q, want %q", got, want)
+	}
+}

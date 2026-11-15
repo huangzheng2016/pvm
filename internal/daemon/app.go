@@ -782,3 +782,89 @@ func (s *Server) clipTarget(spec *vm.Spec, target string) (string, int, error) {
 	}
 	return "clip:" + strconv.Itoa(spec.GuestUID) + ":" + kind, 0, nil
 }
+
+// appPrepareFrame is one line of the prepare stream: output, or the end.
+type appPrepareFrame struct {
+	Out  string `json:"out,omitempty"`
+	Done bool   `json:"done,omitempty"`
+	// Installed is set on the last frame when this call installed Xpra.
+	Installed bool   `json:"installed,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// handleAppPrepare installs Xpra in the VM unless it is there, streaming
+// the installer's output as it runs; it takes minutes on first use.
+func (s *Server) handleAppPrepare(w http.ResponseWriter, r *http.Request) {
+	spec, ok := s.appVM(w, r.PathValue("name"))
+	if !ok {
+		return
+	}
+	lock := s.appLock(spec.Name)
+	lock.Lock()
+	defer lock.Unlock()
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Minute)
+	defer cancel()
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.WriteHeader(http.StatusOK)
+	rc := http.NewResponseController(w)
+	enc := json.NewEncoder(w)
+	var mu sync.Mutex
+	send := func(f appPrepareFrame) {
+		mu.Lock()
+		defer mu.Unlock()
+		if enc.Encode(f) == nil {
+			rc.Flush()
+		}
+	}
+	_, err := s.sshRunCtx(ctx, spec, appInstalledCheck)
+	if err == nil {
+		send(appPrepareFrame{Done: true})
+		return
+	}
+	err = s.sshStreamCtx(ctx, spec, appInstallScript(), lineWriter(func(l string) { send(appPrepareFrame{Out: l}) }))
+	if err != nil {
+		send(appPrepareFrame{Done: true, Error: fmt.Sprintf("install xpra in %s: %v", spec.Name, err)})
+		return
+	}
+	send(appPrepareFrame{Done: true, Installed: true})
+}
+
+// appInstalledCheck exits 0 when the VM needs no install step.
+const appInstalledCheck = `command -v xpra >/dev/null && command -v xclip >/dev/null && { [ "$(systemctl is-enabled xpra-server.socket 2>/dev/null)" = masked ] || ! systemctl cat xpra-server.socket >/dev/null 2>&1; }`
+
+// lineWriter calls fn for every complete line written, and for the rest
+// on Close. Carriage returns from progress bars end a line too.
+type lineWriterT struct {
+	mu  sync.Mutex
+	buf []byte
+	fn  func(string)
+}
+
+func lineWriter(fn func(string)) *lineWriterT { return &lineWriterT{fn: fn} }
+
+func (lw *lineWriterT) Write(p []byte) (int, error) {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	lw.buf = append(lw.buf, p...)
+	for {
+		i := strings.IndexAny(string(lw.buf), "\r\n")
+		if i < 0 {
+			break
+		}
+		if l := strings.TrimSpace(string(lw.buf[:i])); l != "" {
+			lw.fn(l)
+		}
+		lw.buf = lw.buf[i+1:]
+	}
+	return len(p), nil
+}
+
+func (lw *lineWriterT) Close() error {
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	if l := strings.TrimSpace(string(lw.buf)); l != "" {
+		lw.fn(l)
+	}
+	lw.buf = nil
+	return nil
+}

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -593,6 +594,21 @@ func (s *Server) sshRun(spec *vm.Spec, cmd string) (string, error) {
 // request does not leave the process running.
 func (s *Server) sshRunCtx(ctx context.Context, spec *vm.Spec, cmd string) (string, error) {
 	return s.sshRunInputCtx(ctx, spec, cmd, "")
+}
+
+// sshStreamCtx runs cmd and copies its stdout and stderr to out as they
+// arrive, then closes out.
+func (s *Server) sshStreamCtx(ctx context.Context, spec *vm.Spec, cmd string, out io.WriteCloser) error {
+	defer out.Close()
+	args, target, err := s.sshBaseArgs(spec)
+	if err != nil {
+		return err
+	}
+	c := exec.CommandContext(ctx, "ssh", append(args, target, cmd)...)
+	fsutil.ConfigureHiddenCmd(c)
+	c.WaitDelay = 2 * time.Second
+	c.Stdout, c.Stderr = out, out
+	return c.Run()
 }
 
 // sshRunInputCtx runs cmd with stdin as its input, which keeps secrets off

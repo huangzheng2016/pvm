@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -119,6 +120,9 @@ func CmdApp(args []string) int {
 			return fatalf("%v", err)
 		}
 		var att appAttach
+		if err := prepareApp(c, args[1]); err != nil {
+			return fatalf("%v", err)
+		}
 		if err := c.Post("/v1/vms/"+args[1]+"/apps/attach?force=1", nil, &att); err != nil {
 			return fatalf("%v", err)
 		}
@@ -216,7 +220,10 @@ func cmdAppStart(p *paths.Paths, args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	fmt.Fprintf(os.Stderr, "starting in %s (the first app installs and starts xpra, which can take a few minutes)...\n", vmName)
+	if err := prepareApp(c, vmName); err != nil {
+		return fatalf("%v", err)
+	}
+	fmt.Fprintf(os.Stderr, "starting in %s...\n", vmName)
 	var out struct {
 		App    appView   `json:"app"`
 		Attach appAttach `json:"attach"`
@@ -446,4 +453,43 @@ func cmdAppClipboardBridge(p *paths.Paths, args []string) int {
 		return fatalf("%v", err)
 	}
 	return 0
+}
+
+// prepareApp installs Xpra in the VM on first use, showing the
+// installer's output as it runs.
+func prepareApp(c *daemon.Client, vm string) error {
+	resp, err := c.PostStream("/v1/vms/"+vm+"/apps/prepare", nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	dec := json.NewDecoder(resp.Body)
+	started := false
+	for {
+		var f struct {
+			Out       string `json:"out"`
+			Done      bool   `json:"done"`
+			Installed bool   `json:"installed"`
+			Error     string `json:"error"`
+		}
+		if err := dec.Decode(&f); err != nil {
+			return fmt.Errorf("install xpra in %s: %w", vm, err)
+		}
+		if f.Out != "" {
+			if !started {
+				fmt.Fprintf(os.Stderr, "installing xpra in %s (first use, a few minutes)...\n", vm)
+				started = true
+			}
+			fmt.Fprintf(os.Stderr, "        | %s\n", f.Out)
+		}
+		if f.Done {
+			if f.Error != "" {
+				return fmt.Errorf("%s", f.Error)
+			}
+			if f.Installed {
+				fmt.Fprintf(os.Stderr, "xpra installed in %s\n", vm)
+			}
+			return nil
+		}
+	}
 }

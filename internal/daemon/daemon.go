@@ -290,6 +290,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/vms/{name}/apps/{id}", s.handleAppStop)
 	mux.HandleFunc("POST /v1/vms/{name}/apps/attach", s.handleAppAttach)
 	mux.HandleFunc("PUT /v1/vms/{name}/apps/config", s.handleAppConfig)
+	mux.HandleFunc("POST /v1/vms/{name}/apps/prepare", s.handleAppPrepare)
 	mux.HandleFunc("GET /v1/vms/{name}/console", s.handleConsole)
 	mux.HandleFunc("GET /v1/vms/{name}/stream", s.handleStream)
 	mux.HandleFunc("GET /v1/vms/{name}/audit", s.handleVMAudit)
