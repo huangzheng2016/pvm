@@ -32,6 +32,10 @@ const (
 	appDisplay    = ":100"
 	appServerUnit = "pvm-xpra"
 	appUnitPrefix = "pvm-app-"
+	// All web apps of a VM are windows of one Firefox, so they share
+	// logins, cookies and cache; a profile allows only one process.
+	webappUnit  = "pvm-webapps"
+	webappClass = "pvm-webapp"
 )
 
 var appIDRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
@@ -46,6 +50,8 @@ type appRecord struct {
 	URL     string    `json:"url,omitempty"`
 	Kiosk   bool      `json:"kiosk,omitempty"`
 	Created time.Time `json:"created"`
+	// Window is the X window of a web app in the shared Firefox.
+	Window string `json:"window,omitempty"`
 }
 
 // appState is persisted under the VM dir. Port keeps the host listener
@@ -166,7 +172,7 @@ func (s *Server) appSecret(name string) (string, string, error) {
 func appInstallScript() string {
 	const apt = "sudo -n env DEBIAN_FRONTEND=noninteractive apt-get -q -o DPkg::Lock::Timeout=300"
 	// the mask also runs where xpra came preinstalled
-	return "{ { command -v xpra && command -v xclip; } >/dev/null 2>&1 || { sudo -n bash -euo pipefail -c " + shellQuote(image.XpraRepoScript) +
+	return "{ { command -v xpra && command -v xclip && command -v wmctrl; } >/dev/null 2>&1 || { sudo -n bash -euo pipefail -c " + shellQuote(image.XpraRepoScript) +
 		" && " + apt + " update && " + apt + " install -y --no-install-recommends " + strings.Join(image.XpraPackages, " ") + "; }; }" +
 		" && { [ \"$(systemctl is-enabled xpra-server.socket 2>/dev/null)\" = masked ] || ! systemctl cat xpra-server.socket >/dev/null 2>&1 || sudo -n sh -c " + shellQuote(image.XpraMaskScript) + "; }"
 }
@@ -211,9 +217,12 @@ exit 1
 `
 }
 
-// webappProfile writes a Firefox profile for a single-site window: no
-// tab strip or toolbars, no session restore or first-run pages.
-const webappProfile = `mkdir -p "$profile/chrome"
+// webappProfile writes the shared web app profile: no tab strip, toolbar
+// or first-run pages, and links that open a new tab open a new window,
+// because tabs are hidden. Popups, marked popup-window by Firefox, keep
+// their read-only address bar, so a sign-in window shows where it is.
+const webappProfile = `profile="$HOME/.local/share/pvm/webapps/profile"
+mkdir -p "$profile/chrome"
 cat > "$profile/user.js" <<'EOF'
 user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);
 user_pref("browser.sessionstore.resume_from_crash", false);
@@ -226,41 +235,95 @@ user_pref("app.update.auto", false);
 user_pref("browser.preonboarding.enabled", false);
 user_pref("termsofuse.bypassNotification", true);
 user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
+user_pref("browser.link.open_newwindow", 2);
 EOF
 cat > "$profile/chrome/userChrome.css" <<'EOF'
-#TabsToolbar, #nav-bar, #PersonalToolbar, #titlebar { visibility: collapse !important; }
+#TabsToolbar, #PersonalToolbar { visibility: collapse !important; }
+#star-button-box { display: none !important; }
+:root:not([popup-window]) #nav-bar { visibility: collapse !important; }
 EOF
 `
 
-// appLaunchScript starts app as a user unit on the Xpra display and fails
-// if it exits within the first seconds.
-func appLaunchScript(a *appRecord) string {
-	unit := appUnitPrefix + a.ID
-	argv := a.Argv
-	prep := ""
-	if a.Kind == "url" {
-		prep = `profile="$HOME/.local/share/pvm/apps/` + a.ID + `/profile"
-` + webappProfile
-		argv = []string{"firefox", "--new-instance", "--no-remote", "--profile", "$profile", "--class", unit, "--name", unit}
-		if a.Kiosk {
-			argv = append(argv, "--kiosk")
-		}
-		argv = append(argv, a.URL)
-	}
-	words := make([]string, len(argv))
-	for i, w := range argv {
-		if w == "$profile" {
-			words[i] = `"$profile"`
-		} else {
-			words[i] = shellQuote(w)
-		}
+// webappWindows lists the shared Firefox's browser windows.
+const webappWindows = `webapp_windows() { wmctrl -lx 2>/dev/null | awk '$3 == "Navigator.` + webappClass + `" {print $1}' | sort; }
+`
+
+// webappLaunchScript opens a URL as a new window of the VM's shared
+// Firefox, starting it if needed, and prints the window as WINDOW=<id>.
+func webappLaunchScript(a *appRecord) string {
+	url := shellQuote(a.URL)
+	kiosk := ""
+	if a.Kiosk {
+		kiosk = `wmctrl -i -r "$win" -b add,fullscreen
+`
 	}
 	return `set -e
-if ! command -v ` + shellQuote(argv[0]) + ` >/dev/null 2>&1; then
+if ! command -v firefox >/dev/null 2>&1; then
   echo "NOT_INSTALLED"
   exit 3
 fi
-` + prep + `systemctl --user reset-failed ` + unit + ` >/dev/null 2>&1 || true
+export DISPLAY=` + appDisplay + `
+` + webappProfile + webappWindows + `before=$(mktemp)
+webapp_windows > "$before"
+if systemctl --user is-active --quiet ` + webappUnit + `; then
+  firefox --profile "$profile" --new-window ` + url + ` >/dev/null 2>&1
+else
+  systemctl --user reset-failed ` + webappUnit + ` >/dev/null 2>&1 || true
+  systemd-run --user --quiet --collect --unit=` + webappUnit + ` -E DISPLAY=` + appDisplay + ` -- firefox --profile "$profile" --class ` + webappClass + ` --name ` + webappClass + ` ` + url + `
+fi
+win=
+for i in $(seq 1 60); do
+  win=$(webapp_windows | grep -vxF -f "$before" | head -1 || true)
+  [ -n "$win" ] && break
+  sleep 0.5
+done
+rm -f "$before"
+if [ -z "$win" ]; then
+  echo "no firefox window appeared:" >&2
+  journalctl --user -u ` + webappUnit + ` -n 30 --no-pager >&2 || true
+  exit 1
+fi
+` + kiosk + `echo "WINDOW=$win"
+`
+}
+
+// appStopScript stops apps: their units, and the windows of web apps.
+// The shared Firefox stops once no web app is left.
+func appStopScript(stop []appRecord, webappsLeft bool) string {
+	var units, wins []string
+	for _, a := range stop {
+		units = append(units, appUnitPrefix+a.ID)
+		if a.Window != "" {
+			wins = append(wins, shellQuote(a.Window))
+		}
+	}
+	script := "systemctl --user stop " + strings.Join(units, " ") + " 2>/dev/null || true\n"
+	if len(wins) > 0 {
+		script += "for w in " + strings.Join(wins, " ") + "; do DISPLAY=" + appDisplay + ` wmctrl -i -c "$w" 2>/dev/null || true; done` + "\n"
+	}
+	if !webappsLeft {
+		script += "systemctl --user stop " + webappUnit + " 2>/dev/null || true\n"
+	}
+	return script
+}
+
+// appLaunchScript starts app as a user unit on the Xpra display and fails
+// if it exits within the first seconds; web apps go to webappLaunchScript.
+func appLaunchScript(a *appRecord) string {
+	if a.Kind == "url" {
+		return webappLaunchScript(a)
+	}
+	unit := appUnitPrefix + a.ID
+	words := make([]string, len(a.Argv))
+	for i, w := range a.Argv {
+		words[i] = shellQuote(w)
+	}
+	return `set -e
+if ! command -v ` + shellQuote(a.Argv[0]) + ` >/dev/null 2>&1; then
+  echo "NOT_INSTALLED"
+  exit 3
+fi
+systemctl --user reset-failed ` + unit + ` >/dev/null 2>&1 || true
 systemd-run --user --quiet --collect --unit=` + unit + ` -E DISPLAY=` + appDisplay + ` -- ` + strings.Join(words, " ") + `
 sleep 2
 if ! systemctl --user is-active --quiet ` + unit + `; then
@@ -455,7 +518,7 @@ func (s *Server) handleAppStart(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Minute)
 	defer cancel()
-	running := s.appUnitsActive(ctx, spec)
+	running := s.appUnitsActive(ctx, spec, st.Apps)
 	st.Apps = slices.DeleteFunc(st.Apps, func(a appRecord) bool { return running != nil && !running[a.ID] })
 	id := req.ID
 	if id == "" {
@@ -483,13 +546,14 @@ func (s *Server) handleAppStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rollback := func() {
-		s.sshRunCtx(context.Background(), spec, "systemctl --user stop "+appUnitPrefix+id+" >/dev/null 2>&1 || true")
 		st.Apps = slices.DeleteFunc(st.Apps, func(a appRecord) bool { return a.ID == id })
+		s.sshRunCtx(context.Background(), spec, appStopScript([]appRecord{rec}, st.hasWebapps()))
 		if err := s.saveAppState(spec.Name, st); err != nil {
 			log.Printf("app %s/%s: roll back record: %v", spec.Name, id, err)
 		}
 	}
-	if out, err := s.sshRunCtx(ctx, spec, appLaunchScript(&rec)); err != nil {
+	out, err := s.sshRunCtx(ctx, spec, appLaunchScript(&rec))
+	if err != nil {
 		rollback()
 		if strings.Contains(out, "NOT_INSTALLED") {
 			prog := rec.Argv
@@ -501,6 +565,21 @@ func (s *Server) handleAppStart(w http.ResponseWriter, r *http.Request) {
 		}
 		writeErr(w, 500, fmt.Errorf("start %s: %v%s", id, err, indentOutput(out)))
 		return
+	}
+	if kind == "url" {
+		win, ok := webappWindow(out)
+		if !ok {
+			rollback()
+			writeErr(w, 500, fmt.Errorf("start %s: no window id in %q", id, strings.TrimSpace(out)))
+			return
+		}
+		rec.Window = win
+		st.Apps[len(st.Apps)-1].Window = win
+		if err := s.saveAppState(spec.Name, st); err != nil {
+			rollback()
+			writeErr(w, 500, err)
+			return
+		}
 	}
 	f, err := s.ensureAppForward(spec, st.Port)
 	if err != nil {
@@ -523,14 +602,17 @@ func (s *Server) handleAppStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, appStartResponse{App: appView{VM: spec.Name, appRecord: rec, State: "running"}, Attach: att})
 }
 
-// appUnitsActive returns which app units run, or nil when it cannot tell.
-func (s *Server) appUnitsActive(ctx context.Context, spec *vm.Spec) map[string]bool {
-	out, err := s.sshRunCtx(ctx, spec, "systemctl --user list-units --no-legend --plain --state=active '"+appUnitPrefix+"*' 2>/dev/null || true")
+// appUnitsActive returns which apps run, or nil when it cannot tell: an
+// app with its own unit runs while the unit is active, a web app while
+// its window exists in the shared Firefox.
+func (s *Server) appUnitsActive(ctx context.Context, spec *vm.Spec, apps []appRecord) map[string]bool {
+	out, err := s.sshRunCtx(ctx, spec, "systemctl --user list-units --no-legend --plain --state=active '"+appUnitPrefix+"*' 2>/dev/null || true; echo ---; "+webappWindows+"DISPLAY="+appDisplay+" webapp_windows")
 	if err != nil {
 		return nil
 	}
+	units, wins, _ := strings.Cut(out, "---")
 	active := map[string]bool{}
-	for _, l := range strings.Split(out, "\n") {
+	for _, l := range strings.Split(units, "\n") {
 		f := strings.Fields(l)
 		if len(f) == 0 {
 			continue
@@ -539,7 +621,27 @@ func (s *Server) appUnitsActive(ctx context.Context, spec *vm.Spec) map[string]b
 			active[id] = true
 		}
 	}
+	open := strings.Fields(wins)
+	for _, a := range apps {
+		if a.Window != "" && slices.Contains(open, a.Window) {
+			active[a.ID] = true
+		}
+	}
 	return active
+}
+
+// webappWindow reads the WINDOW= line of webappLaunchScript.
+func webappWindow(out string) (string, bool) {
+	for _, l := range strings.Split(out, "\n") {
+		if w, ok := strings.CutPrefix(strings.TrimSpace(l), "WINDOW="); ok && strings.HasPrefix(w, "0x") {
+			return w, true
+		}
+	}
+	return "", false
+}
+
+func (st *appState) hasWebapps() bool {
+	return slices.ContainsFunc(st.Apps, func(a appRecord) bool { return a.Kind == "url" })
 }
 
 // listApps reports a VM's apps. Exited ones are reported once and then
@@ -554,7 +656,7 @@ func (s *Server) listApps(ctx context.Context, spec *vm.Spec) ([]appView, error)
 	}
 	var active map[string]bool
 	if run, err := s.instance(spec).Running(); err == nil && run != nil {
-		active = s.appUnitsActive(ctx, spec)
+		active = s.appUnitsActive(ctx, spec, st.Apps)
 	} else {
 		active = map[string]bool{}
 	}
@@ -635,9 +737,11 @@ func (s *Server) handleAppStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var stop []string
+	var stopRecs []appRecord
 	for _, a := range st.Apps {
 		if id == "" || a.ID == id {
 			stop = append(stop, a.ID)
+			stopRecs = append(stopRecs, a)
 		}
 	}
 	if id != "" && len(stop) == 0 {
@@ -648,17 +752,13 @@ func (s *Server) handleAppStop(w http.ResponseWriter, r *http.Request) {
 	vmUp := err == nil && run != nil
 	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
 	defer cancel()
+	st.Apps = slices.DeleteFunc(st.Apps, func(a appRecord) bool { return slices.Contains(stop, a.ID) })
 	if vmUp && len(stop) > 0 {
-		units := make([]string, len(stop))
-		for i, a := range stop {
-			units[i] = appUnitPrefix + a
-		}
-		if out, err := s.sshRunCtx(ctx, spec, "systemctl --user stop "+strings.Join(units, " ")+" 2>&1 || true"); err != nil {
+		if out, err := s.sshRunCtx(ctx, spec, appStopScript(stopRecs, st.hasWebapps())); err != nil {
 			writeErr(w, 500, fmt.Errorf("stop apps in %s: %v%s", name, err, indentOutput(out)))
 			return
 		}
 	}
-	st.Apps = slices.DeleteFunc(st.Apps, func(a appRecord) bool { return slices.Contains(stop, a.ID) })
 	if err := s.saveAppState(name, st); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -830,7 +930,7 @@ func (s *Server) handleAppPrepare(w http.ResponseWriter, r *http.Request) {
 }
 
 // appInstalledCheck exits 0 when the VM needs no install step.
-const appInstalledCheck = `command -v xpra >/dev/null && command -v xclip >/dev/null && { [ "$(systemctl is-enabled xpra-server.socket 2>/dev/null)" = masked ] || ! systemctl cat xpra-server.socket >/dev/null 2>&1; }`
+const appInstalledCheck = `command -v xpra >/dev/null && command -v xclip >/dev/null && command -v wmctrl >/dev/null && { [ "$(systemctl is-enabled xpra-server.socket 2>/dev/null)" = masked ] || ! systemctl cat xpra-server.socket >/dev/null 2>&1; }`
 
 // lineWriter calls fn for every complete line written, and for the rest
 // on Close. Carriage returns from progress bars end a line too.

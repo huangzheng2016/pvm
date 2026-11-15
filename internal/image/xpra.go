@@ -9,9 +9,10 @@ const xpraKeyFingerprint = "B4993B57323148E37977E5D873254CAD17978FAF"
 const XpraVersion = "6.5"
 
 // XpraPackages are the server side of `pvm app`: the X11 server, codecs
-// and Xvfb, and xclip, which sets the guest clipboard to host content.
+// and Xvfb; xclip, which sets the guest clipboard to host content; and
+// wmctrl, which tracks and closes web app windows.
 // Ubuntu and Debian do not package a current Xpra.
-var XpraPackages = []string{"xpra-server", "xpra-x11", "xpra-codecs", "xclip"}
+var XpraPackages = []string{"xpra-server", "xpra-x11", "xpra-codecs", "xclip", "wmctrl"}
 
 // XpraMaskScript masks the packaged system-wide Xpra service, whose socket
 // listens on every interface; pvm runs its own server per user.

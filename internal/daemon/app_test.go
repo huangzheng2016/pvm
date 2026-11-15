@@ -58,6 +58,7 @@ func TestAppScriptsParse(t *testing.T) {
 		"server":  appServerScript(),
 		"cmd":     appLaunchScript(&appRecord{ID: "gedit", Kind: "cmd", Argv: []string{"gedit", "it's a file; rm -rf ~", "$(id)"}}),
 		"url":     appLaunchScript(&appRecord{ID: "mail", Kind: "url", URL: "https://example.com/?a=1&b='2'", Kiosk: true}),
+		"stop":    appStopScript([]appRecord{{ID: "gedit"}, {ID: "mail", Kind: "url", Window: "0x00c00003"}}, false),
 	}
 	for name, s := range scripts {
 		if out, err := exec.Command(sh, "-n", "-c", s).CombinedOutput(); err != nil {
@@ -67,8 +68,33 @@ func TestAppScriptsParse(t *testing.T) {
 	if !strings.Contains(scripts["cmd"], `'it'"'"'s a file; rm -rf ~'`) || !strings.Contains(scripts["cmd"], `'$(id)'`) {
 		t.Errorf("cmd arguments not quoted:\n%s", scripts["cmd"])
 	}
-	if !strings.Contains(scripts["url"], `'--profile' "$profile"`) || !strings.Contains(scripts["url"], "'--kiosk'") {
-		t.Errorf("url launch lacks profile or kiosk:\n%s", scripts["url"])
+	// every web app shares one profile; a running Firefox gets a new window
+	url := scripts["url"]
+	for _, want := range []string{`/pvm/webapps/profile"`, `--new-window 'https://example.com/?a=1&b='"'"'2'"'"''`, "--class " + webappClass, "add,fullscreen", `echo "WINDOW=$win"`} {
+		if !strings.Contains(url, want) {
+			t.Errorf("url launch lacks %q:\n%s", want, url)
+		}
+	}
+	if strings.Contains(url, "--no-remote") || strings.Contains(url, "--new-instance") {
+		t.Errorf("url launch must reuse the shared Firefox:\n%s", url)
+	}
+	stop := scripts["stop"]
+	if !strings.Contains(stop, appUnitPrefix+"gedit") || !strings.Contains(stop, `wmctrl -i -c "$w"`) || !strings.Contains(stop, "'0x00c00003'") || !strings.Contains(stop, "stop "+webappUnit) {
+		t.Errorf("stop script:\n%s", stop)
+	}
+	if strings.Contains(appStopScript([]appRecord{{ID: "mail", Kind: "url", Window: "0x1"}}, true), "stop "+webappUnit) {
+		t.Error("the shared Firefox must keep running while other web apps use it")
+	}
+}
+
+func TestWebappWindow(t *testing.T) {
+	if w, ok := webappWindow("noise\nWINDOW=0x00c0001d\n"); !ok || w != "0x00c0001d" {
+		t.Errorf("window = %q, %v", w, ok)
+	}
+	for _, bad := range []string{"", "WINDOW=", "WINDOW=12345", "WINDOW=$(id)"} {
+		if _, ok := webappWindow(bad); ok {
+			t.Errorf("accepted %q", bad)
+		}
 	}
 }
 

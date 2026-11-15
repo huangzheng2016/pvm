@@ -50,7 +50,8 @@ The guest runs Xpra 6.5 from xpra.org's APT repository, pinned to the 6.5 line, 
 - One Xpra server per VM, on display `:100`, as the VM user, run as the user systemd unit `pvm-xpra`. Linger keeps it running without a login session.
 - Every app is its own user unit `pvm-app-<id>` on that display. Stopping an app stops its whole process tree; stopping the last one stops the server.
 - Apps in one VM share the display, so they can copy and drag between each other inside the VM.
-- A web app is Firefox with its own profile per app id. The profile hides the tab strip and toolbars and skips first-run, terms and onboarding pages.
+- Web apps are windows of one Firefox per VM (the user unit `pvm-webapps`) with one profile, so they share logins, cookies and cache; Firefox allows one process per profile. The profile is separate from the desktop's Firefox. It hides the tab strip and toolbars, skips first-run, terms and onboarding pages, and opens links meant for a new tab in a new window. Popups, which Firefox marks `popup-window`, keep their read-only address bar, without the bookmark star, so a sign-in window shows where it is.
+- pvm records each web app's X window and tracks it with wmctrl: `pvm app stop` closes that window, `--kiosk` makes it full screen, and the shared Firefox stops with the last web app.
 - The server listens only on a unix socket under `$XDG_RUNTIME_DIR/pvm`, mode 0700, with password authentication. The password is per VM: the host copy is in `~/.pvm/vms/<vm>/app/xpra.secret` and it reaches the guest over ssh stdin.
 - The host client connects to a daemon loopback listener that forwards to the `xpra:<uid>` target. Window titles end in `[<vm>]`.
 
