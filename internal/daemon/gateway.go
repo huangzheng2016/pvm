@@ -448,10 +448,8 @@ func (s *Server) pushGatewayConfigCtx(ctx context.Context, clusterID int) error 
 	return s.renderGatewayConfigLocked(ctx, clusterID, func(cfg []byte) error {
 		// forwards first: once the guest DNATs a pool port, its host side
 		// must already reach the gateway
-		if cl := s.Clusters.Get(clusterID); cl != nil {
-			if err := s.syncGatewayForwards(cl); err != nil {
-				return fmt.Errorf("gateway port forwards: %w", err)
-			}
+		if err := s.syncGatewayForwards(clusterID); err != nil {
+			return fmt.Errorf("gateway port forwards: %w", err)
 		}
 		tmp, err := os.CreateTemp("", "pvm-gwcfg-*.json")
 		if err != nil {
@@ -669,9 +667,21 @@ func (s *Server) scpToCtx(ctx context.Context, spec *vm.Spec, local, remote stri
 }
 
 // syncGatewayForwards makes the gateway's user-network forwards match the
-// cluster's port maps: one forward per pool port and protocol, added and
-// removed over QMP. QEMU starts the gateway with only its ssh forward.
-func (s *Server) syncGatewayForwards(cl *cluster.Cluster) error {
+// cluster's port maps; tests without a gateway QEMU replace it.
+func (s *Server) syncGatewayForwards(clusterID int) error {
+	if s.syncForwards != nil {
+		return s.syncForwards(clusterID)
+	}
+	cl := s.Clusters.Get(clusterID)
+	if cl == nil {
+		return fmt.Errorf("cluster %d not found", clusterID)
+	}
+	return s.syncGatewayForwardsQMP(cl)
+}
+
+// syncGatewayForwardsQMP adds and removes one forward per pool port and
+// protocol over QMP. QEMU starts the gateway with only its ssh forward.
+func (s *Server) syncGatewayForwardsQMP(cl *cluster.Cluster) error {
 	gw, err := s.getSpec(cl.Gateway)
 	if err != nil {
 		return err

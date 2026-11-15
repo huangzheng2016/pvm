@@ -25,7 +25,7 @@ func newPushTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{P: p, Clusters: st, vms: map[string]*vm.Spec{}, mapMu: newMapGate()}
+	s := &Server{P: p, Clusters: st, vms: map[string]*vm.Spec{}, mapMu: newMapGate(), syncForwards: noForwardSync}
 	return s
 }
 
@@ -203,3 +203,7 @@ func TestRenderGatewayConfigDefaultExit(t *testing.T) {
 		t.Fatal("cleared default exit must be omitted from the payload")
 	}
 }
+
+// noForwardSync stands in for the QMP forward sync: these tests have no
+// gateway QEMU.
+func noForwardSync(int) error { return nil }

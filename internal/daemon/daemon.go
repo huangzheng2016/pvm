@@ -82,6 +82,9 @@ type Server struct {
 	gwPushLocks  sync.Map // clusterID -> chan struct{} (cap 1), serializes gateway config pushes
 	gwAgentLocks sync.Map // clusterID -> chan struct{} (cap 1), serializes gateway agent deployments
 
+	// syncForwards replaces syncGatewayForwardsQMP in tests.
+	syncForwards func(clusterID int) error
+
 	wsMountOnce sync.Once
 	wsMount     *mountSupervisor
 }
