@@ -25,7 +25,7 @@ import (
 	"github.com/huangzheng2016/pvm/internal/paths"
 )
 
-const upgradeRepo = "huangzheng2016/pvm"
+const upgradeRepo = "BitterOrange/pvm"
 
 type ghRelease struct {
 	TagName string `json:"tag_name"`
