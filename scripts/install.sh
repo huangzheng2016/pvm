@@ -2,7 +2,7 @@
 set -eu
 umask 077
 
-OWNER="BitterOrange"
+OWNER="huangzheng2016"
 REPO="pvm"
 API="https://api.github.com/repos/${OWNER}/${REPO}/releases/latest"
 BASE="https://github.com/${OWNER}/${REPO}/releases/download"

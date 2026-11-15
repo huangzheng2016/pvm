@@ -50,7 +50,7 @@ pvm runs on macOS on arm64, Linux on amd64, and Windows on amd64.
 
 ### Windows
 
-1. Download `pvm_windows_amd64_setup.exe` or `pvm_windows_amd64_setup.msi` from [Releases](../../releases). Optionally verify it first: `gh attestation verify pvm_windows_amd64_setup.exe --repo BitterOrange/pvm`.
+1. Download `pvm_windows_amd64_setup.exe` or `pvm_windows_amd64_setup.msi` from [Releases](../../releases). Optionally verify it first: `gh attestation verify pvm_windows_amd64_setup.exe --repo huangzheng2016/pvm`.
 2. Run it. No administrator rights are needed.
 3. Open a new terminal, so the `PATH` change applies, and run `pvm doctor` to check acceleration and the backend.
 
@@ -84,7 +84,7 @@ Acceleration, DNS and WSL2 nested virtualization settings are in [SKILL.md](SKIL
 Install GitHub CLI (`gh`) and Python 3, then:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BitterOrange/pvm/master/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/huangzheng2016/pvm/master/scripts/install.sh | sh
 ```
 
 The script installs `pvm` to `~/.local/bin` (set `INSTALL_DIR` to change it) together with the bundled QEMU runtime (set `PVM_SKIP_QEMU=1` to use the system QEMU). It checks the release checksum and its GitHub build attestation before replacing anything, and keeps the previous binary and runtime. The script also works in Git Bash on Windows, but the installers are the recommended way there.
