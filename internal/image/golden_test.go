@@ -378,3 +378,20 @@ func TestBakeRejectsBrokenCatalogBeforeCreatingVM(t *testing.T) {
 		t.Fatalf("bake created VM state before validating catalog: %v, %v", entries, err)
 	}
 }
+
+func TestGoldenHasKernelArgs(t *testing.T) {
+	for _, c := range []struct {
+		have, want string
+		ok         bool
+	}{
+		{"noxsave", "noxsave", true},
+		{"noxsave quiet", "noxsave", true},
+		{"", "", true},
+		{"", "noxsave", false},
+		{"quiet", "noxsave", false},
+	} {
+		if got := (&GoldenEntry{KernelArgs: c.have}).HasKernelArgs(c.want); got != c.ok {
+			t.Errorf("golden with %q has %q = %v, want %v", c.have, c.want, got, c.ok)
+		}
+	}
+}

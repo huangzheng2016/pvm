@@ -482,6 +482,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	base := filepath.Join(s.P.Images, fmt.Sprintf("%s-%s.qcow2", imageFileStem(req.Image), native.Arch))
 	goldenVer := 0
+	kernelArgs := s.Accel.GuestKernelArgs()
+	// a base image has never booted with the args; neither has a golden
+	// image sealed without them
+	argsPending := kernelArgs != ""
 	if distro, version, ok := strings.Cut(req.Image, ":"); ok && !req.NoGolden {
 		g, err := image.LatestGolden(s.P.Images, distro, version)
 		if err != nil {
@@ -491,6 +495,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		if g != nil {
 			base = filepath.Join(image.GoldenDir(s.P.Images), g.File)
 			goldenVer = g.Version
+			argsPending = argsPending && !g.HasKernelArgs(kernelArgs)
 		}
 	}
 	if _, err := os.Stat(base); err != nil {
@@ -515,8 +520,8 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		GuestUID: vm.HostUID(),
 		CPUs:     req.CPUs, MemMB: req.MemMB, DiskGB: req.DiskGB,
 		BaseDisk: base, Mounts: mounts, Golden: goldenVer, GPU: true, Balloon: true,
-		KernelArgs: s.Accel.GuestKernelArgs(),
-		ClusterID:  cl.ID, IP: vnet.IP, MAC: vnet.MAC,
+		KernelArgs: kernelArgs, KernelArgsPending: argsPending,
+		ClusterID: cl.ID, IP: vnet.IP, MAC: vnet.MAC,
 		TZ: req.TZ, Locale: req.Locale,
 		GitEmail: req.GitEmail, GitName: req.GitName,
 		SmbiosSpoof: req.SmbiosSpoof, ShareMode: req.ShareMode,

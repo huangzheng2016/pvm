@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
@@ -21,6 +23,20 @@ type GoldenEntry struct {
 	BuiltAt      time.Time `json:"built_at"`
 	Packages     []string  `json:"packages"`
 	DockerImages []string  `json:"docker_images"`
+	// KernelArgs were in the build VM's grub when it was sealed, so clones
+	// boot with them from the first boot.
+	KernelArgs string `json:"kernel_args,omitempty"`
+}
+
+// HasKernelArgs reports whether clones of g boot with every one of args.
+func (g *GoldenEntry) HasKernelArgs(args string) bool {
+	have := strings.Fields(g.KernelArgs)
+	for _, a := range strings.Fields(args) {
+		if !slices.Contains(have, a) {
+			return false
+		}
+	}
+	return true
 }
 
 func GoldenDir(imagesDir string) string { return filepath.Join(imagesDir, "golden") }

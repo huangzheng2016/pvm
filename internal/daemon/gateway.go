@@ -61,10 +61,12 @@ func (s *Server) ensureCluster(id int) (*cluster.Cluster, error) {
 }
 
 // ensureGatewayKernelArgs cold-boots the gateway when the running kernel
-// lacks spec.KernelArgs: cloud-init installs them into grub during the
-// first boot, which itself still runs without them, and -no-reboot
-// guests cannot restart themselves. The caller holds the gateway deploy
-// gate, so the restarted gateway's own deploy waits for this one.
+// lacks spec.KernelArgs, or while they are pending and it runs on the CPU
+// model for kernels without them: cloud-init installs them into grub
+// during the first boot, which itself still runs without them, and
+// -no-reboot guests cannot restart themselves. The caller holds the
+// gateway deploy gate, so the restarted gateway's own deploy waits for
+// this one.
 func (s *Server) ensureGatewayKernelArgs(ctx context.Context, gw *vm.Spec) (bool, error) {
 	// /etc/pvm and the grub drop-in only exist once runcmd finishes.
 	if out, err := s.sshRunCtx(ctx, gw, "sudo cloud-init status --wait"); err != nil {
@@ -90,7 +92,7 @@ func (s *Server) ensureGatewayKernelArgs(ctx context.Context, gw *vm.Spec) (bool
 		}
 		check += " && sudo grep -qwF -- '" + arg + "' /boot/grub/grub.cfg"
 	}
-	if !missing {
+	if !missing && !gw.KernelArgsPending {
 		return false, nil
 	}
 	if out, err := s.sshRunCtx(ctx, gw, check); err != nil {
@@ -107,6 +109,9 @@ func (s *Server) ensureGatewayKernelArgs(ctx context.Context, gw *vm.Spec) (bool
 	if cur == nil || cur.PID != st.PID {
 		return false, fmt.Errorf("gateway %s changed state during kernel-args check", gw.Name)
 	}
+	if err := s.clearKernelArgsPending(gw); err != nil {
+		return false, err
+	}
 	log.Printf("gateway %s: cold boot to apply guest kernel args %q", gw.Name, gw.KernelArgs)
 	if err := inst.Stop(); err != nil {
 		return false, fmt.Errorf("stop gateway for kernel args: %w", err)
@@ -115,6 +120,24 @@ func (s *Server) ensureGatewayKernelArgs(ctx context.Context, gw *vm.Spec) (bool
 		return false, fmt.Errorf("restart gateway for kernel args: %w", err)
 	}
 	return true, nil
+}
+
+// clearKernelArgsPending records that grub now carries spec.KernelArgs,
+// so the next boot runs on the accelerator's own CPU model. The caller
+// holds the VM lock and cold-boots afterwards.
+func (s *Server) clearKernelArgsPending(spec *vm.Spec) error {
+	if !spec.KernelArgsPending {
+		return nil
+	}
+	spec.KernelArgsPending = false
+	if err := spec.Save(s.P); err != nil {
+		spec.KernelArgsPending = true
+		return fmt.Errorf("save %s spec: %w", spec.Name, err)
+	}
+	s.mu.Lock()
+	s.vms[spec.Name] = copySpec(spec)
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *Server) onGatewayStarted(cl *cluster.Cluster) {
@@ -241,6 +264,7 @@ func (s *Server) createGatewayVM(cl *cluster.Cluster) (*vm.Spec, error) {
 		SSHPort: port, BaseDisk: base, ClusterID: cl.ID,
 		KernelArgs: s.Accel.GuestKernelArgs(),
 	}
+	spec.KernelArgsPending = spec.KernelArgs != ""
 	if err := vm.Create(s.P, s.TC, spec); err != nil {
 		return nil, err
 	}

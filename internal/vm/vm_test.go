@@ -9,6 +9,7 @@ import (
 
 	diskfs "github.com/diskfs/go-diskfs"
 	"github.com/huangzheng2016/pvm/internal/paths"
+	"github.com/huangzheng2016/pvm/internal/qemu"
 )
 
 func TestSeedImage(t *testing.T) {
@@ -108,5 +109,19 @@ func TestListAllRejectsCorruptSpec(t *testing.T) {
 	}
 	if _, err := UsedSSHPorts(p); err == nil {
 		t.Fatal("corrupt spec omitted during port allocation")
+	}
+}
+
+// A VM whose disk has not booted with its kernel args yet must start on
+// the CPU model that is safe without them.
+func TestQEMUConfigKernelArgsPending(t *testing.T) {
+	p := paths.New(t.TempDir())
+	spec := &Spec{Name: "dev1", KernelArgs: "noxsave", KernelArgsPending: true}
+	if got := spec.QEMUConfig(p, qemu.AccelWHPX, "", 0, 0).GuestKernelArgs; got != "" {
+		t.Errorf("pending: boot kernel args %q, want none", got)
+	}
+	spec.KernelArgsPending = false
+	if got := spec.QEMUConfig(p, qemu.AccelWHPX, "", 0, 0).GuestKernelArgs; got != "noxsave" {
+		t.Errorf("applied: boot kernel args %q, want noxsave", got)
 	}
 }

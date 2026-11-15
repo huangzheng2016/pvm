@@ -45,6 +45,11 @@ type Spec struct {
 	// cloud-init installs them into grub, so they apply from the boot
 	// after the one that runs cloud-init.
 	KernelArgs string `json:"kernel_args,omitempty"`
+	// KernelArgsPending is set while the disk may boot a kernel without
+	// KernelArgs, as a base image does before cloud-init has run. The VM
+	// then runs on the CPU model that is safe without them, and the
+	// daemon clears it and cold-boots once grub carries them.
+	KernelArgsPending bool `json:"kernel_args_pending,omitempty"`
 
 	// cluster membership (user VMs)
 	ClusterID int    `json:"cluster_id,omitempty"`
@@ -212,11 +217,19 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 		MountDir:        mountDir,
 		ExtraMounts:     mounts,
 		Accel:           accel,
-		GuestKernelArgs: s.KernelArgs,
+		GuestKernelArgs: s.bootKernelArgs(),
 		SmbiosSpoof:     s.SmbiosSpoof,
 		GPU:             s.GPU,
 		Balloon:         s.Balloon,
 	}
+}
+
+// bootKernelArgs are the kernel args the next boot is known to have.
+func (s *Spec) bootKernelArgs() string {
+	if s.KernelArgsPending {
+		return ""
+	}
+	return s.KernelArgs
 }
 
 // Create builds the VM directory: overlay disk, UEFI vars, seed ISO,
