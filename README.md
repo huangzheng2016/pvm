@@ -34,6 +34,8 @@ Planned:
 - [ ] `pvm app` on macOS, Linux and WSL2 hosts, and reliable input method text
 - [ ] Input method candidates that follow the app's text cursor
 - [ ] `pvm desktop` as a host window like `pvm app`, opening the workspace folder in the VM's file manager
+- [ ] Windows CI: unit tests on a Windows runner, and an installer smoke test on tags
+- [ ] A graphical app like Docker Desktop for creating VMs, exits, workspaces and app presets (native Windows first)
 
 Candidates:
 
@@ -42,6 +44,7 @@ Candidates:
 - [ ] A default image
 - [ ] Port maps over `pvm.stream` instead of the gateway VM
 - [ ] Fix the gateway rule drift false positive
+- [ ] WHPX end-to-end tests on a self-hosted runner
 
 Details are in [docs/roadmap.md](docs/roadmap.md).
 

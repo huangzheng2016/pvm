@@ -34,6 +34,8 @@
 - [ ] `pvm app` 支持 macOS、Linux 和 WSL2 宿主机，并让输入法输入稳定可靠
 - [ ] 输入法候选框跟随应用的文本光标
 - [ ] `pvm desktop` 像 `pvm app` 一样作为宿主机窗口打开，并在虚拟机文件管理器里打开工作区目录
+- [ ] Windows CI：在 Windows runner 上跑单元测试，打 tag 时对安装包做冒烟测试
+- [ ] 类似 Docker Desktop 的图形界面应用，用于创建虚拟机、管理出口、工作区和预装应用（先支持原生 Windows）
 
 候选：
 
@@ -42,6 +44,7 @@
 - [ ] 默认镜像
 - [ ] 端口映射改走 `pvm.stream`，不再经过 gateway 虚拟机
 - [ ] 修复 gateway 规则漂移误报
+- [ ] 在 self-hosted runner 上跑 WHPX 端到端测试
 
 详见 [docs/roadmap.md](docs/roadmap.md)。
 
