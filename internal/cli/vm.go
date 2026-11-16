@@ -277,7 +277,7 @@ func CmdCreate(args []string) int {
 			return fatalf("golden bake failed; retry, or use --base to create from the plain base image")
 		}
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
 		return fatalf("%v", err)
 	}
@@ -379,7 +379,7 @@ func CmdList(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
 		return fatalf("%v", err)
 	}
@@ -418,7 +418,7 @@ func cmdVMSimple(args []string, action string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
 		return fatalf("%v", err)
 	}
@@ -436,7 +436,7 @@ func cmdVMSimple(args []string, action string) int {
 }
 
 func CmdStart(args []string) int {
-	fs := newFlagSet("start", "<name> [--no-wait]")
+	fs := newFlagSet("start", "[<vm>] [--no-wait]")
 	noWait := fs.Bool("no-wait", false, "return after QEMU starts instead of waiting for provisioning")
 	name := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -446,7 +446,7 @@ func CmdStart(args []string) int {
 		return 2
 	}
 	if name == "" {
-		if fs.NArg() != 1 {
+		if fs.NArg() > 1 {
 			fs.Usage()
 			return 2
 		}
@@ -459,8 +459,11 @@ func CmdStart(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
+		return fatalf("%v", err)
+	}
+	if name, _, _, err = resolveVM(c, p, name); err != nil {
 		return fatalf("%v", err)
 	}
 	warnTCG(c)
@@ -493,7 +496,7 @@ func CmdResize(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
 		return fatalf("%v", err)
 	}
@@ -528,7 +531,7 @@ func CmdRm(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
 		return fatalf("%v", err)
 	}
@@ -551,32 +554,108 @@ func CmdRm(args []string) int {
 }
 
 func CmdSSH(args []string) int {
-	fs := newFlagSet("ssh", "[-t|--tty] [-T|--no-tty] <name> [command...]")
-	var forceTTY, disableTTY bool
+	fs := newFlagSet("ssh", "[-t|--tty] [-T|--no-tty] [--yes] [<vm>] [command...]")
+	var forceTTY, disableTTY, yes bool
 	fs.BoolVar(&forceTTY, "t", false, "force a pseudo-terminal")
 	fs.BoolVar(&forceTTY, "tty", false, "force a pseudo-terminal")
 	fs.BoolVar(&disableTTY, "T", false, "disable pseudo-terminal allocation")
 	fs.BoolVar(&disableTTY, "no-tty", false, "disable pseudo-terminal allocation")
+	fs.BoolVar(&yes, "yes", false, "start a stopped vm without asking")
+	fs.BoolVar(&yes, "y", false, "shorthand for --yes")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if forceTTY && disableTTY {
 		return fatalf("-t and -T are mutually exclusive")
 	}
-	args = fs.Args()
-	if len(args) < 1 {
-		return fatalf("usage: pvm ssh [-t|-T] <name> [command...]")
-	}
 	p, err := mustPaths()
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
 		return fatalf("%v", err)
 	}
+	explicit, command, err := splitVMArg(c, fs.Args())
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	name, ws, rel, err := resolveVM(c, p, explicit)
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	if err := vmUp(c, name, yes); err != nil {
+		return fatalf("%v", err)
+	}
+	dir, _ := guestDir(ws, rel)
+	root := ""
+	if ws != nil {
+		root = ws.GuestPath
+	}
+	return runSSH(p, c, name, command, sshOpts{forceTTY: forceTTY, disableTTY: disableTTY, dir: dir, root: root})
+}
+
+// splitVMArg takes the leading VM name off args when it names a VM, so
+// `pvm ssh dev1 ls` and `pvm ssh ls` both work. Anything else is the
+// command, run in the default VM; a mistyped name then fails in the guest
+// as an unknown command, never as an action on another machine. A
+// leading "--" ends the check: `pvm ssh -- dev1` runs dev1.
+func splitVMArg(c *daemon.Client, args []string) (string, []string, error) {
+	if len(args) == 0 {
+		return "", nil, nil
+	}
+	if args[0] == "--" {
+		return "", args[1:], nil
+	}
+	known, err := isVMName(c, args[0])
+	if err != nil {
+		return "", nil, err
+	}
+	if known {
+		return args[0], args[1:], nil
+	}
+	return "", args, nil
+}
+
+func isVMName(c *daemon.Client, s string) (bool, error) {
+	var infos []vmInfoView
+	if err := c.Get("/v1/vms", &infos); err != nil {
+		return false, err
+	}
+	for _, in := range infos {
+		if in.Spec.Name == s {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+type sshOpts struct {
+	forceTTY, disableTTY bool
+	// dir is where the session starts. A login falls back to root when dir
+	// is missing in the VM; a command fails instead of running elsewhere.
+	dir, root string
+}
+
+// workspaceCD is the shell prefix that enters o.dir. A login session
+// falls back to the workspace root, since a sync workspace may not have
+// every host folder yet; a command stops, since running it in another
+// directory could change the wrong files.
+func (o sshOpts) workspaceCD(login bool) string {
+	if o.dir == "" {
+		return ""
+	}
+	if login && o.root != "" && o.dir != o.root {
+		return "{ cd " + sshShellQuote(o.dir) + " 2>/dev/null || { echo " +
+			sshShellQuote("pvm: "+o.dir+" is not in the vm; starting in "+o.root) + " >&2; cd " + sshShellQuote(o.root) + "; }; } && "
+	}
+	return "cd " + sshShellQuote(o.dir) + " && "
+}
+
+// runSSH opens the ssh session for `pvm ssh` and `pvm workspace ssh`.
+func runSSH(p *paths.Paths, c *daemon.Client, name string, command []string, o sshOpts) int {
 	var info vmInfoView
-	if err := c.Get("/v1/vms/"+args[0], &info); err != nil {
+	if err := c.Get("/v1/vms/"+name, &info); err != nil {
 		return fatalf("%v", err)
 	}
 	if !info.Running {
@@ -584,14 +663,19 @@ func CmdSSH(args []string) int {
 	}
 
 	sshArgs, target := vmSSHArgs(p, &info)
-	tty := !disableTTY && (forceTTY || sshWantsTTY(args[1:], stdinIsTTY(), isTTY(os.Stdout)))
+	login := len(command) == 0
+	tty := !o.disableTTY && (o.forceTTY || sshWantsTTY(command, stdinIsTTY(), isTTY(os.Stdout)))
 	if tty {
 		sshArgs = append(sshArgs, "-tt")
 	}
 	sshArgs = append(sshArgs, target)
-	if len(args) > 1 {
-		sshArgs = append(sshArgs, sshLoginCommand(args[1:], tty))
+	switch {
+	case !login:
+		sshArgs = append(sshArgs, o.workspaceCD(false)+sshLoginCommand(command, tty))
+	case o.dir != "":
+		sshArgs = append(sshArgs, o.workspaceCD(true)+`exec "${SHELL:-/bin/sh}" -l`)
 	}
+	args := append([]string{name}, command...)
 
 	cmd := exec.Command("ssh", sshArgs...)
 	cmd.Stdin = os.Stdin
@@ -604,16 +688,18 @@ func CmdSSH(args []string) int {
 		// failures just propagate their exit code.
 		if isSSHConnFailure(err, errBuf.String()) {
 			fmt.Fprintf(os.Stderr, "ssh unreachable (%s), using agent channel\n", firstLine(errBuf.String()))
+			// The agent runs as root and does not enter the workspace
+			// folder; a reverse sshfs mount is down with ssh anyway.
 			var execArgs []string
 			if len(args) > 1 {
 				// The agent channel execs argv directly without a shell;
 				// wrap like ssh does so compound commands keep working.
-				execArgs = []string{args[0], "sh", "-c", strings.Join(args[1:], " ")}
+				execArgs = []string{"sh", "-c", strings.Join(args[1:], " ")}
 			} else {
 				fmt.Fprintln(os.Stderr, "note: agent channel has no TTY; starting a line-based bash")
-				execArgs = []string{args[0], "bash", "-l"}
+				execArgs = []string{"bash", "-l"}
 			}
-			return CmdExec(execArgs)
+			return runExec(c, args[0], execArgs)
 		}
 		if ee, ok := err.(*exec.ExitError); ok {
 			return ee.ExitCode()

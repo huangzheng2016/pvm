@@ -6,8 +6,6 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
-
-	"github.com/huangzheng2016/pvm/internal/daemon"
 )
 
 type desktopView struct {
@@ -17,11 +15,12 @@ type desktopView struct {
 }
 
 func CmdDesktop(args []string) int {
-	fs := newFlagSet("desktop", "<vm> [--size WxH] [--open] [--public] [--stop]")
+	fs := newFlagSet("desktop", "[<vm>] [--size WxH] [--open] [--public] [--stop] [--yes]")
 	size := fs.String("size", "1920x1080", "desktop resolution")
 	openBrowser := fs.Bool("open", false, "open the desktop URL in a browser")
 	public := fs.Bool("public", false, "listen on 0.0.0.0 (expose noVNC to the network)")
 	stop := fs.Bool("stop", false, "stop the desktop session")
+	yes := fs.Bool("yes", false, "start a stopped vm without asking")
 	name := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		name, args = args[0], args[1:]
@@ -30,7 +29,7 @@ func CmdDesktop(args []string) int {
 		return 2
 	}
 	if name == "" {
-		if fs.NArg() != 1 {
+		if fs.NArg() > 1 {
 			fs.Usage()
 			return 2
 		}
@@ -44,9 +43,17 @@ func CmdDesktop(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
 		return fatalf("%v", err)
+	}
+	if name, _, _, err = resolveVM(c, p, name); err != nil {
+		return fatalf("%v", err)
+	}
+	if !*stop {
+		if err := vmUp(c, name, *yes); err != nil {
+			return fatalf("%v", err)
+		}
 	}
 	if *stop {
 		var v map[string]any

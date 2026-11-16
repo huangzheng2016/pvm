@@ -2,8 +2,6 @@ package cli
 
 import (
 	"fmt"
-
-	"github.com/huangzheng2016/pvm/internal/daemon"
 )
 
 type compactView struct {
@@ -21,7 +19,7 @@ func CmdCompact(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
 		return fatalf("%v", err)
 	}

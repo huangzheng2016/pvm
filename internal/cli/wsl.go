@@ -154,11 +154,11 @@ func RewriteArgsForWSL(args []string) []string {
 		}
 		return out
 	}
-	if len(out) == 4 && out[0] == "mount" && out[1] == "rm" {
-		out[3] = restoreGitBashPosixPath(out[3], os.Getenv("EXEPATH"))
+	if (len(out) == 3 || len(out) == 4) && out[0] == "mount" && out[1] == "rm" {
+		out[len(out)-1] = restoreGitBashPosixPath(out[len(out)-1], os.Getenv("EXEPATH"))
 		return out
 	}
-	if len(out) < 3 || out[0] != "mount" || out[1] == "ls" || out[1] == "rm" {
+	if len(out) < 2 || out[0] != "mount" || out[1] == "ls" || out[1] == "rm" {
 		return out
 	}
 	last := out[len(out)-1]

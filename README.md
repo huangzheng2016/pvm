@@ -11,7 +11,7 @@ Personal QEMU dev VMs in a single binary: create an isolated Linux development m
 - **Split routing by domain or network.** Send some domains direct or through another exit; rules apply at once, without a restart.
 - **VM programs as native windows.** `pvm app dev1 -- gedit` or a web page opens as its own window on your desktop, while cookies, fingerprint and egress stay in the VM. Type with your own input method. See [Apps as host windows](#apps-as-host-windows).
 - **The full desktop in a browser tab.** `pvm desktop` opens the VM's own desktop, the same machine you reach over SSH. See [Browser desktop](#browser-desktop).
-- **Your project folders in the VM.** Mount a folder, keep two synced copies, or upload once and download the result. See [Workspaces](#workspaces).
+- **Your project folders in the VM.** Mount a folder, keep two synced copies, or upload once and download the result. In a project folder, `pvm ssh` opens a shell in the same folder in its VM, and offers to start the VM first. See [Workspaces](#workspaces).
 - **Snapshots in seconds and clones**, loopback port maps, and a read-only `pvm audit` of routing and DNS.
 - **Windows without administrator rights.** One installer brings pvm, QEMU and the Xpra client. See [Windows installers](#windows-installers).
 
@@ -26,20 +26,21 @@ Shipped:
 - [x] The `pvm.stream` channel and a faster `pvm desktop` (v1.2.0)
 - [x] UDP and UDP exits on native Windows (v1.2.0)
 - [x] Xpra client in the Windows installers (v1.2.0)
+- [x] The VM of the current workspace by default, `pvm ssh` in the matching folder, and an offer to start a stopped VM (next release)
 
 Planned:
 
 - [ ] `pvm exit-agent install|uninstall` as a systemd service
 - [ ] `pvm app` on macOS, Linux and WSL2 hosts, and reliable input method text
 - [ ] Input method candidates that follow the app's text cursor
+- [ ] `pvm desktop` as a host window like `pvm app`, opening the workspace folder in the VM's file manager
 
 Candidates:
 
 - [ ] `pvm ssh-config` for VS Code Remote-SSH, rsync and similar tools
 - [ ] An egress probe in `pvm exit test`
-- [ ] A default image and a default VM
+- [ ] A default image
 - [ ] Port maps over `pvm.stream` instead of the gateway VM
-- [ ] Offer to start a stopped VM
 - [ ] Fix the gateway rule drift false positive
 
 Details are in [docs/roadmap.md](docs/roadmap.md).
@@ -165,11 +166,13 @@ A workspace binds one host folder to one VM at `/workspace/<id>`. Pick a mode wh
 ```bash
 cd ~/src/web
 pvm workspace create web dev1 --mode sync
-pvm workspace ssh web 'npm install && npm test'
+pvm ssh 'npm install && npm test'
 pvm workspace pull web
 pvm workspace clone web ~/src/web-result
 pvm workspace rm web
 ```
+
+Inside a workspace folder, commands such as `pvm ssh`, `pvm exec`, `pvm app` and `pvm map` can leave out the VM name and use the workspace's VM; `pvm ssh` starts in the matching directory. Outside a workspace they use the only VM, if there is one. At a terminal pvm asks before starting a stopped VM.
 
 Uploads skip `.gitignore` matches and `node_modules`; a `.pvmignore` file adds or re-includes paths. pvm refuses to upload or mount the home directory, a file system root, its own data directory, or a tree with credentials such as `.ssh` or `.aws`, and `pvm workspace rm` never deletes host files. See [docs/design/workspace.md](docs/design/workspace.md).
 

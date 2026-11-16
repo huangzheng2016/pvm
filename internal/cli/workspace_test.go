@@ -438,13 +438,22 @@ func TestParseResolution(t *testing.T) {
 	}
 }
 
-func TestWorkspaceSSHArgs(t *testing.T) {
-	ws := &workspace.Workspace{VM: "dev1", GuestPath: testGP}
-	if got, want := workspaceSSHArgs(ws, nil), []string{"-t", "dev1", `cd '/workspace/web' && exec "${SHELL:-/bin/sh}" -l`}; !reflect.DeepEqual(got, want) {
-		t.Errorf("login args = %q, want %q", got, want)
-	}
-	if got, want := workspaceSSHArgs(ws, []string{"npm", "test"}), []string{"dev1", "cd '/workspace/web' && npm test"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("command args = %q, want %q", got, want)
+func TestWorkspaceCD(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		o     sshOpts
+		login bool
+		want  string
+	}{
+		{"no workspace", sshOpts{}, true, ""},
+		{"root login", sshOpts{dir: testGP, root: testGP}, true, "cd '/workspace/web' && "},
+		{"subdir command", sshOpts{dir: testGP + "/src", root: testGP}, false, "cd '/workspace/web/src' && "},
+		{"subdir login falls back", sshOpts{dir: testGP + "/it's", root: testGP}, true,
+			`{ cd '/workspace/web/it'"'"'s' 2>/dev/null || { echo 'pvm: /workspace/web/it'"'"'s is not in the vm; starting in /workspace/web' >&2; cd '/workspace/web'; }; } && `},
+	} {
+		if got := tc.o.workspaceCD(tc.login); got != tc.want {
+			t.Errorf("%s: workspaceCD = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
 

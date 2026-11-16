@@ -20,12 +20,12 @@ import (
 	"github.com/huangzheng2016/pvm/internal/paths"
 )
 
-const appUsage = `<vm> <url> [--name ID] [--kiosk] [--no-attach]
-       pvm app <vm> [--name ID] [--no-attach] -- <command> [args...]
+const appUsage = `[<vm>] <url> [--name ID] [--kiosk] [--no-attach] [--yes]
+       pvm app [<vm>] [--name ID] [--no-attach] [--yes] -- <command> [args...]
        pvm app ls [<vm>]
-       pvm app stop <vm> [<id> | --all]
-       pvm app attach <vm>
-       pvm app config <vm> [--clipboard off|to-guest|to-host|both] [--drop on|off]`
+       pvm app stop [<vm>] [<id> | --all]
+       pvm app attach [<vm>] [--yes]
+       pvm app config [<vm>] [--clipboard off|to-guest|to-host|both] [--drop on|off]`
 
 type appView struct {
 	VM    string   `json:"vm"`
@@ -59,7 +59,7 @@ func CmdApp(args []string) int {
 		if len(args) > 2 {
 			return fatalf("usage: pvm app ls [<vm>]")
 		}
-		c, err := daemon.Ensure(p)
+		c, err := ensureDaemon(p)
 		if err != nil {
 			return fatalf("%v", err)
 		}
@@ -83,21 +83,36 @@ func CmdApp(args []string) int {
 		tw.Flush()
 		return 0
 	case "stop":
-		fs := newFlagSet("app stop", "<vm> [<id> | --all]")
+		fs := newFlagSet("app stop", "[<vm>] [<id> | --all]")
 		all := fs.Bool("all", false, "stop every app in the vm")
 		if err := fs.Parse(partitionFlags(args[1:])); err != nil {
 			return 2
 		}
-		if fs.NArg() < 1 || fs.NArg() > 2 || (fs.NArg() == 2) == *all {
-			return fatalf("usage: pvm app stop <vm> <id> | pvm app stop <vm> --all")
+		if fs.NArg() > 2 || (fs.NArg() == 0 && !*all) || (fs.NArg() == 2 && *all) {
+			return fatalf("usage: pvm app stop [<vm>] <id> | pvm app stop [<vm>] --all")
 		}
-		c, err := daemon.Ensure(p)
+		c, err := ensureDaemon(p)
 		if err != nil {
 			return fatalf("%v", err)
 		}
-		path := "/v1/vms/" + fs.Arg(0) + "/apps"
-		if fs.NArg() == 2 {
-			path += "/" + fs.Arg(1)
+		vmName, id := "", ""
+		switch fs.NArg() {
+		case 2:
+			vmName, id = fs.Arg(0), fs.Arg(1)
+		case 1:
+			// one word is the vm with --all, otherwise the app id
+			if *all {
+				vmName = fs.Arg(0)
+			} else {
+				id = fs.Arg(0)
+			}
+		}
+		if vmName, _, _, err = resolveVM(c, p, vmName); err != nil {
+			return fatalf("%v", err)
+		}
+		path := "/v1/vms/" + vmName + "/apps"
+		if id != "" {
+			path += "/" + id
 		}
 		var out struct {
 			Stopped []string `json:"stopped"`
@@ -106,40 +121,52 @@ func CmdApp(args []string) int {
 			return fatalf("%v", err)
 		}
 		if len(out.Stopped) == 0 {
-			fmt.Printf("no apps were running in %s\n", fs.Arg(0))
+			fmt.Printf("no apps were running in %s\n", vmName)
 		} else {
-			fmt.Printf("stopped %s in %s\n", strings.Join(out.Stopped, ", "), fs.Arg(0))
+			fmt.Printf("stopped %s in %s\n", strings.Join(out.Stopped, ", "), vmName)
 		}
 		return 0
 	case "attach":
-		if len(args) != 2 {
-			return fatalf("usage: pvm app attach <vm>")
+		fs := newFlagSet("app attach", "[<vm>] [--yes]")
+		yes := fs.Bool("yes", false, "start a stopped vm without asking")
+		if err := fs.Parse(partitionFlags(args[1:])); err != nil {
+			return 2
 		}
-		c, err := daemon.Ensure(p)
+		if fs.NArg() > 1 {
+			return fatalf("usage: pvm app attach [<vm>] [--yes]")
+		}
+		c, err := ensureDaemon(p)
 		if err != nil {
 			return fatalf("%v", err)
 		}
+		vmName, _, _, err := resolveVM(c, p, fs.Arg(0))
+		if err != nil {
+			return fatalf("%v", err)
+		}
+		if err := vmUp(c, vmName, *yes); err != nil {
+			return fatalf("%v", err)
+		}
 		var att appAttach
-		if err := prepareApp(c, args[1]); err != nil {
+		if err := prepareApp(c, vmName); err != nil {
 			return fatalf("%v", err)
 		}
-		if err := c.Post("/v1/vms/"+args[1]+"/apps/attach?force=1", nil, &att); err != nil {
+		if err := c.Post("/v1/vms/"+vmName+"/apps/attach?force=1", nil, &att); err != nil {
 			return fatalf("%v", err)
 		}
-		if err := startXpraClient(args[1], att); err != nil {
+		if err := startXpraClient(vmName, att); err != nil {
 			return fatalf("%v", err)
 		}
-		fmt.Printf("xpra client started for %s\n", args[1])
+		fmt.Printf("xpra client started for %s\n", vmName)
 		return 0
 	case "config":
-		const usage = "<vm> [--clipboard off|to-guest|to-host|both] [--drop on|off]"
+		const usage = "[<vm>] [--clipboard off|to-guest|to-host|both] [--drop on|off]"
 		fs := newFlagSet("app config", usage)
 		clip := fs.String("clipboard", "", "off, to-guest (host to vm), to-host (vm to host) or both")
 		drop := fs.String("drop", "", "on: files dropped on the vm's windows upload into ~/Downloads in the vm")
 		if err := fs.Parse(flagsFirst(fs, args[1:])); err != nil {
 			return 2
 		}
-		if fs.NArg() != 1 || (*drop != "" && *drop != "on" && *drop != "off") {
+		if fs.NArg() > 1 || (*drop != "" && *drop != "on" && *drop != "off") {
 			return fatalf("usage: pvm app config %s", usage)
 		}
 		body := map[string]any{}
@@ -149,7 +176,11 @@ func CmdApp(args []string) int {
 		if *drop != "" {
 			body["drop"] = *drop == "on"
 		}
-		c, err := daemon.Ensure(p)
+		c, err := ensureDaemon(p)
+		if err != nil {
+			return fatalf("%v", err)
+		}
+		vmName, _, _, err := resolveVM(c, p, fs.Arg(0))
 		if err != nil {
 			return fatalf("%v", err)
 		}
@@ -157,14 +188,14 @@ func CmdApp(args []string) int {
 			Clipboard string `json:"clipboard"`
 			Drop      bool   `json:"drop"`
 		}
-		if err := c.Put("/v1/vms/"+fs.Arg(0)+"/apps/config", body, &out); err != nil {
+		if err := c.Put("/v1/vms/"+vmName+"/apps/config", body, &out); err != nil {
 			return fatalf("%v", err)
 		}
 		dropS := "off"
 		if out.Drop {
 			dropS = "on"
 		}
-		fmt.Printf("%s: clipboard %s, drop %s\n", fs.Arg(0), out.Clipboard, dropS)
+		fmt.Printf("%s: clipboard %s, drop %s\n", vmName, out.Clipboard, dropS)
 		if out.Clipboard == "to-guest" || out.Clipboard == "both" {
 			fmt.Println("host clipboard content enters the vm when one of its windows comes to the front, and when you copy while it is there")
 		}
@@ -172,7 +203,7 @@ func CmdApp(args []string) int {
 			fmt.Println("files dropped on its windows upload into ~/Downloads in the vm; files the vm sends need your confirmation")
 		}
 		if len(body) > 0 {
-			fmt.Printf("it applies to clients attached from now on: pvm app attach %s\n", fs.Arg(0))
+			fmt.Printf("it applies to clients attached from now on: pvm app attach %s\n", vmName)
 		}
 		return 0
 	case "__clipboard":
@@ -190,24 +221,35 @@ func cmdAppStart(p *paths.Paths, args []string) int {
 	name := fs.String("name", "", "app id (default: derived from the command or URL)")
 	kiosk := fs.Bool("kiosk", false, "open the URL full screen")
 	noAttach := fs.Bool("no-attach", false, "start the app without opening a host window")
+	yes := fs.Bool("yes", false, "start a stopped vm without asking")
 	if err := fs.Parse(flagsFirst(fs, args)); err != nil {
 		return 2
 	}
 	pos := fs.Args()
 	body := map[string]any{"id": *name, "kiosk": *kiosk}
+	vmName := ""
 	switch {
-	case len(pos) == 1 && len(cmd) > 0:
+	case len(pos) <= 1 && len(cmd) > 0:
 		body["argv"] = cmd
-	case len(pos) == 2 && len(cmd) == 0:
-		u, err := url.Parse(pos[1])
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-			return fatalf("%q is not a URL; to run a command use: pvm app %s -- %s", pos[1], pos[0], pos[1])
+		if len(pos) == 1 {
+			vmName = pos[0]
 		}
-		body["url"] = pos[1]
+	case (len(pos) == 1 || len(pos) == 2) && len(cmd) == 0:
+		target := pos[len(pos)-1]
+		u, err := url.Parse(target)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+			if len(pos) == 1 {
+				return fatalf("%q is not a URL; to run a command use: pvm app -- %s", target, target)
+			}
+			return fatalf("%q is not a URL; to run a command use: pvm app %s -- %s", target, pos[0], target)
+		}
+		body["url"] = target
+		if len(pos) == 2 {
+			vmName = pos[0]
+		}
 	default:
 		return fatalf("usage: pvm app %s", appUsage)
 	}
-	vmName := pos[0]
 	client := ""
 	if !*noAttach {
 		// fail before starting anything in the guest
@@ -216,8 +258,14 @@ func cmdAppStart(p *paths.Paths, args []string) int {
 			return fatalf("%v", err)
 		}
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
+		return fatalf("%v", err)
+	}
+	if vmName, _, _, err = resolveVM(c, p, vmName); err != nil {
+		return fatalf("%v", err)
+	}
+	if err := vmUp(c, vmName, *yes); err != nil {
 		return fatalf("%v", err)
 	}
 	if err := prepareApp(c, vmName); err != nil {

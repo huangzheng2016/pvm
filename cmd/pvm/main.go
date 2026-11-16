@@ -16,26 +16,34 @@ vm:
   create        create (and start) a vm
   clone         clone a stopped vm: pvm clone dev1 dev2 [--inherit-ports] [--no-start] [--no-wait]
   list          list vms
-  start|stop    start/stop a vm (start waits for provisioning; --no-wait returns early)
+  start|stop    start/stop a vm (start waits for provisioning; --no-wait returns early; stop needs the name)
   rm            stop and delete a vm (asks for confirmation; -y|--force to skip)
   resize        grow a stopped vm's disk (grow-only): pvm resize dev1 40
   compact       reclaim unused host disk space (vm must be stopped): pvm compact dev1
-  mount         dynamic host mounts: pvm mount dev1 [--profile coherent|readahead] [--read-only] /host:/guest | ls dev1 | rm dev1 /guest
-  ssh           ssh into a vm: pvm ssh [-t|-T] dev1 [cmd...]
+  mount         dynamic host mounts: pvm mount [dev1] [--profile coherent|readahead] [--read-only] /host:/guest | ls [dev1] | rm [dev1] /guest
+  ssh           ssh into a vm: pvm ssh [-t|-T] [--yes] [dev1] [cmd...]; inside a workspace it starts in the matching directory
   snapshot      ram snapshots: create <name> | ls [name] | rm <name>
                 (create needs a running vm; rm needs the vm stopped)
-  exec          run a command via the guest agent (no network needed): pvm exec dev1 cmd...
-  logs          stream a vm console: pvm logs dev1 [--follow] [--tail N]
-  desktop       open the vm's native xfce desktop: pvm desktop dev1 [--open] [--stop] [--size WxH] [--public]
-  app           show one vm app as a host window (xpra): pvm app dev1 -- gedit | pvm app dev1 https://example.com
-                [--name ID] [--kiosk] [--no-attach]; pvm app ls [vm] | stop dev1 <id>|--all | attach dev1
-                pvm app config dev1 [--clipboard off|to-guest|to-host|both] [--drop on|off]
+  exec          run a command via the guest agent (no network needed): pvm exec [--yes] [dev1] cmd...
+  logs          stream a vm console: pvm logs [dev1] [--follow] [--tail N]
+  desktop       open the vm's native xfce desktop: pvm desktop [dev1] [--open] [--stop] [--size WxH] [--public] [--yes]
+  app           show one vm app as a host window (xpra): pvm app [dev1] -- gedit | pvm app [dev1] https://example.com
+                [--name ID] [--kiosk] [--no-attach] [--yes]; pvm app ls [vm] | stop [dev1] <id>|--all | attach [dev1]
+                pvm app config [dev1] [--clipboard off|to-guest|to-host|both] [--drop on|off]
   doctor        diagnose local state consistency and permissions (read-only, redacted)
-  audit         read-only health audit: pvm audit dev1 [--privacy] (vm, route, tcp/udp/icmp probes, dns, ipv6, timezone, locale)
+  audit         read-only health audit: pvm audit [dev1] | pvm audit dev1 --privacy (vm, route, tcp/udp/icmp probes, dns, ipv6, timezone, locale)
+
+default vm:
+  commands shown with [dev1] may leave the vm out. pvm then uses the vm of the
+  workspace that contains the current directory, else the only user vm, and
+  prints which one on stderr. stop, rm, compact, resize, snapshot, clone and
+  route always need the name. at a terminal pvm asks before starting the
+  daemon or a stopped vm, and --yes starts the vm without asking. without a
+  terminal the daemon still starts on its own, but a stopped vm is an error.
 
 workspace:
   workspace create  bind a host folder to a vm at /workspace/<id>:
-                    pvm workspace create web dev1 --mode mount|sync|copy [--path DIR] [--read-only] [-y]
+                    pvm workspace create web [dev1] --mode mount|sync|copy [--path DIR] [--read-only] [-y]
                     mount: one shared copy (9p; reverse sshfs on native windows)
                     sync: a copy on each side, moved by push/pull; copy: upload once, clone back
   workspace ls      list workspaces
@@ -45,7 +53,7 @@ workspace:
   workspace rm      forget a workspace (host files kept): pvm workspace rm web [--delete-guest] [-y]
 
 network:
-  map          map ports: pvm map dev1 8080:80 [--udp] | ls | rm <port> [--udp]
+  map           map ports: pvm map [dev1] 8080:80 [--udp] | ls | rm <port> [--udp]
   route         vm default route: pvm route dev1 --via my-exit|direct
                 split rules: pvm route add direct|proxy|internal [--domain-suffix|--domain-prefix|--domain-keyword|--cidr] <v> [--via <exit>] [--dns <srv>]
                 inspect: pvm route ls | pvm route explain dev1 example.com | pvm route rm <index>

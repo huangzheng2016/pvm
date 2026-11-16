@@ -163,7 +163,7 @@ func lastNonEmpty(lines []string, n int) []string {
 }
 
 func CmdLogs(args []string) int {
-	fs := newFlagSet("logs", "<name> [--follow] [--tail 200]")
+	fs := newFlagSet("logs", "[<vm>] [--follow] [--tail 200]")
 	follow := fs.Bool("follow", false, "keep streaming new console lines")
 	followShort := fs.Bool("f", false, "shorthand for --follow")
 	tail := fs.Int("tail", 200, "lines to show initially")
@@ -180,16 +180,15 @@ func CmdLogs(args []string) int {
 	if name == "" {
 		name = fs.Arg(0)
 	}
-	if name == "" {
-		fs.Usage()
-		return 2
-	}
 	p, err := mustPaths()
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
+		return fatalf("%v", err)
+	}
+	if name, _, _, err = resolveVM(c, p, name); err != nil {
 		return fatalf("%v", err)
 	}
 

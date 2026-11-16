@@ -72,6 +72,8 @@ func TestSSHStreamsStderrAndPreservesAgentFallback(t *testing.T) {
 		switch r.URL.Path {
 		case "/v1/health":
 			io.WriteString(w, `{"ready":true}`)
+		case "/v1/vms":
+			io.WriteString(w, `[{"running":true,"spec":{"name":"dev1","role":"user"}}]`)
 		case "/v1/vms/dev1":
 			io.WriteString(w, `{"running":true,"gw_ssh_port":2222,"gw_user":"baker","spec":{"name":"dev1","user":"baker","ip":"203.0.113.7"}}`)
 		case "/v1/vms/dev1/exec":

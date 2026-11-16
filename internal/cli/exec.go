@@ -15,19 +15,43 @@ import (
 
 // The virtio-serial agent channel works even when guest networking is down.
 func CmdExec(args []string) int {
-	if len(args) < 2 {
-		return fatalf("usage: pvm exec <name> <cmd...>")
+	yes := false
+	for len(args) > 0 && (args[0] == "--yes" || args[0] == "-y") {
+		yes, args = true, args[1:]
+	}
+	if len(args) < 1 {
+		return fatalf("usage: pvm exec [--yes] [<vm>] <cmd...>")
 	}
 	p, err := mustPaths()
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
 		return fatalf("%v", err)
 	}
+	explicit, command, err := splitVMArg(c, args)
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	if len(command) == 0 {
+		return fatalf("usage: pvm exec [--yes] [<vm>] <cmd...>")
+	}
+	// unlike ssh, exec does not enter the workspace folder: the agent runs
+	// as root, which cannot enter the login user's reverse sshfs mounts
+	name, _, _, err := resolveVM(c, p, explicit)
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	if err := vmUp(c, name, yes); err != nil {
+		return fatalf("%v", err)
+	}
+	return runExec(c, name, command)
+}
 
-	body := map[string]any{"cmd": args[1:]}
+// runExec runs argv in the VM over the agent channel.
+func runExec(c *daemon.Client, name string, argv []string) int {
+	body := map[string]any{"cmd": argv}
 	if !isTTY(os.Stdin) {
 		data, _ := io.ReadAll(os.Stdin)
 		if len(data) > 0 {
@@ -35,7 +59,7 @@ func CmdExec(args []string) int {
 		}
 	}
 
-	resp, err := c.PostStream(fmt.Sprintf("/v1/vms/%s/exec", args[0]), body)
+	resp, err := c.PostStream(fmt.Sprintf("/v1/vms/%s/exec", name), body)
 	if err != nil {
 		return fatalf("exec: %v", err)
 	}

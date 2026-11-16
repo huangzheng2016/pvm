@@ -76,6 +76,14 @@ pvm ssh dev1 'whoami && ls /share'
 - create/start pushes the VM's IP/MAC mapping to the gateway DHCP **synchronously** before booting and deploys the gateway agent before the user VM starts (new VMs get a DHCP offer on their first request); if the gateway is unreachable, start fails instead of booting a network-less VM.
 - Cluster addressing: VMs live in `100.99.<cluster>.0/24` (CGNAT space), the gateway is `100.99.<cluster>.1`.
 
+#### Default VM and starting on demand
+
+- `ssh`, `exec`, `start`, `logs`, `audit`, `desktop`, `app`, `map`, `mount` and `workspace create` may leave the VM name out. pvm then uses the VM of the workspace whose host folder contains the current directory (the innermost one), else the only user VM, and prints `pvm: using vm dev1 (workspace web)` or `pvm: using the only vm, dev1` on stderr. With several VMs and no workspace it fails and lists the names. A workspace whose VM was deleted is an error, not a fallback to another VM.
+- A first word that names an existing VM is the VM; anything else is the command, so `pvm ssh ls` runs `ls` in the default VM. `pvm ssh -- dev1` runs a command called `dev1`.
+- `stop`, `rm`, `compact`, `resize`, `snapshot`, `clone` and `route` always need the name. As an agent, pass the name explicitly anyway; the default exists for people at a terminal.
+- Inside a workspace, `pvm ssh` starts in the matching guest directory: `~/src/web/api` in workspace `web` becomes `/workspace/web/api`, also with an explicit name of the workspace's own VM. A login falls back to the workspace root when the folder is not in the VM yet (a sync workspace before `push`); a command fails instead of running elsewhere. `pvm exec` and the agent fallback of `pvm ssh` run as root from `/`: root cannot enter the login user's reverse sshfs mount.
+- At a terminal pvm asks `[Y/n]` before starting a stopped daemon or VM, then follows provisioning like `pvm start`; `--yes` (`-y` for `ssh` and `workspace create`) starts the VM without asking. Without a terminal the daemon still starts on its own, but a stopped VM fails with the `pvm start` hint, so scripts never start machines by surprise. After `pvm daemon stop` the daemon is not started until `pvm daemon start`.
+
 ### 2. Route all of a VM's traffic through the VPS
 
 ```bash
@@ -203,7 +211,7 @@ pvm clone dev1 dev2             # source VM must be stopped; --no-start clones w
 A workspace binds one host folder to one VM at `/workspace/<id>` (id: lowercase letters, digits, `-`).
 
 ```bash
-pvm workspace create web dev1 --mode mount|sync|copy [--path DIR] [--read-only] [-y]
+pvm workspace create web [dev1] --mode mount|sync|copy [--path DIR] [--read-only] [-y]
 pvm workspace ls
 pvm workspace status web                 # sync only: changes on each side and conflicts
 pvm workspace push web [--prefer host|vm | --keep-both]
@@ -213,7 +221,7 @@ pvm workspace ssh web [command...]       # like pvm ssh, starting in /workspace/
 pvm workspace rm web [--delete-guest] [-y]
 ```
 
-- `--path` defaults to the current directory. `create`, `status`, `push`, `pull`, `clone` of a sync or copy workspace and `rm --delete-guest` need the VM running (`pvm start dev1`); a read-only 9p mount is created while the VM is stopped.
+- `--path` defaults to the current directory, and the VM to the default VM. `create`, `ssh`, `status`, `push`, `pull`, `clone` of a sync or copy workspace and `rm --delete-guest` need the VM running; at a terminal they offer to start it. A read-only 9p mount is created while the VM is stopped.
 - `mount`: one shared copy. 9p on Linux, macOS and WSL2; reverse sshfs on the native Windows backend (pvm serves SFTP over the existing SSH connection, the daemon remounts after drops, and `sshfs` is installed in the guest on first use). `--read-only` is enforced on the host. Host edits raise no inotify events in the VM; file watchers need polling, for example `CHOKIDAR_USEPOLLING=1`.
 - `sync`: a copy on each side. push/pull use a three-way comparison with the last baseline; on any conflict they write nothing and list the paths. Resolve with `--prefer host`, `--prefer vm`, or `--keep-both` (the other side's version is kept as `<name>.pvm-conflict-<host|vm>`). Run git on one side only.
 - `copy`: one upload, then `clone` downloads the VM copy.

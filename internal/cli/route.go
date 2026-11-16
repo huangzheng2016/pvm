@@ -35,7 +35,7 @@ func CmdRoute(args []string) int {
 	if len(args) < 1 {
 		return routeUsage()
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
 		return fatalf("%v", err)
 	}

@@ -10,11 +10,10 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/huangzheng2016/pvm/internal/daemon"
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
-const mountUsage = "usage: pvm mount <vm> [--profile coherent|readahead] [--read-only] <host-path>:<guest-path> | ls <vm> | rm <vm> <guest-path>"
+const mountUsage = "usage: pvm mount [<vm>] [--profile coherent|readahead] [--read-only] <host-path>:<guest-path> | ls [<vm>] | rm [<vm>] <guest-path>"
 
 type mountView struct {
 	Tag      string `json:"tag"`
@@ -106,9 +105,23 @@ func CmdMount(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
+	// a VM name has no ':' and no leading '-', so a mount spec or a flag
+	// first means the VM was left out
+	if len(args) >= 1 && args[0] != "ls" && args[0] != "rm" && (strings.Contains(args[0], ":") || strings.HasPrefix(args[0], "-")) {
+		args = append([]string{""}, args...)
+	}
+	if len(args) == 1 && args[0] == "ls" {
+		args = append(args, "")
+	}
+	if len(args) == 2 && args[0] == "rm" {
+		args = []string{"rm", "", args[1]}
+	}
 	if len(args) == 2 && args[0] == "ls" {
-		c, err := daemon.Ensure(p)
+		c, err := ensureDaemon(p)
 		if err != nil {
+			return fatalf("%v", err)
+		}
+		if args[1], _, _, err = resolveVM(c, p, args[1]); err != nil {
 			return fatalf("%v", err)
 		}
 		var mounts []mountView
@@ -121,8 +134,11 @@ func CmdMount(args []string) int {
 		return 0
 	}
 	if len(args) == 3 && args[0] == "rm" {
-		c, err := daemon.Ensure(p)
+		c, err := ensureDaemon(p)
 		if err != nil {
+			return fatalf("%v", err)
+		}
+		if args[1], _, _, err = resolveVM(c, p, args[1]); err != nil {
 			return fatalf("%v", err)
 		}
 		guest := gitBashGuestPath(args[2])
@@ -155,8 +171,11 @@ func CmdMount(args []string) int {
 			return fatalf("mount host path: %v", err)
 		}
 
-		c, err := daemon.Ensure(p)
+		c, err := ensureDaemon(p)
 		if err != nil {
+			return fatalf("%v", err)
+		}
+		if add.vmName, _, _, err = resolveVM(c, p, add.vmName); err != nil {
 			return fatalf("%v", err)
 		}
 		var m mountView

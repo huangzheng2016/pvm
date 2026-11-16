@@ -361,20 +361,23 @@ func printSkipped(title string, sk []workspace.Skipped) {
 }
 
 func cmdWorkspaceCreate(args []string) int {
-	fs := newFlagSet("workspace create", "<id> <vm> --mode mount|sync|copy [--path DIR] [--read-only] [-y]")
+	fs := newFlagSet("workspace create", "<id> [<vm>] --mode mount|sync|copy [--path DIR] [--read-only] [-y]")
 	modeFlag := fs.String("mode", "", "mount, sync or copy (required)")
 	pathFlag := fs.String("path", "", "host folder (default: current directory)")
 	readOnly := fs.Bool("read-only", false, "mount mode only: the VM cannot change host files")
-	yes := fs.Bool("y", false, "skip the confirmation for uploads above 1 GiB")
+	yes := fs.Bool("y", false, "start a stopped vm and upload above 1 GiB without asking")
 	pos, err := parseInterleaved(fs, args)
 	if err != nil {
 		return 2
 	}
-	if len(pos) != 2 || *modeFlag == "" {
+	if len(pos) < 1 || len(pos) > 2 || *modeFlag == "" {
 		fs.Usage()
 		return 2
 	}
-	id, vmName := pos[0], pos[1]
+	id, vmName := pos[0], ""
+	if len(pos) == 2 {
+		vmName = pos[1]
+	}
 	if err := workspace.ValidID(id); err != nil {
 		return fatalf("%v", err)
 	}
@@ -416,9 +419,19 @@ func cmdWorkspaceCreate(args []string) int {
 	} else if !errors.Is(err, workspace.ErrNotFound) {
 		return fatalf("%v", err)
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
 		return fatalf("%v", err)
+	}
+	if vmName, _, _, err = resolveVM(c, p, vmName); err != nil {
+		return fatalf("%v", err)
+	}
+	// a read-only 9p mount attaches at the next boot, so it needs no
+	// running guest; every other workspace prepares the guest over ssh
+	if !(mode == workspace.ModeMount && *readOnly && runtime.GOOS != "windows") {
+		if err := vmUp(c, vmName, *yes); err != nil {
+			return fatalf("%v", err)
+		}
 	}
 	info, err := getVMInfo(c, vmName)
 	if err != nil {
@@ -762,8 +775,11 @@ func loadSync(p *paths.Paths, store *workspace.Store, id, cmd string) (*syncStat
 	if ws.Mode != workspace.ModeSync {
 		return nil, wrongMode(ws, cmd)
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
+		return nil, fatalf("%v", err)
+	}
+	if err := vmUp(c, ws.VM, false); err != nil {
 		return nil, fatalf("%v", err)
 	}
 	info, err := getVMInfo(c, ws.VM)
@@ -1280,8 +1296,11 @@ func cloneLocal(src string, dest *os.Root) (*workspace.ExtractResult, error) {
 }
 
 func cloneGuest(p *paths.Paths, store *workspace.Store, ws *workspace.Workspace, dest *os.Root) (*workspace.ExtractResult, workspace.Manifest, *workspace.Baseline, error) {
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := vmUp(c, ws.VM, false); err != nil {
 		return nil, nil, nil, err
 	}
 	info, err := getVMInfo(c, ws.VM)
@@ -1337,8 +1356,12 @@ func cloneGuest(p *paths.Paths, store *workspace.Store, ws *workspace.Workspace,
 }
 
 func cmdWorkspaceSSH(args []string) int {
+	yes := false
+	for len(args) > 0 && (args[0] == "--yes" || args[0] == "-y") {
+		yes, args = true, args[1:]
+	}
 	if len(args) < 1 {
-		return fatalf("usage: pvm workspace ssh <id> [command...]")
+		return fatalf("usage: pvm workspace ssh [--yes] <id> [command...]")
 	}
 	p, err := mustPaths()
 	if err != nil {
@@ -1348,17 +1371,14 @@ func cmdWorkspaceSSH(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	return CmdSSH(workspaceSSHArgs(ws, args[1:]))
-}
-
-// workspaceSSHArgs turns `workspace ssh` into `pvm ssh` arguments that
-// start in the workspace directory.
-func workspaceSSHArgs(ws *workspace.Workspace, command []string) []string {
-	cd := "cd " + sshShellQuote(ws.GuestPath) + " && "
-	if len(command) == 0 {
-		return []string{"-t", ws.VM, cd + `exec "${SHELL:-/bin/sh}" -l`}
+	c, err := ensureDaemon(p)
+	if err != nil {
+		return fatalf("%v", err)
 	}
-	return []string{ws.VM, cd + strings.Join(command, " ")}
+	if err := vmUp(c, ws.VM, yes); err != nil {
+		return fatalf("%v", err)
+	}
+	return runSSH(p, c, ws.VM, args[1:], sshOpts{forceTTY: len(args) == 1, dir: ws.GuestPath, root: ws.GuestPath})
 }
 
 // workspaceUnsaved lists the VM-side changes of a sync or copy workspace
@@ -1425,7 +1445,7 @@ func cmdWorkspaceRm(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
 		return fatalf("%v", err)
 	}

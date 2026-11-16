@@ -11,7 +11,7 @@
 - **按域名或网段分流。** 让部分域名直连或走另一个出口，规则即时生效，无需重启。
 - **虚拟机里的程序变成宿主机原生窗口。** `pvm app dev1 -- gedit` 或一个网页在你的桌面上开成独立窗口，Cookie、指纹和出口都留在虚拟机里，还能直接用宿主机输入法打字。见[虚拟机应用作为宿主机窗口](#虚拟机应用作为宿主机窗口)。
 - **浏览器标签页里的完整桌面。** `pvm desktop` 打开虚拟机自己的桌面，和 SSH 登录的是同一台机器。见[浏览器桌面](#浏览器桌面)。
-- **项目文件夹直接在虚拟机里用。** 挂载一个目录、保持两份同步副本，或上传一次再把结果下载回来。见[工作区](#工作区)。
+- **项目文件夹直接在虚拟机里用。** 挂载一个目录、保持两份同步副本，或上传一次再把结果下载回来。在项目目录里运行 `pvm ssh`，就会进入对应虚拟机里的同一目录，虚拟机没启动时先问你要不要启动。见[工作区](#工作区)。
 - **秒级快照和克隆**、回环端口映射，以及只读的 `pvm audit` 路由和 DNS 体检。
 - **Windows 免管理员安装。** 一个安装包装好 pvm、QEMU 和 Xpra 客户端。见[Windows 安装包](#windows-安装包)。
 
@@ -26,20 +26,21 @@
 - [x] `pvm.stream` 通道，以及更快的 `pvm desktop`（v1.2.0）
 - [x] 原生 Windows 上的 UDP 和 UDP 出口（v1.2.0）
 - [x] Windows 安装包自带 Xpra 客户端（v1.2.0）
+- [x] 默认使用当前工作区的虚拟机，`pvm ssh` 进入对应目录，虚拟机未启动时询问是否启动（下个版本）
 
 计划中：
 
 - [ ] `pvm exit-agent install|uninstall`，注册为 systemd 服务
 - [ ] `pvm app` 支持 macOS、Linux 和 WSL2 宿主机，并让输入法输入稳定可靠
 - [ ] 输入法候选框跟随应用的文本光标
+- [ ] `pvm desktop` 像 `pvm app` 一样作为宿主机窗口打开，并在虚拟机文件管理器里打开工作区目录
 
 候选：
 
 - [ ] `pvm ssh-config`，供 VS Code Remote-SSH、rsync 等工具使用
 - [ ] `pvm exit test` 增加出网探测
-- [ ] 默认镜像和默认虚拟机
+- [ ] 默认镜像
 - [ ] 端口映射改走 `pvm.stream`，不再经过 gateway 虚拟机
-- [ ] 提示启动已停止的虚拟机
 - [ ] 修复 gateway 规则漂移误报
 
 详见 [docs/roadmap.md](docs/roadmap.md)。
@@ -165,11 +166,13 @@ pvm app stop dev1 --all
 ```bash
 cd ~/src/web
 pvm workspace create web dev1 --mode sync
-pvm workspace ssh web 'npm install && npm test'
+pvm ssh 'npm install && npm test'
 pvm workspace pull web
 pvm workspace clone web ~/src/web-result
 pvm workspace rm web
 ```
+
+在工作区目录里，`pvm ssh`、`pvm exec`、`pvm app`、`pvm map` 等命令可以省略虚拟机名，使用该工作区的虚拟机；`pvm ssh` 会从对应目录开始。不在工作区里时，如果只有一台虚拟机就用它。在终端里，虚拟机没启动时 pvm 会先问你要不要启动。
 
 上传会跳过 `.gitignore` 匹配的路径和 `node_modules`；`.pvmignore` 文件可以追加规则或重新包含路径。pvm 拒绝上传或挂载主目录、文件系统根目录、它自己的数据目录，以及包含 `.ssh`、`.aws` 等凭据的目录树；`pvm workspace rm` 从不删除宿主机文件。详见 [docs/design/workspace.md](docs/design/workspace.md)。
 
