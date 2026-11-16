@@ -173,8 +173,11 @@ func (s *Server) appSecret(name string) (string, string, error) {
 func appInstallScript() string {
 	const apt = "sudo -n env DEBIAN_FRONTEND=noninteractive apt-get -q -o DPkg::Lock::Timeout=300"
 	// the mask also runs where xpra came preinstalled
+	// gtk3-nocsd came later: guests with the rest only add it, and fall
+	// back to apps drawing their own title bar when it cannot be installed
 	return "{ { command -v xpra && command -v xclip && command -v wmctrl && command -v xdotool; } >/dev/null 2>&1 || { sudo -n bash -euo pipefail -c " + shellQuote(image.XpraRepoScript) +
 		" && " + apt + " update && " + apt + " install -y --no-install-recommends " + strings.Join(image.XpraPackages, " ") + "; }; }" +
+		" && { dpkg -s gtk3-nocsd >/dev/null 2>&1 || " + apt + " install -y --no-install-recommends gtk3-nocsd || { " + apt + " update && " + apt + " install -y --no-install-recommends gtk3-nocsd; } || echo 'gtk3-nocsd is unavailable; GTK apps keep their own title bar' >&2; }" +
 		" && { [ \"$(systemctl is-enabled xpra-server.socket 2>/dev/null)\" = masked ] || ! systemctl cat xpra-server.socket >/dev/null 2>&1 || sudo -n sh -c " + shellQuote(image.XpraMaskScript) + "; }"
 }
 
@@ -316,6 +319,28 @@ func appStopScript(stop []appRecord, webappsLeft bool) string {
 	return script
 }
 
+// appNoCSD sets nocsd to the systemd-run option that preloads
+// gtk3-nocsd, so GTK apps leave their title bar and minimize, maximize
+// and close buttons to the host window manager, like Firefox does. The
+// library is libgtk3-nocsd.so.0 up to version 3 and libgtk-nocsd.so.0
+// after; without either, apps keep drawing their own.
+const appNoCSD = `nocsd=
+for lib in libgtk-nocsd.so.0 libgtk3-nocsd.so.0; do
+  if /sbin/ldconfig -p | grep -q "^[[:space:]]*$lib "; then nocsd="-E LD_PRELOAD=$lib"; break; fi
+done
+`
+
+// appChromium sets nogpu to --disable-gpu when the program is a
+// Chromium build, such as Electron apps and Chrome, which ship V8's
+// startup snapshot next to the binary. The VM has no usable GPU, so
+// Chromium would emulate OpenGL in software and then composite, which is
+// slower than its plain software drawing: resizing, scrolling and hover
+// lagged. A launcher script that execs Chromium is not recognized.
+const appChromium = `nogpu=
+bin=$(readlink -f "$(command -v "$1")")
+[ -f "${bin%/*}/v8_context_snapshot.bin" ] && nogpu=--disable-gpu
+`
+
 // appLaunchScript starts app as a user unit on the Xpra display and fails
 // if it exits within the first seconds; web apps go to webappLaunchScript.
 func appLaunchScript(a *appRecord) string {
@@ -328,12 +353,15 @@ func appLaunchScript(a *appRecord) string {
 		words[i] = shellQuote(w)
 	}
 	return `set -e
-if ! command -v ` + shellQuote(a.Argv[0]) + ` >/dev/null 2>&1; then
+set -- ` + strings.Join(words, " ") + `
+if ! command -v "$1" >/dev/null 2>&1; then
   echo "NOT_INSTALLED"
   exit 3
 fi
+` + appNoCSD + appChromium + `prog=$1
+shift
 systemctl --user reset-failed ` + unit + ` >/dev/null 2>&1 || true
-systemd-run --user --quiet --collect --unit=` + unit + ` -E DISPLAY=` + appDisplay + ` -- ` + strings.Join(words, " ") + `
+systemd-run --user --quiet --collect --unit=` + unit + ` -E DISPLAY=` + appDisplay + ` $nocsd -- "$prog" $nogpu "$@"
 sleep 2
 if ! systemctl --user is-active --quiet ` + unit + `; then
   echo "app exited right away:" >&2

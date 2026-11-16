@@ -148,6 +148,8 @@ pvm app config dev1 --clipboard both --drop on
 - The host needs the Xpra 6.5.x client from xpra.org; the Windows installers include it. On Windows pvm looks in `xpra\Xpra.exe` next to `pvm.exe` and in `Program Files\Xpra`, on macOS in `/Applications/Xpra.app`, elsewhere on `PATH`; `PVM_XPRA` overrides the path. A client from another release line is refused. The first app in a VM without Xpra installs it from xpra.org's APT repository, which takes a few minutes and needs the VM's network; golden images built from this version on include it.
 - Type with the host's own input method, such as Microsoft Pinyin: committed text reaches the app.
 - The command must be installed in the VM; `pvm app` does not install it. Window titles end in `[dev1]`.
+- GTK programs run with `gtk3-nocsd` preloaded, so their title bar and minimize, maximize and close buttons come from the host, like Firefox's. Programs that draw their own frame, such as Electron apps, keep it.
+- Chromium-based programs, recognized by `v8_context_snapshot.bin` next to the binary (Electron apps such as Claude Desktop and VS Code, and Chrome), get `--disable-gpu`: the VM has no GPU, and Chromium's software OpenGL is slower than its plain software drawing. A wrapper script that starts Chromium is not recognized; pass the flag yourself.
 - Closing a window closes that app. Quitting the Xpra client leaves apps running; `pvm app attach` brings them back. A VM restart ends its apps.
 - Clipboard and drops are off by default, per VM:
   - `--clipboard to-host`: copy in the VM, paste on the host (text and images).
@@ -155,6 +157,7 @@ pvm app config dev1 --clipboard both --drop on
   - `--clipboard both`: both of the above.
   - `--drop on`: files dropped on a VM window upload into `~/Downloads` in the VM (up to 100 MB each, never opened). A file the VM tries to send asks for confirmation on the host.
   - Changes apply to clients attached afterwards: run `pvm app attach dev1`.
+  - While the clipboard is off, `pvm app` and `pvm app attach` say so on stderr when they start the client.
 - The data goes over the VM's `pvm.stream` channel, not the gateway VM.
 
 ### 6. Port maps
