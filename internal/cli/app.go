@@ -432,6 +432,10 @@ func startXpraClientAt(vm, client string, att appAttach) error {
 		}
 		b.Process.Release()
 	}
+	if att.Clipboard == "off" {
+		// otherwise copy and paste just do nothing, with no hint why
+		fmt.Fprintf(os.Stderr, "clipboard is off for %s; turn it on with `pvm app config %s --clipboard both` and reattach\n", vm, vm)
+	}
 	return nil
 }
 
