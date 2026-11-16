@@ -130,7 +130,7 @@ pvm desktop dev1 --stop
 - The session persists inside the VM (closing the browser changes nothing); timezone/locale follow the VM's region profile. `--open` opens the system browser. The desktop follows the browser window size; `--size 2560x1440` sets the size it starts with.
 - The desktop is not a port map and does not show in `pvm map ls`: the daemon's listener carries it over the VM's `pvm.stream` channel, bypassing the gateway VM. Desktop maps created by older versions are removed the next time `pvm desktop` runs.
 - `--public` makes the daemon's listener listen on `0.0.0.0` and returns an `0.0.0.0` URL; use the host's actual LAN/VPN IP when connecting remotely. Switching between public and loopback keeps the same desktop session.
-- Clipboard is enabled by default in noVNC. Open the Clipboard panel on the left and grant clipboard read/write permission in Chrome when prompted; loopback URLs are considered secure contexts. Golden images include a small CJK font set and an IBus pinyin input method, with `ibus-daemon` started in each desktop session. This only adds Chinese display and input support; the default locale remains `en_US.UTF-8`.
+- Clipboard is enabled by default in noVNC. Open the Clipboard panel on the left and grant clipboard read/write permission in Chrome when prompted; loopback URLs are considered secure contexts. Golden images include Noto fonts for CJK and the other major scripts, color emoji, and an IBus pinyin input method, with `ibus-daemon` started in each desktop session. This only adds display support and Chinese input; the default locale remains `en_US.UTF-8`.
 
 ### 5. Single apps as host windows (pvm app)
 
