@@ -26,7 +26,9 @@ Shipped:
 - [x] The `pvm.stream` channel and a faster `pvm desktop` (v1.2.0)
 - [x] UDP and UDP exits on native Windows (v1.2.0)
 - [x] Xpra client in the Windows installers (v1.2.0)
-- [x] The VM of the current workspace by default, `pvm ssh` in the matching folder, and an offer to start a stopped VM (next release)
+- [x] The VM of the current workspace by default, `pvm ssh` in the matching folder, and an offer to start a stopped VM (v1.2.1)
+- [x] Host window frames for `pvm app` windows, and Chromium apps without the GPU path (v1.2.1)
+- [x] Fonts for all major scripts and color emoji in golden images (v1.2.1)
 
 Planned:
 

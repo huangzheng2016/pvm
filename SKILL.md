@@ -273,7 +273,7 @@ pvm release binaries are single files from GitHub Releases. Tags publish archite
 
 ```bash
 VPS=root@vps.example.com
-TAG=v1.2.0
+TAG=v1.2.1
 ASSET=pvm_linux_amd64.tar.gz   # use pvm_linux_arm64.tar.gz for an arm64 VPS
 REPO=BitterOrange/pvm
 WORK=$(mktemp -d)

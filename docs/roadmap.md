@@ -2,10 +2,6 @@
 
 Planned work for the next release of this fork. Items move to the release notes once they ship; tick them in the Roadmap lists of README.md and README.zh-CN.md in the same release.
 
-## Done, in the next release
-
-- **The default VM and starting on demand.** Commands that act on one VM, such as `ssh`, `exec`, `app`, `desktop`, `map` and `mount`, may leave the name out and use the VM of the workspace containing the current directory, else the only user VM. Inside a workspace `pvm ssh` starts in the matching guest directory. At a terminal pvm asks before starting a stopped daemon or VM; `--yes` skips the question, and scripts get the `pvm start` hint. `stop`, `rm`, `compact`, `resize`, `snapshot`, `clone` and `route` still need the name. See [SKILL.md](../SKILL.md#default-vm-and-starting-on-demand).
-
 ## Planned
 
 - **`pvm exit-agent install|uninstall`.** Register the exit agent as a systemd service with one command, like `pvm daemon install` on the host. It writes `pvm-exit-agent.service` with the given `exit-agent` flags, refuses when another agent already holds the ports, keeps the existing token file and certificate so registered hosts need no re-enrollment, and runs `systemctl enable --now`. `uninstall` stops and removes the unit and leaves the token, certificate and registrations in place. Today the unit is written by hand; see [SKILL.md](../SKILL.md#standard-flow-deploy-an-exit-over-ssh).
