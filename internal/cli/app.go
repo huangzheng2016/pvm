@@ -409,6 +409,15 @@ func startXpraClient(vm string, att appAttach) error {
 	return startXpraClientAt(vm, client, att)
 }
 
+// xpraWindowMetadata is the Windows Xpra 6.5 client's own metadata list
+// minus "decorations": windows that ask for no frame through
+// _MOTIF_WM_HINTS, as Electron apps do, still get the host's title bar and
+// buttons.
+const xpraWindowMetadata = "title,icon-title,pid,iconic,size-constraints,class-instance,client-machine," +
+	"transient-for,window-type,fullscreen,maximized,skip-taskbar,skip-pager,has-alpha,override-redirect," +
+	"tray,modal,role,opacity,xid,group-leader,opaque-region,command,workspace,above,below,sticky," +
+	"set-initial-position,requested-position,content-type,content-types,parent,relative-position,actions"
+
 // startXpraClientAt starts the client detached; it outlives the CLI.
 // Xpra's own clipboard only carries guest content to the host; host
 // content goes in through the clipboard bridge, which sends it only while
@@ -447,6 +456,9 @@ func startXpraClientAt(vm, client string, att appAttach) error {
 		args = append(args, "--opengl=no")
 	}
 	c := exec.Command(client, args...)
+	if runtime.GOOS == "windows" {
+		c.Env = append(os.Environ(), "XPRA_METADATA_SUPPORTED="+xpraWindowMetadata)
+	}
 	logPath := filepath.Join(filepath.Dir(att.PasswordFile), "client.log")
 	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600); err == nil {
 		c.Stdout, c.Stderr = f, f
