@@ -29,7 +29,7 @@ func validStreamTarget(target string) bool {
 	}
 	if uid, ok := strings.CutPrefix(target, "xpra:"); ok {
 		n, err := strconv.Atoi(uid)
-		return err == nil && n >= 1000 && strconv.Itoa(n) == uid
+		return err == nil && n > 0 && strconv.Itoa(n) == uid
 	}
 	return streamTargets[target]
 }

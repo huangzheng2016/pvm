@@ -30,7 +30,7 @@ Shipped:
 Planned:
 
 - [ ] `pvm exit-agent install|uninstall` as a systemd service
-- [ ] `pvm app` on macOS, Linux and WSL2 hosts, and reliable input method text
+- [ ] Host-to-guest clipboard for `pvm app` on macOS and Linux, `pvm app` on WSL2, and reliable input method text
 - [ ] Input method candidates that follow the app's text cursor
 
 Candidates:
@@ -152,7 +152,7 @@ Clipboard and drops are off until you enable them per VM. With `--clipboard to-g
 
 ### Browser desktop
 
-`pvm desktop dev1` serves the VM's own XFCE desktop through TigerVNC and noVNC on a loopback URL, resized to the browser window. `--public` listens on `0.0.0.0` and still requires VNC authentication.
+`pvm desktop dev1` serves the VM's own XFCE desktop through TigerVNC and noVNC on a loopback URL, resized to the browser window. New VMs carry it over `pvm.stream`; VMs without that port keep the existing gateway map/relay and migrate after a restart. `--public` listens on `0.0.0.0` and still requires VNC authentication.
 
 ### Workspaces
 

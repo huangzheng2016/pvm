@@ -28,8 +28,8 @@ const xpraSocket = "pvm/xpra.sock"
 // directory. The agent runs as root, so the directory and socket must
 // belong to uid; another guest user cannot plant one.
 func dialUserSocket(root string, uid int, rel string) (io.ReadWriteCloser, error) {
-	if uid < 1000 {
-		return nil, fmt.Errorf("uid %d is not a login user", uid)
+	if uid <= 0 {
+		return nil, fmt.Errorf("uid %d is not a user", uid)
 	}
 	runtime := filepath.Join(root, "run", "user", strconv.Itoa(uid))
 	path := filepath.Join(runtime, rel)
@@ -78,8 +78,8 @@ func clipboardSink(uid int, kind string) (io.ReadWriteCloser, error) {
 	if !ok {
 		return nil, fmt.Errorf("unknown clipboard kind %q", kind)
 	}
-	if uid < 1000 {
-		return nil, fmt.Errorf("uid %d is not a login user", uid)
+	if uid <= 0 {
+		return nil, fmt.Errorf("uid %d is not a user", uid)
 	}
 	u, err := user.LookupId(strconv.Itoa(uid))
 	if err != nil {

@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
 func freeRelayTestPort(t *testing.T) int {
@@ -130,5 +132,31 @@ func TestRemoveDesktopMapsDropsLegacyMap(t *testing.T) {
 	}
 	if _, ok := s.relays.Binding("tcp", other); !ok {
 		t.Fatal("unrelated relay removed")
+	}
+}
+
+func TestDesktopLegacyMapSurvivesRecovery(t *testing.T) {
+	s, dev1, _ := newMapTestServer(t)
+	port, err := s.desktopEnsureMap(context.Background(), dev1, false, okPush)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &desktopState{Password: "secret", HostPort: port, Size: "1280x720"}
+	if err := s.saveDesktopState(dev1.Name, st); err != nil {
+		t.Fatal(err)
+	}
+	if !s.desktopRelayMatches(dev1, st, false) {
+		t.Fatal("legacy desktop relay is not usable")
+	}
+	markVMRunning(t, s, dev1.Name)
+	if s.streamPortAvailable(dev1) {
+		t.Fatal("legacy VM unexpectedly has a stream port")
+	}
+	s.recoverDesktopForwards([]*vm.Spec{dev1})
+	if got := s.desktopForwards["dev1"]; got != nil {
+		t.Fatal("legacy VM got a stream listener instead of its relay")
+	}
+	if !s.desktopRelayMatches(dev1, st, false) {
+		t.Fatal("legacy desktop relay was lost during recovery")
 	}
 }

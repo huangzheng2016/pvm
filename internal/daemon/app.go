@@ -155,8 +155,16 @@ func (s *Server) saveAppState(name string, st *appState) error {
 // appSecret returns the host copy of the VM's Xpra password, creating it.
 func (s *Server) appSecret(name string) (string, string, error) {
 	p := filepath.Join(s.appDir(name), "xpra.secret")
-	if raw, err := os.ReadFile(p); err == nil && len(strings.TrimSpace(string(raw))) == 64 {
-		return p, strings.TrimSpace(string(raw)), nil
+	raw, err := os.ReadFile(p)
+	if err == nil {
+		secret := strings.TrimSpace(string(raw))
+		if len(secret) != 64 {
+			return "", "", fmt.Errorf("invalid xpra secret in %s; restore it or move it away and retry", p)
+		}
+		return p, secret, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", "", err
 	}
 	if err := os.MkdirAll(s.appDir(name), 0o700); err != nil {
 		return "", "", err
@@ -306,12 +314,13 @@ func appStopScript(stop []appRecord, webappsLeft bool) string {
 			wins = append(wins, shellQuote(a.Window))
 		}
 	}
-	script := "systemctl --user stop " + strings.Join(units, " ") + " 2>/dev/null || true\n"
+	script := "stop_units() { for u in \"$@\"; do if systemctl --user is-active --quiet \"$u\"; then systemctl --user stop \"$u\"; fi; done; }\n"
+	script += "stop_units " + strings.Join(units, " ") + "\n"
 	if len(wins) > 0 {
 		script += "for w in " + strings.Join(wins, " ") + "; do DISPLAY=" + appDisplay + ` wmctrl -i -c "$w" 2>/dev/null || true; done` + "\n"
 	}
 	if !webappsLeft {
-		script += "systemctl --user stop " + webappUnit + " 2>/dev/null || true\n"
+		script += "stop_units " + webappUnit + "\n"
 	}
 	return script
 }
@@ -775,7 +784,7 @@ func (s *Server) handleAppStop(w http.ResponseWriter, r *http.Request) {
 	if len(st.Apps) == 0 {
 		// the last app is gone: the server and its client go too
 		if vmUp {
-			if out, err := s.sshRunCtx(ctx, spec, "systemctl --user stop "+appServerUnit+" 2>&1 || true"); err != nil {
+			if out, err := s.sshRunCtx(ctx, spec, "if systemctl --user is-active --quiet "+appServerUnit+"; then systemctl --user stop "+appServerUnit+"; fi"); err != nil {
 				writeErr(w, 500, fmt.Errorf("stop xpra server in %s: %v%s", name, err, indentOutput(out)))
 				return
 			}
