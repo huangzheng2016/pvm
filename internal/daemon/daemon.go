@@ -896,6 +896,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
+	s.closeAppClients(spec)
 	if err := s.instance(spec).Stop(); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -927,6 +928,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
+	s.closeAppClients(spec)
 	if err := s.instance(spec).Stop(); err != nil {
 		writeErr(w, 500, fmt.Errorf("cannot stop %s safely (%v); not deleting", name, err))
 		return
@@ -994,6 +996,7 @@ func (s *Server) StopAllVMs() {
 		lock := qemu.LockVM(spec.Name)
 		lock.Lock()
 		defer lock.Unlock()
+		s.closeAppClients(spec)
 		if err := s.instance(spec).Stop(); err != nil {
 			log.Printf("graceful stop %s: %v", spec.Name, err)
 		}

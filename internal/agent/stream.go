@@ -58,6 +58,14 @@ func streamTarget(target string) (io.ReadWriteCloser, error) {
 		}
 		return clipboardSink(n, kind)
 	}
+	if uid, ok := strings.CutPrefix(target, "clipout:"); ok {
+		uid, ok = strings.CutSuffix(uid, ":files")
+		n, err := strconv.Atoi(uid)
+		if !ok || err != nil || strconv.Itoa(n) != uid {
+			return nil, fmt.Errorf("bad clipboard target %q", target)
+		}
+		return clipFilesSource(n)
+	}
 	if uid, ok := strings.CutPrefix(target, "xpra:"); ok {
 		n, err := strconv.Atoi(uid)
 		if err != nil || strconv.Itoa(n) != uid {

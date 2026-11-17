@@ -143,12 +143,12 @@ pvm route ls
 pvm app dev1 -- gedit
 pvm app dev1 https://mail.example.com --kiosk
 pvm app ls
-pvm app config dev1 --clipboard both --drop on
+pvm app config dev1 --clipboard both --drop on --audio both
 pvm app attach dev1
 pvm app stop dev1 --all
 ```
 
-剪贴板和拖放默认关闭，需按虚拟机单独开启。使用 `--clipboard to-guest` 或 `both` 时，宿主机内容只在该虚拟机的窗口切到前台、或窗口在前台时复制，才会进入虚拟机；被密码管理器标记为排除的内容永远不会发送。用宿主机输入法（比如微软拼音）输入的中文等文字，也能正常输入到应用里。详见 [docs/design/app.md](docs/design/app.md)。
+剪贴板和拖放默认关闭，需按虚拟机单独开启。使用 `--clipboard to-guest` 或 `both` 时，宿主机内容只在该虚拟机的窗口切到前台、或窗口在前台时复制，才会进入虚拟机；被密码管理器标记为排除的内容永远不会发送。文本、图片，以及在 Windows 宿主机上的文件和文件夹，都可以双向复制粘贴。用宿主机输入法（比如微软拼音）输入的中文，或表情面板里的 emoji，也能正常输入到应用里。声音从宿主机扬声器播放；`--audio both` 还会把宿主机的麦克风借给虚拟机。详见 [docs/design/app.md](docs/design/app.md)。
 
 ### 浏览器桌面
 
