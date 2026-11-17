@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -354,6 +355,30 @@ func TestBuildArgsCommaPathsWithQEMU(t *testing.T) {
 	defer q.Close()
 	if status, err := q.Status(); err != nil || status != "prelaunch" {
 		t.Fatalf("QEMU status=%q err=%v", status, err)
+	}
+	udp := HostForward{Proto: "udp", Port: sshPort}
+	if err := q.AddHostForward(udp); err != nil {
+		t.Fatalf("add UDP host forward: %v", err)
+	}
+	forwards, err := q.HostForwards()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(forwards, udp) {
+		t.Fatalf("UDP host forward missing after add: %v", forwards)
+	}
+	if err := q.RemoveHostForward(udp); err != nil {
+		t.Fatalf("remove UDP host forward: %v", err)
+	}
+	forwards, err = q.HostForwards()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(forwards, udp) {
+		t.Fatalf("UDP host forward remains after remove: %v", forwards)
+	}
+	if !slices.Contains(forwards, HostForward{Proto: "tcp", Port: sshPort}) {
+		t.Fatalf("SSH host forward changed: %v", forwards)
 	}
 	if err := q.Quit(); err != nil {
 		t.Fatal(err)

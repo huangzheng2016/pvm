@@ -238,7 +238,13 @@ func (s *Server) applyPendingKernelArgs(ctx context.Context, spec *vm.Spec, seq 
 	}
 	for _, a := range args {
 		if !slices.Contains(strings.Fields(cmdline), a) {
-			return fmt.Errorf("booted without kernel arg %q (cmdline: %s)", a, strings.TrimSpace(cmdline))
+			bootErr := fmt.Errorf("booted without kernel arg %q (cmdline: %s)", a, strings.TrimSpace(cmdline))
+			pendingErr := s.setKernelArgsPending(spec, true)
+			stopErr := s.instance(spec).Stop()
+			if pendingErr == nil && stopErr == nil {
+				return fmt.Errorf("%w; vm stopped and safe boot state restored", bootErr)
+			}
+			return errors.Join(bootErr, pendingErr, stopErr)
 		}
 	}
 	return nil
