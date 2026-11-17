@@ -29,6 +29,8 @@
 - [x] 默认使用当前工作区的虚拟机，`pvm ssh` 进入对应目录，虚拟机未启动时询问是否启动（v1.2.1）
 - [x] `pvm app` 窗口使用宿主机窗口边框，Chromium 类应用不走 GPU 渲染（v1.2.1）
 - [x] golden 镜像自带各主要文字的字体和彩色 emoji（v1.2.1）
+- [x] `pvm app` 支持声音、剪贴板复制文件和 emoji 输入，GTK 应用约一秒打开（v1.2.2）
+- [x] CI 在 Windows runner 上跑单元测试（v1.2.2）
 
 计划中：
 
@@ -36,7 +38,7 @@
 - [ ] `pvm app` 支持 macOS、Linux 和 WSL2 宿主机，并让输入法输入稳定可靠
 - [ ] 输入法候选框跟随应用的文本光标
 - [ ] `pvm desktop` 像 `pvm app` 一样作为宿主机窗口打开，并在虚拟机文件管理器里打开工作区目录
-- [ ] Windows CI：在 Windows runner 上跑单元测试，打 tag 时对安装包做冒烟测试
+- [ ] Windows CI：其余包的测试，以及打 tag 时对安装包做冒烟测试
 - [ ] 类似 Docker Desktop 的图形界面应用，用于创建虚拟机、管理出口、工作区和预装应用（先支持原生 Windows）
 
 候选：
