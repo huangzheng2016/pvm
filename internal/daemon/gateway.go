@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -124,22 +125,25 @@ func (s *Server) ensureGatewayKernelArgs(ctx context.Context, gw *vm.Spec) (bool
 	return true, nil
 }
 
+func (s *Server) setKernelArgsPending(spec *vm.Spec, pending bool) error {
+	if spec.KernelArgsPending == pending {
+		return nil
+	}
+	previous := spec.KernelArgsPending
+	spec.KernelArgsPending = pending
+	if err := spec.Save(s.P); err != nil {
+		spec.KernelArgsPending = previous
+		return fmt.Errorf("save %s spec: %w", spec.Name, err)
+	}
+	s.cacheSpec(spec)
+	return nil
+}
+
 // clearKernelArgsPending records that grub now carries spec.KernelArgs,
 // so the next boot runs on the accelerator's own CPU model. The caller
 // holds the VM lock and cold-boots afterwards.
 func (s *Server) clearKernelArgsPending(spec *vm.Spec) error {
-	if !spec.KernelArgsPending {
-		return nil
-	}
-	spec.KernelArgsPending = false
-	if err := spec.Save(s.P); err != nil {
-		spec.KernelArgsPending = true
-		return fmt.Errorf("save %s spec: %w", spec.Name, err)
-	}
-	s.mu.Lock()
-	s.vms[spec.Name] = copySpec(spec)
-	s.mu.Unlock()
-	return nil
+	return s.setKernelArgsPending(spec, false)
 }
 
 func (s *Server) onGatewayStarted(cl *cluster.Cluster) {
@@ -682,6 +686,9 @@ func (s *Server) syncGatewayForwards(clusterID int) error {
 // syncGatewayForwardsQMP adds and removes one forward per pool port and
 // protocol over QMP. QEMU starts the gateway with only its ssh forward.
 func (s *Server) syncGatewayForwardsQMP(cl *cluster.Cluster) error {
+	if err := validateGatewayMapCount(runtime.GOOS, len(cl.Maps)); err != nil {
+		return err
+	}
 	gw, err := s.getSpec(cl.Gateway)
 	if err != nil {
 		return err

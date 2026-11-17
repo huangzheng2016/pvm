@@ -238,6 +238,26 @@ func TestMapEntryJSONShape(t *testing.T) {
 	}
 }
 
+func TestMaxGatewayMapsForOS(t *testing.T) {
+	if got := maxGatewayMapsForOS("windows"); got != 32 {
+		t.Fatalf("Windows map limit = %d, want 32", got)
+	}
+	for _, goos := range []string{"darwin", "linux"} {
+		if got := maxGatewayMapsForOS(goos); got != 0 {
+			t.Fatalf("%s map limit = %d, want unlimited", goos, got)
+		}
+	}
+	if err := validateGatewayMapCount("windows", 32); err != nil {
+		t.Fatalf("32 maps rejected: %v", err)
+	}
+	if err := validateGatewayMapCount("windows", 33); err == nil || !strings.Contains(err.Error(), "pvm map rm") {
+		t.Fatalf("33 maps accepted: %v", err)
+	}
+	if err := validateGatewayMapCount("linux", 100); err != nil {
+		t.Fatalf("Linux maps are capped: %v", err)
+	}
+}
+
 // On native Windows a cluster's port maps stop at maxGatewayMaps, with an
 // error instead of silently starving the gateway's UDP.
 func TestAddMapStopsAtGatewayLimit(t *testing.T) {

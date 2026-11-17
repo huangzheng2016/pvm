@@ -22,4 +22,14 @@ func TestClearKernelArgsPendingPersists(t *testing.T) {
 	if cached, err := s.getSpec("dev1"); err != nil || cached.KernelArgsPending {
 		t.Errorf("cached spec still pending: %+v, %v", cached, err)
 	}
+	if err := s.setKernelArgsPending(spec, true); err != nil {
+		t.Fatal(err)
+	}
+	saved, err = vm.Load(s.P, "dev1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !saved.KernelArgsPending || !spec.KernelArgsPending {
+		t.Error("pending flag was not restored")
+	}
 }

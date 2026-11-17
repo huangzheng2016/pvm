@@ -149,10 +149,8 @@ func (s *Server) addMap(ctx context.Context, spec *vm.Spec, hostPort, guestPort 
 	if hostPort < 1024 || hostPort > 65535 {
 		return nil, 400, fmt.Errorf("host_port must be 1024-65535")
 	}
-	if limit := maxGatewayMaps(); limit > 0 {
-		if n := len(s.Clusters.Get(spec.ClusterID).Maps); n >= limit {
-			return nil, 409, fmt.Errorf("the cluster already has %d port maps, the most the native Windows backend supports; remove one with `pvm map rm <port>`", n)
-		}
+	if err := validateGatewayMapCount(runtime.GOOS, len(s.Clusters.Get(spec.ClusterID).Maps)+1); err != nil {
+		return nil, 409, err
 	}
 	// Ownership is global: a port persisted by another cluster without
 	// a live relay is still taken and must not be hijackable.
@@ -292,8 +290,19 @@ func portFree(proto string, port int) error {
 // The rest of the 64 is left to the gateway's ssh forward, its own
 // connections and active flows.
 func maxGatewayMaps() int {
-	if runtime.GOOS == "windows" {
+	return maxGatewayMapsForOS(runtime.GOOS)
+}
+
+func maxGatewayMapsForOS(goos string) int {
+	if goos == "windows" {
 		return 32
 	}
 	return 0
+}
+
+func validateGatewayMapCount(goos string, count int) error {
+	if limit := maxGatewayMapsForOS(goos); limit > 0 && count > limit {
+		return fmt.Errorf("cluster has %d port maps, more than the %d supported by the native Windows backend; remove one with `pvm map rm <port>`", count, limit)
+	}
+	return nil
 }
