@@ -1,11 +1,12 @@
-// Package assets embeds guest binaries only in host builds; without the
-// embedassets tag, Unpack is a no-op.
+// Package assets embeds guest binaries only in host builds; script/build.sh
+// sets the embedassets tag. Without it the daemon cannot deploy guests.
 package assets
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -25,10 +26,10 @@ type manifestEntry struct {
 
 func Unpack(dir string) error {
 	data, err := packed.ReadFile("packed/manifest.json")
+	if errors.Is(err, fs.ErrNotExist) {
+		return errors.New("this pvm binary has no embedded guest assets; build it with script/build.sh, not plain go build")
+	}
 	if err != nil {
-		if err == fs.ErrNotExist {
-			return nil
-		}
 		return fmt.Errorf("read manifest: %w", err)
 	}
 	var entries []manifestEntry

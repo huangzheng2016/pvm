@@ -330,10 +330,11 @@ jobs:
           if [ '${{ matrix.out }}' = 'pvm_linux_amd64' ]; then
             printf '%s\n' "$UBUNTU_MIRROR" | sudo tee /etc/apt/apt-mirrors.txt
             sudo apt-get update
-            sudo apt-get install -y --no-install-recommends p7zip-full qemu-system-x86 qemu-system-common qemu-system-data seabios ipxe-qemu qemu-utils patchelf nsis wixl
+            sudo apt-get install -y --no-install-recommends p7zip-full unzip qemu-system-x86 qemu-system-common qemu-system-data seabios ipxe-qemu qemu-utils patchelf nsis wixl
             QEMU_METADATA_JSON=qemu-windows.json ./script/qemu/pack-windows-runtime.sh "$RUNNER_TEMP/win-qemu/x86_64"
             tar -czf pvm-qemu-runtime-windows-x86_64.tar.gz -C "$RUNNER_TEMP/win-qemu" x86_64
-            ./script/windows/pack-setup.sh pvm.exe "$RUNNER_TEMP/win-qemu/x86_64" pvm_windows_amd64_setup
+            ./script/windows/fetch-xpra-client.sh "$RUNNER_TEMP/win-xpra"
+            ./script/windows/pack-setup.sh pvm.exe "$RUNNER_TEMP/win-qemu/x86_64" "$RUNNER_TEMP/win-xpra" pvm_windows_amd64_setup
             QEMU_METADATA_JSON=qemu-linux.json ./script/qemu/pack-linux-runtime.sh "$RUNNER_TEMP/linux-qemu/x86_64"
             tar -czf pvm-qemu-runtime-linux-x86_64.tar.gz -C "$RUNNER_TEMP/linux-qemu" x86_64
             tar -czf pvm_windows_amd64.tar.gz pvm.exe

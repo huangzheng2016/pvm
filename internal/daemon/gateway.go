@@ -5,11 +5,14 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -61,10 +64,12 @@ func (s *Server) ensureCluster(id int) (*cluster.Cluster, error) {
 }
 
 // ensureGatewayKernelArgs cold-boots the gateway when the running kernel
-// lacks spec.KernelArgs: cloud-init installs them into grub during the
-// first boot, which itself still runs without them, and -no-reboot
-// guests cannot restart themselves. The caller holds the gateway deploy
-// gate, so the restarted gateway's own deploy waits for this one.
+// lacks spec.KernelArgs, or while they are pending and it runs on the CPU
+// model for kernels without them: cloud-init installs them into grub
+// during the first boot, which itself still runs without them, and
+// -no-reboot guests cannot restart themselves. The caller holds the
+// gateway deploy gate, so the restarted gateway's own deploy waits for
+// this one.
 func (s *Server) ensureGatewayKernelArgs(ctx context.Context, gw *vm.Spec) (bool, error) {
 	// /etc/pvm and the grub drop-in only exist once runcmd finishes.
 	if out, err := s.sshRunCtx(ctx, gw, "sudo cloud-init status --wait"); err != nil {
@@ -90,7 +95,7 @@ func (s *Server) ensureGatewayKernelArgs(ctx context.Context, gw *vm.Spec) (bool
 		}
 		check += " && sudo grep -qwF -- '" + arg + "' /boot/grub/grub.cfg"
 	}
-	if !missing {
+	if !missing && !gw.KernelArgsPending {
 		return false, nil
 	}
 	if out, err := s.sshRunCtx(ctx, gw, check); err != nil {
@@ -107,6 +112,9 @@ func (s *Server) ensureGatewayKernelArgs(ctx context.Context, gw *vm.Spec) (bool
 	if cur == nil || cur.PID != st.PID {
 		return false, fmt.Errorf("gateway %s changed state during kernel-args check", gw.Name)
 	}
+	if err := s.clearKernelArgsPending(gw); err != nil {
+		return false, err
+	}
 	log.Printf("gateway %s: cold boot to apply guest kernel args %q", gw.Name, gw.KernelArgs)
 	if err := inst.Stop(); err != nil {
 		return false, fmt.Errorf("stop gateway for kernel args: %w", err)
@@ -115,6 +123,27 @@ func (s *Server) ensureGatewayKernelArgs(ctx context.Context, gw *vm.Spec) (bool
 		return false, fmt.Errorf("restart gateway for kernel args: %w", err)
 	}
 	return true, nil
+}
+
+func (s *Server) setKernelArgsPending(spec *vm.Spec, pending bool) error {
+	if spec.KernelArgsPending == pending {
+		return nil
+	}
+	previous := spec.KernelArgsPending
+	spec.KernelArgsPending = pending
+	if err := spec.Save(s.P); err != nil {
+		spec.KernelArgsPending = previous
+		return fmt.Errorf("save %s spec: %w", spec.Name, err)
+	}
+	s.cacheSpec(spec)
+	return nil
+}
+
+// clearKernelArgsPending records that grub now carries spec.KernelArgs,
+// so the next boot runs on the accelerator's own CPU model. The caller
+// holds the VM lock and cold-boots afterwards.
+func (s *Server) clearKernelArgsPending(spec *vm.Spec) error {
+	return s.setKernelArgsPending(spec, false)
 }
 
 func (s *Server) onGatewayStarted(cl *cluster.Cluster) {
@@ -241,6 +270,7 @@ func (s *Server) createGatewayVM(cl *cluster.Cluster) (*vm.Spec, error) {
 		SSHPort: port, BaseDisk: base, ClusterID: cl.ID,
 		KernelArgs: s.Accel.GuestKernelArgs(),
 	}
+	spec.KernelArgsPending = spec.KernelArgs != ""
 	if err := vm.Create(s.P, s.TC, spec); err != nil {
 		return nil, err
 	}
@@ -420,6 +450,11 @@ func (s *Server) pushGatewayConfigCtx(ctx context.Context, clusterID int) error 
 		return err
 	}
 	return s.renderGatewayConfigLocked(ctx, clusterID, func(cfg []byte) error {
+		// forwards first: once the guest DNATs a pool port, its host side
+		// must already reach the gateway
+		if err := s.syncGatewayForwards(clusterID); err != nil {
+			return fmt.Errorf("gateway port forwards: %w", err)
+		}
 		tmp, err := os.CreateTemp("", "pvm-gwcfg-*.json")
 		if err != nil {
 			return err
@@ -568,12 +603,36 @@ func (s *Server) sshRun(spec *vm.Spec, cmd string) (string, error) {
 // sshRunCtx kills the ssh child when ctx is done, so a cancelled
 // request does not leave the process running.
 func (s *Server) sshRunCtx(ctx context.Context, spec *vm.Spec, cmd string) (string, error) {
+	return s.sshRunInputCtx(ctx, spec, cmd, "")
+}
+
+// sshStreamCtx runs cmd and copies its stdout and stderr to out as they
+// arrive, then closes out.
+func (s *Server) sshStreamCtx(ctx context.Context, spec *vm.Spec, cmd string, out io.WriteCloser) error {
+	defer out.Close()
+	args, target, err := s.sshBaseArgs(spec)
+	if err != nil {
+		return err
+	}
+	c := exec.CommandContext(ctx, "ssh", append(args, target, cmd)...)
+	fsutil.ConfigureHiddenCmd(c)
+	c.WaitDelay = 2 * time.Second
+	c.Stdout, c.Stderr = out, out
+	return c.Run()
+}
+
+// sshRunInputCtx runs cmd with stdin as its input, which keeps secrets off
+// the guest's process list.
+func (s *Server) sshRunInputCtx(ctx context.Context, spec *vm.Spec, cmd, stdin string) (string, error) {
 	args, target, err := s.sshBaseArgs(spec)
 	if err != nil {
 		return "", err
 	}
 	c := exec.CommandContext(ctx, "ssh", append(args, target, cmd)...)
 	fsutil.ConfigureHiddenCmd(c)
+	if stdin != "" {
+		c.Stdin = strings.NewReader(stdin)
+	}
 	c.WaitDelay = 2 * time.Second
 	var stdout, stderr strings.Builder
 	c.Stdout = &stdout
@@ -609,4 +668,58 @@ func (s *Server) scpToCtx(ctx context.Context, spec *vm.Spec, local, remote stri
 		return fmt.Errorf("scp: %v\n%s", err, out)
 	}
 	return nil
+}
+
+// syncGatewayForwards makes the gateway's user-network forwards match the
+// cluster's port maps; tests without a gateway QEMU replace it.
+func (s *Server) syncGatewayForwards(clusterID int) error {
+	if s.syncForwards != nil {
+		return s.syncForwards(clusterID)
+	}
+	cl := s.Clusters.Get(clusterID)
+	if cl == nil {
+		return fmt.Errorf("cluster %d not found", clusterID)
+	}
+	return s.syncGatewayForwardsQMP(cl)
+}
+
+// syncGatewayForwardsQMP adds and removes one forward per pool port and
+// protocol over QMP. QEMU starts the gateway with only its ssh forward.
+func (s *Server) syncGatewayForwardsQMP(cl *cluster.Cluster) error {
+	if err := validateGatewayMapCount(runtime.GOOS, len(cl.Maps)); err != nil {
+		return err
+	}
+	gw, err := s.getSpec(cl.Gateway)
+	if err != nil {
+		return err
+	}
+	want := map[qemu.HostForward]bool{}
+	for _, m := range cl.Maps {
+		want[qemu.HostForward{Proto: m.Proto, Port: m.PoolPort}] = true
+	}
+	q, err := qemu.DialQMP(s.P.QMPSock(gw.Name))
+	if err != nil {
+		return fmt.Errorf("gateway qmp: %w", err)
+	}
+	defer q.Close()
+	have, err := q.HostForwards()
+	if err != nil {
+		return err
+	}
+	inPool := func(f qemu.HostForward) bool { return f.Port >= cl.PoolBase && f.Port < cl.PoolBase+cl.PoolSize }
+	var errs []error
+	for _, f := range have {
+		if inPool(f) && !want[f] {
+			if err := q.RemoveHostForward(f); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		delete(want, f)
+	}
+	for f := range want {
+		if err := q.AddHostForward(f); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }

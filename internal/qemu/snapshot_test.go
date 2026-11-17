@@ -390,3 +390,27 @@ func TestCaptureSnapshotDiskPreservesBacking(t *testing.T) {
 		t.Fatalf("snapshot backing = %q, want %q", got, filepath.Clean(base))
 	}
 }
+
+// A snapshot taken before the pvm.stream port existed restores without
+// it: migration needs the same device set.
+func TestManifestStreamPortMatch(t *testing.T) {
+	base := func() *VMConfig { return &VMConfig{CPUs: 1, MemMB: 128, StreamSock: "tcp:127.0.0.1:45004"} }
+	m := &SnapshotManifest{Arch: native.Arch, CPUs: 1, MemMB: 128, QEMUVersion: "11.1.0"}
+	c := base()
+	if err := m.checkMatch(c, "11.1.0"); err != nil {
+		t.Fatal(err)
+	}
+	if c.StreamSock != "" {
+		t.Error("restore of a snapshot without the port keeps it")
+	}
+	m.Stream = true
+	c = base()
+	if err := m.checkMatch(c, "11.1.0"); err != nil || c.StreamSock == "" {
+		t.Errorf("snapshot with the port: %v, stream %q", err, c.StreamSock)
+	}
+	c = base()
+	c.StreamSock = ""
+	if err := m.checkMatch(c, "11.1.0"); err == nil {
+		t.Error("snapshot with the port restored into a config without it")
+	}
+}

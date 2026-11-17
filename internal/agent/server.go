@@ -60,6 +60,7 @@ func (s *Server) Run(sysfsRoot string) error {
 		return err
 	}
 	log.Printf("agent: serving on %s (version %s)", dev, s.Version)
+	go runStream(sysfsRoot)
 	go func() {
 		if err := s.ServeControl(ControlSock); err != nil {
 			log.Printf("agent: control broker stopped: %v", err)

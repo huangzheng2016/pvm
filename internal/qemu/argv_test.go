@@ -2,10 +2,12 @@ package qemu
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -197,21 +199,31 @@ func TestQemuArch(t *testing.T) {
 	}
 }
 
-func TestNetArgsSlirpPool(t *testing.T) {
-	args := joined(netArgs(Network{Mode: NetSlirp, SSHHostPort: 10022, PoolBase: 30000, PoolSize: 2}))
-	for _, want := range []string{
-		"user,id=net0,ipv6=off,",
-		"hostfwd=tcp:127.0.0.1:10022-:22",
-		"hostfwd=tcp:127.0.0.1:30000-:30000",
-		"hostfwd=udp:127.0.0.1:30000-:30000",
-		"hostfwd=tcp:127.0.0.1:30001-:30001",
-	} {
-		if !strings.Contains(args, want) {
-			t.Errorf("slirp pool args missing %q", want)
-		}
+// The gateway starts with only its ssh forward; port maps are added over
+// QMP, because Windows QEMU starves sockets past the 64th.
+func TestNetArgsSlirpForwardsOnlySSH(t *testing.T) {
+	args := joined(netArgs(Network{Mode: NetSlirp, SSHHostPort: 10022}))
+	if !strings.Contains(args, "user,id=net0,ipv6=off,hostfwd=tcp:127.0.0.1:10022-:22 ") {
+		t.Errorf("slirp args = %s", args)
 	}
-	if strings.Contains(args, "30002") {
-		t.Errorf("pool overflow: %s", args)
+	if strings.Count(args, "hostfwd=") != 1 {
+		t.Errorf("slirp forwards more than ssh: %s", args)
+	}
+}
+
+func TestParseHostForwards(t *testing.T) {
+	out := `Hub -1 (net0):
+  Protocol[State]    FD  Source Address  Port   Dest. Address  Port RecvQ SendQ
+  TCP[ESTABLISHED]  2248       10.0.2.15 60214    192.0.2.10 18444     0     0
+  TCP[HOST_FORWARD] 838       127.0.0.1 10022       10.0.2.15    22     0     0
+  TCP[HOST_FORWARD] 834       127.0.0.1 30000       10.0.2.15 30000     0     0
+  UDP[HOST_FORWARD] 7a0       127.0.0.1 30001       10.0.2.15 30001     0     0
+  UDP[236 sec]      9f4       10.0.2.15 41234     192.0.2.53    53     0     0
+`
+	got := parseHostForwards(out)
+	want := []HostForward{{"tcp", 10022}, {"tcp", 30000}, {"udp", 30001}}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("parseHostForwards = %v, want %v", got, want)
 	}
 }
 
@@ -338,6 +350,30 @@ func TestBuildArgsCommaPathsWithQEMU(t *testing.T) {
 	if status, err := q.Status(); err != nil || status != "prelaunch" {
 		t.Fatalf("QEMU status=%q err=%v", status, err)
 	}
+	udp := HostForward{Proto: "udp", Port: sshPort}
+	if err := q.AddHostForward(udp); err != nil {
+		t.Fatalf("add UDP host forward: %v", err)
+	}
+	forwards, err := q.HostForwards()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(forwards, udp) {
+		t.Fatalf("UDP host forward missing after add: %v", forwards)
+	}
+	if err := q.RemoveHostForward(udp); err != nil {
+		t.Fatalf("remove UDP host forward: %v", err)
+	}
+	forwards, err = q.HostForwards()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(forwards, udp) {
+		t.Fatalf("UDP host forward remains after remove: %v", forwards)
+	}
+	if !slices.Contains(forwards, HostForward{Proto: "tcp", Port: sshPort}) {
+		t.Fatalf("SSH host forward changed: %v", forwards)
+	}
 	if err := q.Quit(); err != nil {
 		t.Fatal(err)
 	}
@@ -378,6 +414,7 @@ func TestBuildArgsTCPEndpointsAndWHPX(t *testing.T) {
 	cfg.QMPSock = "tcp:127.0.0.1:45001"
 	cfg.SerialSock = "tcp:127.0.0.1:45002"
 	cfg.AgentSock = "tcp:127.0.0.1:45003"
+	cfg.StreamSock = "tcp:127.0.0.1:45004"
 	cfg.Network = Network{Mode: NetCluster, LinkSock: "tcp:127.0.0.1:31110", MAC: "52:54:00:01:00:0a"}
 	args, err := BuildArgs(&Toolchain{FirmwareDir: "/fw"}, cfg)
 	if err != nil {
@@ -388,7 +425,8 @@ func TestBuildArgsTCPEndpointsAndWHPX(t *testing.T) {
 		"-accel whpx,kernel-irqchip=off -machine vmport=off -cpu host,-xsave -no-reboot",
 		"-qmp tcp:127.0.0.1:45001,server=on,wait=off",
 		"socket,id=ser0,host=127.0.0.1,port=45002,server=on,wait=off",
-		"socket,id=pvmagent,host=127.0.0.1,port=45003,server=on,wait=off",
+		"socket,id=pvmagent,host=127.0.0.1,port=45003,server=on,wait=off,nodelay=on",
+		"socket,id=pvmstream,host=127.0.0.1,port=45004,server=on,wait=off,nodelay=on -device " + StreamPortDevice,
 		"stream,id=net0,server=off,addr.type=inet,addr.host=127.0.0.1,addr.port=31110",
 	} {
 		if !strings.Contains(j, want) {

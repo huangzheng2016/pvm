@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -35,19 +36,26 @@ func NewClient(p *paths.Paths) *Client {
 			Timeout: 20 * time.Minute, // first gateway provisioning can exceed 10min on slow TCG hosts
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					if runtime.GOOS == "windows" {
-						b, err := os.ReadFile(p.DaemonAddr())
-						if err != nil {
-							return nil, err
-						}
-						return (&net.Dialer{}).DialContext(ctx, "tcp", strings.TrimSpace(string(b)))
-					}
-					return (&net.Dialer{}).DialContext(ctx, "unix", p.DaemonSock())
+					return dialDaemon(ctx, p)
 				},
 			},
 		},
 	}
 }
+
+// dialDaemon connects the daemon's API socket.
+func dialDaemon(ctx context.Context, p *paths.Paths) (net.Conn, error) {
+	if runtime.GOOS == "windows" {
+		b, err := os.ReadFile(p.DaemonAddr())
+		if err != nil {
+			return nil, err
+		}
+		return (&net.Dialer{}).DialContext(ctx, "tcp", strings.TrimSpace(string(b)))
+	}
+	return (&net.Dialer{}).DialContext(ctx, "unix", p.DaemonSock())
+}
+
+func (c *Client) dial(ctx context.Context) (net.Conn, error) { return dialDaemon(ctx, c.P) }
 
 func ensureAdminToken(p *paths.Paths) (string, error) {
 	path := p.DaemonAdminToken()
@@ -214,6 +222,14 @@ func (c *Client) getCtx(ctx context.Context, path string, out any) error {
 }
 
 func (c *Client) Post(path string, body, out any) error {
+	return c.send("POST", path, body, out)
+}
+
+func (c *Client) Put(path string, body, out any) error {
+	return c.send("PUT", path, body, out)
+}
+
+func (c *Client) send(method, path string, body, out any) error {
 	var rdr io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -222,7 +238,7 @@ func (c *Client) Post(path string, body, out any) error {
 		}
 		rdr = bytes.NewReader(data)
 	}
-	req, err := http.NewRequest("POST", "http://d"+path, rdr)
+	req, err := http.NewRequest(method, "http://d"+path, rdr)
 	if err != nil {
 		return err
 	}
@@ -275,6 +291,60 @@ func (c *Client) PostStream(path string, body any) (*http.Response, error) {
 		return nil, decodeResp(resp, nil)
 	}
 	return resp, nil
+}
+
+// Upgrade opens a raw byte stream on path, such as a pvm.stream target.
+// It dials its own connection, so the stream has no request timeout and
+// supports CloseWrite.
+func (c *Client) Upgrade(path string) (io.ReadWriteCloser, error) {
+	conn, err := c.dial(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest("GET", "http://d"+path, nil)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "pvm-stream")
+	c.setAuthHeader(req)
+	conn.SetDeadline(time.Now().Add(30 * time.Second))
+	if err := req.Write(conn); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, req)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		defer conn.Close()
+		defer resp.Body.Close()
+		if err := decodeResp(resp, nil); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("upgrade %s: unexpected status %s", path, resp.Status)
+	}
+	conn.SetDeadline(time.Time{})
+	return &upgradedConn{Conn: conn, r: br}, nil
+}
+
+// upgradedConn reads through the buffer that parsed the response.
+type upgradedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (u *upgradedConn) Read(p []byte) (int, error) { return u.r.Read(p) }
+
+func (u *upgradedConn) CloseWrite() error {
+	if cw, ok := u.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return u.Conn.Close()
 }
 
 func decodeResp(resp *http.Response, out any) error {

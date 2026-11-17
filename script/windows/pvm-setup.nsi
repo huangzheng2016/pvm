@@ -1,7 +1,8 @@
-; pvm-setup.nsi: per-user Windows installer for pvm and its bundled QEMU
-; runtime. Built by script/windows/pack-setup.sh; do not run makensis directly.
+; pvm-setup.nsi: per-user Windows installer for pvm, its bundled QEMU
+; runtime and the Xpra client for `pvm app`. Built by
+; script/windows/pack-setup.sh; do not run makensis directly.
 ;
-; Required defines: VERSION, PVM_EXE, RUNTIME_DIR, OUTFILE.
+; Required defines: VERSION, PVM_EXE, RUNTIME_DIR, XPRA_DIR, OUTFILE.
 
 Unicode true
 SetCompressor /SOLID lzma
@@ -126,6 +127,23 @@ Section "pvm"
     Abort "staged qemu-system-x86_64.exe failed to run (exit $1)"
   ${EndIf}
 
+  ; pvm looks for the Xpra client in xpra\ next to pvm.exe.
+  DetailPrint "Staging Xpra client..."
+  RMDir /r "$INSTDIR\.xpra.new"
+  SetOutPath "$INSTDIR\.xpra.new"
+  File /r "${XPRA_DIR}\*.*"
+  SetOutPath "$INSTDIR"
+  nsExec::ExecToStack /OEM '"$INSTDIR\.xpra.new\Xpra_cmd.exe" --version'
+  Pop $1
+  Pop $2
+  ${If} $1 != 0
+  ${OrIfNot} ${FileExists} "$INSTDIR\.xpra.new\Xpra.exe"
+    RMDir /r "$INSTDIR\.xpra.new"
+    RMDir /r "$RuntimeRoot\.x86_64.new"
+    Delete "$INSTDIR\pvm.new.exe"
+    Abort "staged Xpra_cmd.exe failed to run (exit $1)"
+  ${EndIf}
+
   ; Swap the runtime, keeping the previous one until the binary is in place.
   RMDir /r "$RuntimeRoot\.x86_64.old"
   ${If} ${FileExists} "$RuntimeRoot\x86_64\*.*"
@@ -140,8 +158,31 @@ Section "pvm"
   ${If} ${Errors}
     Rename "$RuntimeRoot\.x86_64.old" "$RuntimeRoot\x86_64"
     RMDir /r "$RuntimeRoot\.x86_64.new"
+    RMDir /r "$INSTDIR\.xpra.new"
     Delete "$INSTDIR\pvm.new.exe"
     Abort "cannot move the new runtime into $RuntimeRoot\x86_64; the previous runtime was restored"
+  ${EndIf}
+
+  ; Swap the Xpra client the same way.
+  RMDir /r "$INSTDIR\.xpra.old"
+  ${If} ${FileExists} "$INSTDIR\xpra\*.*"
+    !insertmacro RenameRetry "$INSTDIR\xpra" "$INSTDIR\.xpra.old"
+    ${If} ${Errors}
+      RMDir /r "$RuntimeRoot\x86_64"
+      Rename "$RuntimeRoot\.x86_64.old" "$RuntimeRoot\x86_64"
+      RMDir /r "$INSTDIR\.xpra.new"
+      Delete "$INSTDIR\pvm.new.exe"
+      Abort "cannot replace $INSTDIR\xpra (is an Xpra window still open?)"
+    ${EndIf}
+  ${EndIf}
+  !insertmacro RenameRetry "$INSTDIR\.xpra.new" "$INSTDIR\xpra"
+  ${If} ${Errors}
+    Rename "$INSTDIR\.xpra.old" "$INSTDIR\xpra"
+    RMDir /r "$INSTDIR\.xpra.new"
+    RMDir /r "$RuntimeRoot\x86_64"
+    Rename "$RuntimeRoot\.x86_64.old" "$RuntimeRoot\x86_64"
+    Delete "$INSTDIR\pvm.new.exe"
+    Abort "cannot move the new Xpra client into $INSTDIR\xpra; the previous version was restored"
   ${EndIf}
 
   Delete "$INSTDIR\pvm.old.exe"
@@ -150,6 +191,8 @@ Section "pvm"
     ${If} ${Errors}
       RMDir /r "$RuntimeRoot\x86_64"
       Rename "$RuntimeRoot\.x86_64.old" "$RuntimeRoot\x86_64"
+      RMDir /r "$INSTDIR\xpra"
+      Rename "$INSTDIR\.xpra.old" "$INSTDIR\xpra"
       Delete "$INSTDIR\pvm.new.exe"
       Abort "cannot replace $INSTDIR\pvm.exe (is pvm still running?)"
     ${EndIf}
@@ -159,12 +202,15 @@ Section "pvm"
     Rename "$INSTDIR\pvm.old.exe" "$INSTDIR\pvm.exe"
     RMDir /r "$RuntimeRoot\x86_64"
     Rename "$RuntimeRoot\.x86_64.old" "$RuntimeRoot\x86_64"
+    RMDir /r "$INSTDIR\xpra"
+    Rename "$INSTDIR\.xpra.old" "$INSTDIR\xpra"
     Delete "$INSTDIR\pvm.new.exe"
     Abort "cannot move the new pvm.exe into place; the previous version was restored"
   ${EndIf}
   Delete "$INSTDIR\pvm.old.exe"
   RMDir /r "$RuntimeRoot\.x86_64.old"
-  DetailPrint "Installed $INSTDIR\pvm.exe and $RuntimeRoot\x86_64"
+  RMDir /r "$INSTDIR\.xpra.old"
+  DetailPrint "Installed $INSTDIR\pvm.exe, $INSTDIR\xpra and $RuntimeRoot\x86_64"
 
   DetailPrint "Adding $INSTDIR to the user PATH..."
   !insertmacro UserPath add "$INSTDIR"
@@ -195,6 +241,7 @@ Section "Uninstall"
   !insertmacro UserPath remove "$INSTDIR"
 
   Delete "$INSTDIR\pvm.exe"
+  RMDir /r "$INSTDIR\xpra"
   Delete "$INSTDIR\uninstall.exe"
   RMDir "$INSTDIR"
   DeleteRegKey HKCU "${UNINST_KEY}"

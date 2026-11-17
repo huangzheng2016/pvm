@@ -102,10 +102,29 @@ func TestRenderProvision(t *testing.T) {
 		"truncate -s 0 /etc/machine-id",
 		"sed -i '/^pvmshare /d' /etc/fstab",
 		"userdel -rf baker",
+		"sshfs firefox",
+		"Signed-By: /etc/apt/keyrings/packages.mozilla.org.asc",
+		"Pin: origin packages.mozilla.org",
+		`if [ "$mozfpr" != "` + mozillaKeyFingerprint + `" ]`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("provision script missing %q", want)
 		}
+	}
+	if p, u := strings.Index(s, "\npvm_prefetch\n"), strings.Index(s, "apt-get -y upgrade"); p < 0 || p > u {
+		t.Error("packages must be prefetched before the upgrade")
+	}
+	if strings.Index(s, "/etc/apt/sources.list.d/mozilla.sources") > strings.Index(s, "updating package lists") {
+		t.Error("the Mozilla repository must be added before the main apt-get update")
+	}
+	if x := strings.Index(s, "/etc/apt/sources.list.d/xpra.sources"); x < 0 || x > strings.Index(s, "updating package lists") {
+		t.Error("the xpra repository must be added before the main apt-get update")
+	}
+	if !strings.Contains(s, xpraKeyFingerprint) || !strings.Contains(s, "Pin: version "+XpraVersion+".*") {
+		t.Error("the xpra repository must check its key and pin the release line")
+	}
+	if !strings.Contains(s, "install --no-install-recommends "+strings.Join(XpraPackages, " ")) || !strings.Contains(s, "mask --now xpra-server.socket") {
+		t.Error("golden images must install the xpra server without recommends and mask its system service")
 	}
 	if strings.Contains(s, "docker system prune -af") {
 		t.Error("provision script must not nuke the docker images it just pulled")
@@ -366,5 +385,22 @@ func TestBakeRejectsBrokenCatalogBeforeCreatingVM(t *testing.T) {
 	entries, err := os.ReadDir(p.VMs)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("bake created VM state before validating catalog: %v, %v", entries, err)
+	}
+}
+
+func TestGoldenHasKernelArgs(t *testing.T) {
+	for _, c := range []struct {
+		have, want string
+		ok         bool
+	}{
+		{"noxsave", "noxsave", true},
+		{"noxsave quiet", "noxsave", true},
+		{"", "", true},
+		{"", "noxsave", false},
+		{"quiet", "noxsave", false},
+	} {
+		if got := (&GoldenEntry{KernelArgs: c.have}).HasKernelArgs(c.want); got != c.ok {
+			t.Errorf("golden with %q has %q = %v, want %v", c.have, c.want, got, c.ok)
+		}
 	}
 }

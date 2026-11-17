@@ -51,8 +51,6 @@ const (
 type Network struct {
 	Mode        NetMode
 	SSHHostPort int
-	PoolBase    int // gateway only: hostfwd pool start (tcp+udp)
-	PoolSize    int
 	LinkSock    string // unix socket or tcp:host:port the gateway listens on
 	MAC         string
 }
@@ -68,6 +66,9 @@ type VMConfig struct {
 	QMPSock    string
 	SerialSock string
 	AgentSock  string // unix socket or tcp:host:port for the virtio-serial agent channel; empty disables
+	// StreamSock is the host end of the pvm.stream port, which needs
+	// AgentSock for its virtio-serial bus; empty disables.
+	StreamSock string
 	Network    Network
 	// HotplugPorts pre-creates pcie-root-ports rp10..rp(9+N) so NICs can
 	// be hot-added later (pcie.0 itself does not support hotplug).
@@ -104,6 +105,10 @@ func validateUnixSocketPath(name, path string) error {
 	return nil
 }
 
+// StreamPortDevice is the -device value of the pvm.stream port; run state
+// args containing it show the running VM has the port.
+const StreamPortDevice = "virtserialport,chardev=pvmstream,name=pvm.stream"
+
 func keyval(s string) string { return strings.ReplaceAll(s, ",", ",,") }
 
 func chardevSocketArg(id, endpoint, logfile string) string {
@@ -113,7 +118,8 @@ func chardevSocketArg(id, endpoint, logfile string) string {
 		if err != nil {
 			host, port = "127.0.0.1", after
 		}
-		base = fmt.Sprintf("socket,id=%s,host=%s,port=%s,server=on,wait=off", id, keyval(host), keyval(port))
+		// Nagle would hold back small writes such as pointer events
+		base = fmt.Sprintf("socket,id=%s,host=%s,port=%s,server=on,wait=off,nodelay=on", id, keyval(host), keyval(port))
 	} else {
 		base = fmt.Sprintf("socket,id=%s,path=%s,server=on,wait=off", id, keyval(endpoint))
 	}
@@ -139,7 +145,7 @@ func rngObjectArg() string {
 
 // BuildArgs constructs the full qemu argv (excluding the binary itself).
 func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
-	for _, socket := range []struct{ name, path string }{{"QMP", c.QMPSock}, {"serial", c.SerialSock}, {"agent", c.AgentSock}, {"network link", c.Network.LinkSock}} {
+	for _, socket := range []struct{ name, path string }{{"QMP", c.QMPSock}, {"serial", c.SerialSock}, {"agent", c.AgentSock}, {"stream", c.StreamSock}, {"network link", c.Network.LinkSock}} {
 		if err := validateUnixSocketPath(socket.name, socket.path); err != nil {
 			return nil, err
 		}
@@ -209,6 +215,12 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 			"-chardev", chardevSocketArg("pvmagent", c.AgentSock, ""),
 			"-device", "virtserialport,chardev=pvmagent,name=pvm.agent",
 		)
+		if c.StreamSock != "" {
+			args = append(args,
+				"-chardev", chardevSocketArg("pvmstream", c.StreamSock, ""),
+				"-device", StreamPortDevice,
+			)
+		}
 	}
 
 	args = append(args, netArgs(c.Network)...)
@@ -308,13 +320,12 @@ func netArgs(n Network) []string {
 			"-device", fmt.Sprintf("virtio-net-pci,id=nic0,netdev=net0,mac=%s,bus=rp-link", keyval(n.MAC)),
 		}
 	default: // NetSlirp
+		// Port maps are added over QMP as they are created
+		// (QMP.AddHostForward). Windows QEMU polls slirp's sockets with
+		// select(), whose fd_set holds 64; libslirp lists listening TCP
+		// sockets first, so forwarding the whole map pool up front left
+		// UDP and even ssh unpolled.
 		fwd := fmt.Sprintf("hostfwd=tcp:127.0.0.1:%d-:22", n.SSHHostPort)
-		if n.PoolBase > 0 && n.PoolSize > 0 {
-			for p := n.PoolBase; p < n.PoolBase+n.PoolSize; p++ {
-				fwd += fmt.Sprintf(",hostfwd=tcp:127.0.0.1:%d-:%d", p, p)
-				fwd += fmt.Sprintf(",hostfwd=udp:127.0.0.1:%d-:%d", p, p)
-			}
-		}
 		return []string{
 			"-netdev", "user,id=net0,ipv6=off," + fwd,
 			"-device", "virtio-net-pci,netdev=net0",

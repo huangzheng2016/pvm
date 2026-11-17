@@ -10,10 +10,14 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
+	"log"
+
 	"github.com/huangzheng2016/pvm/internal/fsutil"
+	"github.com/huangzheng2016/pvm/internal/qemu"
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
@@ -143,45 +147,35 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	public := r.URL.Query().Get("public") == "1"
-	if running && st != nil && st.Public == public && s.desktopRelayMatches(spec, st, public) {
+	useStream := s.streamPortAvailable(spec)
+	if !useStream && running && st != nil && st.Public == public && s.desktopRelayMatches(spec, st, public) {
 		writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort, Public: st.Public})
 		return
 	}
-	// The old-map cleanup gets its own bounded context; the session
-	// start below may take up to a minute and must not eat the map
-	// operation's budget.
-	cleanCtx, cleanCancel := context.WithTimeout(r.Context(), mapPushTimeout)
-	defer cleanCancel()
-	if err := s.mapMu.Lock(cleanCtx); err != nil {
+	if err := s.removeDesktopMaps(r.Context(), spec, s.pushGatewayConfigCtx); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	for _, m := range s.Clusters.Get(spec.ClusterID).Maps {
-		if m.VM == spec.Name && m.GuestPort == desktopWebPort {
-			s.relays.Remove(m.Proto, m.HostPort)
-			_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
-		}
-	}
-	s.mapMu.Unlock()
-	if running && st != nil {
-		st.Public = public
-	} else {
-		st = &desktopState{Password: randHex(8), Size: size, Public: public}
+	if !(running && st != nil) {
+		st = &desktopState{Password: randHex(8), Size: size}
 		if err := s.startDesktopSession(spec, st); err != nil {
 			writeErr(w, 500, err)
 			return
 		}
 	}
-
-	// The ensure gets a fresh deadline created after the session start.
-	ensureCtx, ensureCancel := context.WithTimeout(r.Context(), mapPushTimeout)
-	defer ensureCancel()
-	hostPort, err := s.desktopEnsureMap(ensureCtx, spec, public, s.pushGatewayConfigCtx)
+	var port int
+	if useStream {
+		port, err = s.ensureDesktopForward(name, st.HostPort, public)
+	} else {
+		ensureCtx, ensureCancel := context.WithTimeout(r.Context(), mapPushTimeout)
+		defer ensureCancel()
+		port, err = s.desktopEnsureMap(ensureCtx, spec, public, s.pushGatewayConfigCtx)
+	}
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	st.HostPort = hostPort
+	st.HostPort, st.Public = port, public
 	if err := s.saveDesktopState(name, st); err != nil {
 		writeErr(w, 500, fmt.Errorf("save desktop state: %v", err))
 		return
@@ -189,10 +183,7 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort, Public: st.Public})
 }
 
-// desktopEnsureMap returns the desktop web port mapping for spec,
-// creating it through the shared map creation path (membership, global
-// port ownership, push and rollback) with the public bind variant when
-// requested.
+// desktopEnsureMap keeps desktops working on VMs started before pvm.stream.
 func (s *Server) desktopEnsureMap(ctx context.Context, spec *vm.Spec, public bool, push func(context.Context, int) error) (int, error) {
 	ensure := s.relays.Ensure
 	if public {
@@ -229,6 +220,106 @@ func (s *Server) desktopRelayMatches(spec *vm.Spec, st *desktopState, public boo
 	return false
 }
 
+// ensureDesktopForward returns the port of the VM's desktop listener,
+// starting one on port (0 picks one) when there is none or its binding
+// differs. Connections go over pvm.stream, not the gateway.
+func (s *Server) ensureDesktopForward(name string, port int, public bool) (int, error) {
+	bind := "127.0.0.1"
+	if public {
+		bind = "0.0.0.0"
+	}
+	s.mu.Lock()
+	cur := s.desktopForwards[name]
+	s.mu.Unlock()
+	if cur != nil && cur.bind == bind {
+		return cur.port(), nil
+	}
+	if cur != nil {
+		cur.Close()
+		port = cur.port()
+	}
+	f, err := s.startStreamForward(name, "novnc", bind, port)
+	if err != nil && port != 0 {
+		// the old port was taken meanwhile
+		f, err = s.startStreamForward(name, "novnc", bind, 0)
+	}
+	if err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	if s.desktopForwards == nil {
+		s.desktopForwards = make(map[string]*streamForward)
+	}
+	s.desktopForwards[name] = f
+	s.mu.Unlock()
+	return f.port(), nil
+}
+
+func (s *Server) stopDesktopForward(name string) {
+	s.mu.Lock()
+	f := s.desktopForwards[name]
+	delete(s.desktopForwards, name)
+	s.mu.Unlock()
+	if f != nil {
+		f.Close()
+	}
+}
+
+func (s *Server) streamPortAvailable(spec *vm.Spec) bool {
+	st, err := s.instance(spec).Running()
+	return err == nil && st != nil && slices.Contains(st.Args, qemu.StreamPortDevice)
+}
+
+// recoverDesktopForwards restores the listeners of desktop sessions that
+// outlived a daemon restart, on their recorded ports, so issued URLs keep
+// working.
+func (s *Server) recoverDesktopForwards(specs []*vm.Spec) {
+	for _, spec := range specs {
+		if !s.streamPortAvailable(spec) {
+			continue
+		}
+		st := s.loadDesktopState(spec.Name)
+		if st == nil {
+			continue
+		}
+		if _, err := s.ensureDesktopForward(spec.Name, st.HostPort, st.Public); err != nil {
+			log.Printf("desktop %s: restore listener on %d: %v", spec.Name, st.HostPort, err)
+		}
+	}
+}
+
+// removeDesktopMaps drops desktop port maps left by older versions.
+func (s *Server) removeDesktopMaps(ctx context.Context, spec *vm.Spec, push func(context.Context, int) error) error {
+	cl := s.Clusters.Get(spec.ClusterID)
+	if cl == nil {
+		return nil
+	}
+	found := false
+	for _, m := range cl.Maps {
+		if m.VM == spec.Name && m.GuestPort == desktopWebPort {
+			found = true
+		}
+	}
+	if !found {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, mapPushTimeout)
+	defer cancel()
+	if err := s.mapMu.Lock(ctx); err != nil {
+		return err
+	}
+	defer s.mapMu.Unlock()
+	for _, m := range s.Clusters.Get(spec.ClusterID).Maps {
+		if m.VM == spec.Name && m.GuestPort == desktopWebPort {
+			s.relays.Remove(m.Proto, m.HostPort)
+			if _, err := s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto); err != nil {
+				return err
+			}
+		}
+	}
+	return push(ctx, spec.ClusterID)
+}
+
 func (s *Server) handleDesktopStop(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	spec, err := s.getSpec(name)
@@ -241,21 +332,10 @@ func (s *Server) handleDesktopStop(w http.ResponseWriter, r *http.Request) {
 	if st, err := s.instance(spec).Running(); err == nil && st != nil {
 		_, _ = s.sshRun(spec, fmt.Sprintf("vncserver -kill %s >/dev/null 2>&1; fuser -k %d/tcp >/dev/null 2>&1 || true", desktopVNCDisplay, desktopWebPort))
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), mapPushTimeout)
-	defer cancel()
-	if err := s.mapMu.Lock(ctx); err != nil {
+	s.stopDesktopForward(name)
+	if err := s.removeDesktopMaps(r.Context(), spec, s.pushGatewayConfigCtx); err != nil {
 		writeErr(w, 500, err)
 		return
-	}
-	defer s.mapMu.Unlock()
-	if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
-		for _, m := range cl.Maps {
-			if m.VM == spec.Name && m.GuestPort == desktopWebPort {
-				s.relays.Remove(m.Proto, m.HostPort)
-				_, _ = s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto)
-			}
-		}
-		_ = s.pushBounded(spec.ClusterID)
 	}
 	_ = os.Remove(s.desktopPath(name))
 	writeJSON(w, 200, map[string]any{"stopped": name})
@@ -268,7 +348,10 @@ func desktopURL(st *desktopState, name string) string {
 	}
 	// noVNC accepts fragment settings; fragments are not sent in HTTP
 	// requests. The URL remains secret in browser history and terminal output.
-	fragment := url.Values{"password": {st.Password}, "autoconnect": {"true"}, "resize": {"scale"}, "vm": {name}}
+	// resize=remote sizes the guest display to the window instead of
+	// scaling a fixed framebuffer; quality and compression favour latency
+	// on a local link
+	fragment := url.Values{"password": {st.Password}, "autoconnect": {"true"}, "resize": {"remote"}, "quality": {"6"}, "compression": {"2"}, "vm": {name}}
 	return fmt.Sprintf("http://%s:%d/vnc.html#%s", host, st.HostPort, fragment.Encode())
 }
 
@@ -294,7 +377,7 @@ printf '%%s' %s | vncpasswd -f > "$HOME/.vnc/passwd"
 chmod 600 "$HOME/.vnc/passwd"
 vncserver -kill %s >/dev/null 2>&1 || true
 fuser -k %d/tcp >/dev/null 2>&1 || true
-vncserver %s -geometry %s -depth 24 -SecurityTypes VncAuth -localhost yes
+vncserver %s -geometry %s -depth 24 -FrameRate 60 -SecurityTypes VncAuth -localhost yes
 for i in $(seq 1 15); do fuser %d/tcp >/dev/null 2>&1 || break; sleep 1; done
 nohup websockify -D --web /usr/share/novnc %d 127.0.0.1:%d >/dev/null 2>&1
 `, xstartup, shellQuote(st.Password), desktopVNCDisplay, desktopWebPort, desktopVNCDisplay, st.Size, desktopWebPort, desktopWebPort, desktopVNCPort)

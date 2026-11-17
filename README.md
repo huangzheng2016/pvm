@@ -4,85 +4,111 @@ English | [简体中文](README.zh-CN.md)
 
 Personal QEMU dev VMs in a single binary: create an isolated Linux development machine with one command and route all of its traffic through your own VPS.
 
-## Features
+## Highlights
 
-- **Fast, ready-to-use VMs:** Golden images include Docker, common development tools, and a desktop. `pvm create` automatically downloads the base image and bakes a missing golden; the one-time first bake takes about ten minutes, while later VMs are usually ready in about 30 seconds.
-- **Fail-closed exit routing:** Route TCP, UDP, and ICMP through WireGuard to your VPS over UDP or TCP, or to Cloudflare WARP over UDP. Only explicit direct/internal rules bypass the selected exit; if the tunnel goes down, traffic is dropped instead of falling back to host egress.
-- **Real-IP full-tunnel DNS and split routing:** Default-exit domains resolve through the selected exit to real IPv4 addresses and use direct L3 tunnel forwarding. Only explicit domain proxy rules use fake-ip relays. Direct/internal domains keep their real addresses and direct path, and domain or CIDR rules take effect without a restart.
-- **Native browser desktop:** `pvm desktop` serves the VM's own XFCE desktop through TigerVNC and noVNC. It uses a loopback URL by default; `--public` optionally listens on `0.0.0.0` with VNC authentication still required. It is the same machine as SSH, not a container.
-- **Host-shaped defaults:** New VMs default to a quarter of the host's logical CPUs (rounded up) and a quarter of host RAM, with a balloon driver returning idle memory to the host. Sparse qcow2 disks default to 20 GB, grow with `pvm resize`, and release unused host space with `pvm compact`.
-- **Complete VM workflows:** RAM snapshots restore in seconds, clones regenerate machine identifiers, read-only `pvm audit` checks route and TCP/UDP/ICMP/DNS health, and loopback port maps, bidirectional `/share` plus custom host mounts, and virtio-serial exec cover daily development and recovery.
+- **A ready dev box in one command.** Docker, common tools, Firefox and a desktop come preinstalled. After a one-time image bake, new VMs are ready in about 30 seconds. See [Quickstart](#quickstart).
+- **All traffic through your own exit, and none without it.** Route a VM through your VPS over WireGuard, or through Cloudflare WARP with nothing to deploy. If the tunnel drops, the VM goes offline instead of leaking your host's IP. See [Fail-closed exit routing](#fail-closed-exit-routing).
+- **Split routing by domain or network.** Send some domains direct or through another exit; rules apply at once, without a restart.
+- **VM programs as native windows.** `pvm app dev1 -- gedit` or a web page opens as its own window on your desktop, while cookies, fingerprint and egress stay in the VM. Type with your own input method. See [Apps as host windows](#apps-as-host-windows).
+- **The full desktop in a browser tab.** `pvm desktop` opens the VM's own desktop, the same machine you reach over SSH. See [Browser desktop](#browser-desktop).
+- **Your project folders in the VM.** Mount a folder, keep two synced copies, or upload once and download the result. See [Workspaces](#workspaces).
+- **Snapshots in seconds and clones**, loopback port maps, and a read-only `pvm audit` of routing and DNS.
+- **Windows without administrator rights.** One installer brings pvm, QEMU and the Xpra client. See [Windows installers](#windows-installers).
+
+## Roadmap
+
+Shipped:
+
+- [x] Per-user Windows installers (v1.1.6)
+- [x] Workspaces: `mount`, `sync` and `copy` (v1.1.7)
+- [x] Firefox and sshfs in golden images (v1.1.7)
+- [x] `pvm app`: VM programs and web pages as host windows (v1.2.0)
+- [x] The `pvm.stream` channel and a faster `pvm desktop` (v1.2.0)
+- [x] UDP and UDP exits on native Windows (v1.2.0)
+- [x] Xpra client in the Windows installers (v1.2.0)
+
+Planned:
+
+- [ ] `pvm exit-agent install|uninstall` as a systemd service
+- [ ] Host-to-guest clipboard for `pvm app` on macOS and Linux, `pvm app` on WSL2, and reliable input method text
+- [ ] Input method candidates that follow the app's text cursor
+
+Candidates:
+
+- [ ] `pvm ssh-config` for VS Code Remote-SSH, rsync and similar tools
+- [ ] An egress probe in `pvm exit test`
+- [ ] A default image and a default VM
+- [ ] Port maps over `pvm.stream` instead of the gateway VM
+- [ ] Offer to start a stopped VM
+- [ ] Fix the gateway rule drift false positive
+
+Details are in [docs/roadmap.md](docs/roadmap.md).
 
 ## Installation
 
-pvm supports macOS on arm64, Linux on amd64, and Windows on amd64 (native QEMU or WSL2).
+pvm runs on macOS on arm64, Linux on amd64, and Windows on amd64.
 
-**Windows:** download `pvm_windows_amd64_setup.msi` or `pvm_windows_amd64_setup.exe` from [Releases](https://github.com/huangzheng2016/pvm/releases) and run it. Both are per-user installers that need no administrator rights and include the bundled QEMU runtime. See [Windows installers](#windows-installers) for details. The `curl` script below also works in Git Bash, but the installers are the recommended way on Windows.
+### Windows
 
-**macOS and Linux:** install GitHub CLI (`gh`) and Python 3 first, then install the latest release with `curl`:
+1. Download `pvm_windows_amd64_setup.exe` or `pvm_windows_amd64_setup.msi` from [Releases](../../releases). Optionally verify it first: `gh attestation verify pvm_windows_amd64_setup.exe --repo huangzheng2016/pvm`.
+2. Run it. No administrator rights are needed.
+3. Open a new terminal, so the `PATH` change applies, and run `pvm doctor` to check acceleration and the backend.
+
+Both installers put `pvm.exe` in `%LOCALAPPDATA%\pvm`, add it to the user `PATH`, install the Xpra client to `%LOCALAPPDATA%\pvm\xpra`, and install the QEMU runtime to `%USERPROFILE%\.pvm\runtime\qemu\x86_64`, or under `PVM_HOME` when it is set. Use one installer type per machine; `pvm upgrade` updates either.
+
+- Files in use by a running pvm or VM cannot be replaced. Interactive runs offer to stop the daemon, which also stops running VMs; silent runs (`/S`, `msiexec /qn`) refuse, so run `pvm daemon stop` first.
+- Silent MSI install: `msiexec /i pvm_windows_amd64_setup.msi /qn`. Pass `PVMHOME=D:\pvm-home` to choose the data location; upgrades and uninstalls reuse it.
+- Uninstalling from Settings > Apps removes pvm, the runtime, the Xpra client and the `PATH` entry. VM disks, keys and configuration under `~/.pvm` are kept.
+
+<details>
+<summary>Known limitations of the Windows installers</summary>
+
+- Installing, and uninstalling from Settings > Apps, are tested while pvm is stopped. The prompt that offers to stop a running daemon has not been tested end to end. If it does not appear, or setup still reports that pvm is running, cancel, run `pvm daemon stop`, and run setup again.
+- Stopping the daemon from setup waits for running VMs to shut down, up to about three minutes, and setup shows no progress meanwhile.
+- VMs left running without a daemon cannot be stopped by setup. Setup lists them and refuses; shut them down, then run setup again.
+- Antivirus software briefly locks freshly unpacked files. Setup retries each file move for up to 10 seconds; if the lock lasts longer, setup stops and keeps the previous version. Run setup again.
+- After `pvm upgrade`, Settings > Apps still shows the version the installer put there.
+
+</details>
+
+Windows has two backends, chosen with `PVM_BACKEND` or `backend` in `~/.pvm/config.yaml`:
+
+- `native`: the Windows daemon runs Windows QEMU directly, with WHPX when Windows Hypervisor Platform is enabled. Windows QEMU has no virtio-9p, so `/share` is off; use [workspaces](#workspaces) for host folders.
+- `wsl`: commands go to `pvm` inside WSL2, with full `/share`, extra mounts and KVM where available.
+- `auto` (default): a running native daemon or native QEMU first, otherwise WSL2 when pvm is installed there.
+
+Acceleration, DNS and WSL2 nested virtualization settings are in [SKILL.md](SKILL.md).
+
+### macOS and Linux
+
+Install GitHub CLI (`gh`) and Python 3, then:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/huangzheng2016/pvm/master/scripts/install.sh | sh
 ```
 
-The installer places `pvm` in `~/.local/bin` by default; set `INSTALL_DIR` to change this. On macOS, Linux, and Windows it also installs the bundled QEMU runtime unless `PVM_SKIP_QEMU=1` is set, in which case pvm uses the system QEMU. The installer verifies the release checksum and GitHub build attestation, including the repository, workflow, and tag. Releases without this proof are rejected. All downloads and executable checks finish before replacement; previous binaries and QEMU runtimes are retained. You can also download an archive from [Releases](https://github.com/huangzheng2016/pvm/releases) and verify it with `gh attestation verify` before use.
+The script installs `pvm` to `~/.local/bin` (set `INSTALL_DIR` to change it) together with the bundled QEMU runtime (set `PVM_SKIP_QEMU=1` to use the system QEMU). It checks the release checksum and its GitHub build attestation before replacing anything, and keeps the previous binary and runtime. The script also works in Git Bash on Windows, but the installers are the recommended way there.
 
-### Windows installers
+### Quickstart
 
-Releases ship two per-user Windows installers that need no administrator rights: `pvm_windows_amd64_setup.msi` and `pvm_windows_amd64_setup.exe`, with the bundled QEMU runtime included. Pick either one. Both install `pvm.exe` to `%LOCALAPPDATA%\pvm`, add that folder to the user `PATH`, and install the runtime to `%USERPROFILE%\.pvm\runtime\qemu\x86_64`, or to `PVM_HOME\runtime\qemu\x86_64` when `PVM_HOME` is set. Open a new terminal afterwards so the `PATH` change applies. Verify a download first with `gh attestation verify pvm_windows_amd64_setup.exe --repo huangzheng2016/pvm`.
-
-- Files in use by a running pvm or VM cannot be replaced. When run interactively, both installers and their uninstallers detect a running daemon or QEMU and offer to stop the daemon, which also stops running VMs. Silent runs (`/S`, `msiexec /qn`) refuse instead, so run `pvm daemon stop` first.
-- MSI silent install: `msiexec /i pvm_windows_amd64_setup.msi /qn`. The MSI sees only a persistent user `PVM_HOME`; pass `PVMHOME=D:\pvm-home` to choose the location explicitly. Upgrades and uninstalls reuse the recorded location.
-- Uninstalling from Settings > Apps removes `pvm.exe`, the runtime and the `PATH` entry. VM disks, keys and configuration under `~/.pvm` are kept.
-- Use one installer type per machine. `pvm upgrade` updates an installed copy in place either way.
-
-Known limitations of the Windows installers:
-
-- Installing, and uninstalling from Settings > Apps, are tested while pvm is stopped. The prompt that offers to stop a running daemon has not been tested end to end in either installer. If it does not appear, or setup still reports that pvm is running, cancel, run `pvm daemon stop`, and run setup again.
-- Stopping the daemon from setup waits for running VMs to shut down, up to about three minutes, and setup shows no progress meanwhile.
-- VMs left running without a daemon cannot be stopped by setup. Setup lists them and refuses; shut them down, then run setup again.
-- Antivirus software scans the freshly unpacked files and briefly locks them. Setup retries each file move for up to 10 seconds; if the lock lasts longer, setup stops with an error and keeps the previous version. Run setup again.
-- After `pvm upgrade`, Settings > Apps still shows the version the installer put there.
-
-### Windows backend selection
-
-Windows supports two backends, selected with `PVM_BACKEND` or `backend` in `~/.pvm/config.yaml`:
-
-- `wsl`: forward pvm commands to `pvm` inside WSL2. This is the recommended backend for full `/share`, extra mounts, and KVM where available. Windows mount paths such as `C:\work\proj` are converted to `/mnt/c/work/proj` automatically.
-- `native`: run the Windows pvm daemon and Windows QEMU directly. The daemon listens on loopback TCP and requires the bearer token in `~/.pvm/run/admin.token` for every API except `/v1/health`. Official Windows QEMU builds do not include virtio-9p, so `create` uses `--share none` with an explicit warning; explicitly requesting `private` or `global` fails with guidance to use WSL2. `pvm daemon install` registers a Scheduled Task.
-- `auto` (default): use an already-running native daemon or native QEMU when present, otherwise use WSL2 when `pvm` is installed there.
-
-WHPX is used only when Windows Hypervisor Platform is enabled and the QEMU probe succeeds; otherwise native mode uses TCG and reports it. Set `PVM_QEMU_ACCEL=whpx` to force a WHPX attempt, or `PVM_QEMU_ACCEL=tcg` to force software emulation. When `create`, `start`, `clone`, or `image build` detects TCG, pvm prints backend-specific acceleration guidance. To enable WSL2 nested virtualization, set `nestedVirtualization=true` under `[wsl2]` in `%UserProfile%\.wslconfig`, run `wsl --shutdown`, restart WSL, and verify `/dev/kvm`. Explicitly setting `PVM_QEMU_ACCEL=tcg` suppresses the warning. Native Windows uses DNS-over-TCP because some Windows QEMU/network combinations cannot deliver UDP DNS; `PVM_DNS_UPSTREAM` can override the resolver (for example `tcp://192.0.2.53:53` or the default slirp address `10.0.2.3`). `pvm doctor` reports backend, OpenSSH, QEMU, WSL2, and acceleration readiness.
-
-## Quickstart
-
-The daemon starts automatically when needed. The first `create` may download and bake an image; later creates are much faster.
+The daemon starts on demand. The first `create` downloads and bakes an image, which takes about ten minutes once.
 
 ```bash
 pvm create --image ubuntu:26.04 --name dev1 --user dev
-pvm mount dev1 ~/work/proj:/home/dev/proj
 pvm ssh dev1
 pvm desktop dev1
 pvm map dev1 8080:80
+pvm exit add-warp my-warp
+pvm route dev1 --via my-warp
 ```
 
-New VMs use a private host directory at `~/.pvm/vms/<name>/share` for `/share`. Use `pvm create --share none ...` to disable it, or explicitly choose `--share global` to use the common `~/.pvm/share`. Existing VMs retain their recorded sharing behavior. Bake and gateway VMs do not export a host share.
+Each VM gets a private host folder at `/share` (`~/.pvm/vms/<name>/share`) where 9p is available; `pvm mount` adds more, with the mount profiles described in [SKILL.md](SKILL.md).
 
-### 9p mount profiles
+## Features
 
-`/share` and extra mounts use the `coherent` profile by default (`cache=none,msize=262144`) for bidirectional host/guest visibility. This is the shared-source baseline, not multi-writer transaction consistency. `pvm mount ls dev1` shows each extra mount's profile and access mode. To enforce read-only access at QEMU, stop the VM, run `pvm mount dev1 --read-only /host/data:/mnt/data`, then start it. Adding or removing a read-only mount requires the VM to be stopped.
+### Fail-closed exit routing
 
-For a mount dominated by large sequential reads, explicitly select `readahead`:
-
-```bash
-pvm mount dev1 --profile readahead ~/work/data:/home/dev/data
-```
-
-This uses `cache=readahead` and requests `msize=1048576`; the guest and QEMU negotiate the actual msize, which may be smaller. It does not remove small-file create/stat or other metadata bottlenecks and is not a promise of faster pnpm, Vite, or TypeScript builds. Keep Node/TypeScript dependencies and build caches on the guest's local disk.
-
-If the host rewrites or replaces a file while an old guest file descriptor is open, `readahead` can return old contents even through a newly opened guest descriptor until the old one is closed. Use `coherent` when both sides actively read and write the same files. Only the two named profiles are accepted; arbitrary cache options are not. To change an extra mount's profile, close guest users of the mount and run `pvm mount rm` followed by `pvm mount` with the new profile. Upgrading pvm does not rewrite an existing guest's cloud-init or force a remount.
-
-Register a VPS exit and route the whole VM through it:
+Register a VPS exit and route the whole VM through it. TCP, UDP and ICMP go through WireGuard over UDP or TCP, and if the tunnel goes down, traffic is dropped instead of falling back to the host's connection.
 
 ```bash
 pvm exit add my-exit --server vps.example.com:18443 --token YOUR_TOKEN
@@ -98,16 +124,62 @@ pvm exit add-warp my-warp
 pvm route dev1 --via my-warp
 ```
 
-To route every VM without an explicit route, set the cluster default:
+Route every VM that has no explicit route, and add split-routing rules by domain or network:
 
 ```bash
 pvm route default --via my-exit
+pvm route add direct --domain-suffix example.com
+pvm route add proxy --domain-suffix example.com --via my-exit
 pvm route ls
 ```
 
-## Architecture
+Only explicit direct and internal rules bypass the selected exit. To run your own exit, see [Deploy an exit on a VPS](#deploy-an-exit-on-a-vps).
 
-The host `pvm` binary provides the host CLI and daemon, and also runs as the VPS exit agent. A separate guest binary is built from `cmd/agent` with only the guest agent service, current-VM port maps, and the guest skill. The daemon owns VM and cluster lifecycle; the managed gateway provides DNS, routing, WireGuard devices, and the fail-closed kill switch. WARP registration and credentials are managed on the host without `warp-cli`, `wgcf`, or extra configuration files.
+### Apps as host windows
+
+`pvm app` shows single programs or web pages from a VM as host windows through [Xpra](https://xpra.org). The host needs the Xpra 6.5 client, which the Windows installers include; the first app in a VM installs the Xpra server there from xpra.org's repository.
+
+```bash
+pvm app dev1 -- gedit
+pvm app dev1 https://mail.example.com --kiosk
+pvm app ls
+pvm app config dev1 --clipboard both --drop on
+pvm app attach dev1
+pvm app stop dev1 --all
+```
+
+Clipboard and drops are off until you enable them per VM. With `--clipboard to-guest` or `both`, host content enters the VM only when one of its windows comes to the front or you copy while it is there, and content that password managers mark as excluded is never sent. Text typed with a host input method, such as Chinese with Microsoft Pinyin, reaches the app as well. See [docs/design/app.md](docs/design/app.md).
+
+### Browser desktop
+
+`pvm desktop dev1` serves the VM's own XFCE desktop through TigerVNC and noVNC on a loopback URL, resized to the browser window. New VMs carry it over `pvm.stream`; VMs without that port keep the existing gateway map/relay and migrate after a restart. `--public` listens on `0.0.0.0` and still requires VNC authentication.
+
+### Workspaces
+
+A workspace binds one host folder to one VM at `/workspace/<id>`. Pick a mode when you create it:
+
+- `mount`: one shared copy. Linux, macOS and WSL2 use 9p; the native Windows backend uses reverse sshfs over the existing SSH connection. Host changes raise no inotify events in the VM, so file watchers need polling (for example `CHOKIDAR_USEPOLLING=1`).
+- `sync`: a full copy on each side. `push` and `pull` move changes and stop on conflicts until you pass `--prefer host`, `--prefer vm` or `--keep-both`.
+- `copy`: upload once, work in the VM, then download the result with `clone`.
+
+```bash
+cd ~/src/web
+pvm workspace create web dev1 --mode sync
+pvm workspace ssh web 'npm install && npm test'
+pvm workspace pull web
+pvm workspace clone web ~/src/web-result
+pvm workspace rm web
+```
+
+Uploads skip `.gitignore` matches and `node_modules`; a `.pvmignore` file adds or re-includes paths. pvm refuses to upload or mount the home directory, a file system root, its own data directory, or a tree with credentials such as `.ssh` or `.aws`, and `pvm workspace rm` never deletes host files. See [docs/design/workspace.md](docs/design/workspace.md).
+
+### Windows installers
+
+Releases ship `pvm_windows_amd64_setup.exe` and `pvm_windows_amd64_setup.msi`: per-user installers that need no administrator rights and bring pvm, the bundled QEMU runtime and the Xpra client for `pvm app` in one step. They detect a running pvm before replacing files and keep your VMs on uninstall. See [Installation on Windows](#windows).
+
+### Architecture
+
+The host `pvm` binary provides the CLI and daemon, and also runs as the VPS exit agent. A separate guest binary built from `cmd/agent` carries only the guest agent, current-VM port maps and the guest skill. The daemon owns VM and cluster lifecycle; the managed gateway VM provides DNS, routing, WireGuard devices and the fail-closed kill switch. WARP registration and credentials are managed on the host without `warp-cli`, `wgcf` or extra configuration files.
 
 ```text
 Control: pvm CLI -> pvm daemon -> gateway VM and dev VMs
@@ -129,6 +201,13 @@ pvm exit-agent --listen :18443 --token-file /etc/pvm-exit/token
 ```
 
 Then register it on the host with `pvm exit add`. See [SKILL.md](SKILL.md#standard-flow-deploy-an-exit-over-ssh) for the complete SSH deployment, including a systemd unit, fingerprint verification, speed tests, and rollback.
+
+The VPS firewall must accept TCP 18443 (control plane, `--listen`), UDP 18443 (WireGuard over UDP, `--udp-port`) and TCP 18444 (WireGuard over TCP, `--tcp-port`). With the `nft` or `iptables` NAT backend it must also forward traffic from the agent's TUN devices: `pvmexit0` for the UDP transport and `pvmexit1` for the TCP transport (the prefix follows `--tun-prefix`). The agent's own nftables table cannot override a drop elsewhere in the forward path, such as ufw's default `deny (routed)`. In that case `pvm exit test` still passes, because it only probes the agent itself, but VMs routed through the exit cannot open connections to the internet, although ping may still work. With ufw, allow the forwarding, replacing `eth0` with the VPS's internet-facing interface:
+
+```bash
+ufw route allow in on pvmexit0 out on eth0
+ufw route allow in on pvmexit1 out on eth0
+```
 
 To connect a phone or laptop with a standard WireGuard client, export a separate client profile from a UDP exit:
 

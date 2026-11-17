@@ -89,6 +89,7 @@ func DelegateToWSL(args []string) int {
 	rewritten := RewriteArgsForWSL(args)
 	wslArgs := append([]string{"--", "pvm"}, rewritten...)
 	cmd := exec.Command("wsl.exe", wslArgs...)
+	cmd.Env = wslEnv(os.Environ())
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -101,10 +102,58 @@ func DelegateToWSL(args []string) int {
 	return 0
 }
 
-// RewriteArgsForWSL converts Windows host paths in `pvm mount` arguments to
+// windowsHomeEnv carries the Windows profile into WSL, where the upload
+// guard protects it like the Linux home.
+const windowsHomeEnv = "PVM_WINDOWS_HOME"
+
+// wslEnv adds windowsHomeEnv to env; the WSLENV "/up" flag makes WSL
+// translate the Windows path on the way in.
+func wslEnv(env []string) []string {
+	var profile, wslenv string
+	for _, kv := range env {
+		k, v, _ := strings.Cut(kv, "=")
+		switch strings.ToUpper(k) {
+		case "USERPROFILE":
+			profile = v
+		case "WSLENV":
+			wslenv = v
+		}
+	}
+	if profile == "" {
+		return env
+	}
+	if wslenv != "" {
+		wslenv += ":"
+	}
+	return append(env, windowsHomeEnv+"="+profile, "WSLENV="+wslenv+windowsHomeEnv+"/up")
+}
+
+// RewriteArgsForWSL converts Windows host paths in `pvm mount`,
+// `pvm workspace create --path` and `pvm workspace clone` arguments to
 // WSL /mnt/<drive>/... paths and restores guest paths rewritten by Git Bash.
 func RewriteArgsForWSL(args []string) []string {
 	out := append([]string(nil), args...)
+	if len(out) >= 2 && out[0] == "workspace" {
+		switch out[1] {
+		case "create":
+			for i := 2; i < len(out); i++ {
+				switch {
+				case (out[i] == "--path" || out[i] == "-path") && i+1 < len(out):
+					i++
+					out[i] = WindowsToWSLPath(out[i])
+				case strings.HasPrefix(out[i], "--path="):
+					out[i] = "--path=" + WindowsToWSLPath(out[i][len("--path="):])
+				case strings.HasPrefix(out[i], "-path="):
+					out[i] = "-path=" + WindowsToWSLPath(out[i][len("-path="):])
+				}
+			}
+		case "clone":
+			if len(out) == 4 {
+				out[3] = WindowsToWSLPath(out[3])
+			}
+		}
+		return out
+	}
 	if len(out) == 4 && out[0] == "mount" && out[1] == "rm" {
 		out[3] = restoreGitBashPosixPath(out[3], os.Getenv("EXEPATH"))
 		return out

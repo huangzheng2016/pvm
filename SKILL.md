@@ -71,7 +71,7 @@ pvm ssh dev1 'whoami && ls /share'
 
 - Always pass `--user` explicitly. Interactive create prompts when it is omitted; non-interactive create rejects a missing `--user` instead of silently choosing one.
 - create follows progress by default (image, disk, boot, cloud-init and agent readiness); `--no-wait` returns immediately.
-- Golden images come with Docker, common dev tools, and a native XFCE desktop (TigerVNC + noVNC) preinstalled. User VMs get a virtio-gpu display device by default (`/dev/dri` in the guest); gateway and build VMs stay headless.
+- Golden images come with Docker, common dev tools, Firefox (from Mozilla's APT repository, not the snap), sshfs, and a native XFCE desktop (TigerVNC + noVNC) preinstalled. Images baked before Firefox was added do not have it; rebake with `pvm image build`. User VMs get a virtio-gpu display device by default (`/dev/dri` in the guest); gateway and build VMs stay headless.
 - New VMs use per-VM pvm management keypairs, no password; existing VMs retain their original key. `pvm ssh dev1` opens an interactive shell; when both local stdin/stdout are terminals, `pvm ssh dev1 codex` and other interactive commands also get a TTY automatically. Use `pvm ssh -t dev1 <cmd>` to force one or `-T` to disable it. SSH remote commands run through the user's login shell, loading `~/.profile`, Bash login files, or `~/.zprofile`; TTY commands also request interactive mode so `.bashrc`/`.zshrc` follow the shell's normal startup rules. When SSH is unreachable the virtio-serial agent channel takes over automatically (or use `pvm exec dev1 <cmd...>` explicitly - it needs no network).
 - create/start pushes the VM's IP/MAC mapping to the gateway DHCP **synchronously** before booting and deploys the gateway agent before the user VM starts (new VMs get a DHCP offer on their first request); if the gateway is unreachable, start fails instead of booting a network-less VM.
 - Cluster addressing: VMs live in `100.99.<cluster>.0/24` (CGNAT space), the gateway is `100.99.<cluster>.1`.
@@ -119,11 +119,37 @@ pvm desktop dev1 --stop
 
 - Requires a VM built from a **golden image** (XFCE + TigerVNC + noVNC preinstalled). Base images lack the desktop packages and `pvm desktop` says so (a 503 means the VM is still booting — retry shortly).
 - This is the VM's own desktop (not a container): the filesystem, users, and processes are the same machine you see over SSH, including the `/share` mount.
-- The session persists inside the VM (closing the browser changes nothing); timezone/locale follow the VM's region profile. `--open` opens the system browser, `--size 2560x1440` changes resolution.
-- `--public` makes the host relay listen on `0.0.0.0` and returns an `0.0.0.0` URL; use the host's actual LAN/VPN IP when connecting remotely. Switching between public and loopback keeps the same desktop session.
+- The session persists inside the VM (closing the browser changes nothing); timezone/locale follow the VM's region profile. `--open` opens the system browser. The desktop follows the browser window size; `--size 2560x1440` sets the size it starts with.
+- On VMs with `pvm.stream`, the desktop is not a port map and does not show in `pvm map ls`: the daemon's listener carries it over the channel, bypassing the gateway VM. Desktop maps created by older versions are removed the next time `pvm desktop` runs. VMs without the port keep their existing gateway map/relay and migrate automatically after a restart; app and other stream-only features need that restart first.
+- `--public` makes the daemon's listener listen on `0.0.0.0` and returns an `0.0.0.0` URL; use the host's actual LAN/VPN IP when connecting remotely. Switching between public and loopback keeps the same desktop session.
 - Clipboard is enabled by default in noVNC. Open the Clipboard panel on the left and grant clipboard read/write permission in Chrome when prompted; loopback URLs are considered secure contexts. Golden images include a small CJK font set and an IBus pinyin input method, with `ibus-daemon` started in each desktop session. This only adds Chinese display and input support; the default locale remains `en_US.UTF-8`.
 
-### 5. Port maps
+### 5. Single apps as host windows (pvm app)
+
+```bash
+pvm app dev1 -- gedit                       # an X11 program as its own host window
+pvm app dev1 https://mail.example.com       # a web page in the VM's Firefox as a window; --kiosk for full screen
+pvm app dev1 --name notes --no-attach -- gedit notes.txt
+pvm app ls [dev1]
+pvm app attach dev1                         # reopen the windows after closing the Xpra client
+pvm app stop dev1 notes                     # or --all
+pvm app config dev1 --clipboard both --drop on
+```
+
+- Uses Xpra: one Xpra server per VM runs as the VM user, and each app is a window on it. The page or program runs in the VM, so cookies, fingerprint and egress stay with the VM and its route; the host only shows pixels.
+- The host needs the Xpra 6.5.x client from xpra.org; the Windows installers include it. On Windows pvm looks in `xpra\Xpra.exe` next to `pvm.exe` and in `Program Files\Xpra`, on macOS in `/Applications/Xpra.app`, elsewhere on `PATH`; `PVM_XPRA` overrides the path. A client from another release line is refused. The first app in a VM without Xpra installs it from xpra.org's APT repository, which takes a few minutes and needs the VM's network; golden images built from this version on include it.
+- Type with the host's own input method, such as Microsoft Pinyin: committed text reaches the app.
+- The command must be installed in the VM; `pvm app` does not install it. Window titles end in `[dev1]`.
+- Closing a window closes that app. Quitting the Xpra client leaves apps running; `pvm app attach` brings them back. A VM restart ends its apps.
+- Clipboard and drops are off by default, per VM:
+  - `--clipboard to-host`: copy in the VM, paste on the host (text and images).
+  - `--clipboard to-guest`: host content enters the VM only when one of its windows comes to the front, or when you copy while it is there, never in the background. Content that password managers mark as excluded is never sent. Windows hosts only so far.
+  - `--clipboard both`: both of the above.
+  - `--drop on`: files dropped on a VM window upload into `~/Downloads` in the VM (up to 100 MB each, never opened). A file the VM tries to send asks for confirmation on the host.
+  - Changes apply to clients attached afterwards: run `pvm app attach dev1`.
+- The data goes over the VM's `pvm.stream` channel, not the gateway VM.
+
+### 6. Port maps
 
 ```bash
 pvm map dev1 8080:80
@@ -132,9 +158,10 @@ pvm map ls
 ```
 
 - The host listens on loopback only; the path is host relay -> gateway -> VM.
+- Native Windows backend: at most 32 maps per cluster, TCP and UDP counted separately. Each map is a socket in the gateway's QEMU user network, and Windows QEMU polls at most 64 of those; past that the gateway's own UDP (DNS, UDP exits) silently stops, so pvm refuses the 33rd map instead.
 - Deleting a VM cleans up its relays, desktop state, and agent connections.
 
-### 6. DNS and split-routing rules
+### 7. DNS and split-routing rules
 
 ```bash
 # internal domains: resolved via the host's DNS, traffic goes direct
@@ -157,7 +184,7 @@ pvm dns ls
 - Domain rules affect resolution that goes through the gateway DNS.
 - Rules take effect immediately, but established connections are not retroactively switched.
 
-### 7. Stop, delete, clone
+### 8. Stop, delete, clone
 
 ```bash
 pvm stop dev1
@@ -171,7 +198,30 @@ pvm clone dev1 dev2             # source VM must be stopped; --no-start clones w
 - clone inherits mounts, CPU/memory, user, timezone, SMBIOS, and the GPU device; the effective default exit is explicitly inherited before boot; port maps are not inherited by default but can be interactively carried over with new ports (`--inherit-ports` / `--no-inherit-ports`).
 - On first boot a clone regenerates its hostname, machine-id, SSH host keys, and management key. Other authorized keys and application identities remain copied. A private `/share` starts empty in the clone; extra mounts still refer to the explicitly configured host sources.
 
-### 8. Disk capacity and host space
+### 9. Workspaces (pvm workspace)
+
+A workspace binds one host folder to one VM at `/workspace/<id>` (id: lowercase letters, digits, `-`).
+
+```bash
+pvm workspace create web dev1 --mode mount|sync|copy [--path DIR] [--read-only] [-y]
+pvm workspace ls
+pvm workspace status web                 # sync only: changes on each side and conflicts
+pvm workspace push web [--prefer host|vm | --keep-both]
+pvm workspace pull web [--prefer host|vm | --keep-both]
+pvm workspace clone web ./web-result     # dest must be missing or empty; never overwrites
+pvm workspace ssh web [command...]       # like pvm ssh, starting in /workspace/web
+pvm workspace rm web [--delete-guest] [-y]
+```
+
+- `--path` defaults to the current directory. `create`, `status`, `push`, `pull`, `clone` of a sync or copy workspace and `rm --delete-guest` need the VM running (`pvm start dev1`); a read-only 9p mount is created while the VM is stopped.
+- `mount`: one shared copy. 9p on Linux, macOS and WSL2; reverse sshfs on the native Windows backend (pvm serves SFTP over the existing SSH connection, the daemon remounts after drops, and `sshfs` is installed in the guest on first use). `--read-only` is enforced on the host. Host edits raise no inotify events in the VM; file watchers need polling, for example `CHOKIDAR_USEPOLLING=1`.
+- `sync`: a copy on each side. push/pull use a three-way comparison with the last baseline; on any conflict they write nothing and list the paths. Resolve with `--prefer host`, `--prefer vm`, or `--keep-both` (the other side's version is kept as `<name>.pvm-conflict-<host|vm>`). Run git on one side only.
+- `copy`: one upload, then `clone` downloads the VM copy.
+- Uploads skip `.gitignore` matches and `node_modules`; `.pvmignore` adds patterns and `!pattern` re-includes. `.git` is transferred. Create refuses the home directory, a file system root, `~/.pvm`, and trees containing `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.netrc` or `.git-credentials` unless `.pvmignore` excludes them; mount mode refuses the same folders and ignores `.pvmignore`, since a mount shares every file. Uploads above 1 GiB need confirmation (`-y` in scripts). A full guest disk fails with a `pvm resize` hint.
+- Downloads reject absolute or `..` paths, devices, escaping symlinks, paths below a host symlink, Windows-reserved names and case clashes (with each other or with existing host files), and list them; the command then exits non-zero and the baseline is not updated. After a download pvm lists changed `.git/hooks/*`, `.git/config`, `.vscode/*.json` and `.envrc` files for review.
+- `rm` never deletes host files and keeps the VM copy unless `--delete-guest`, which refuses while anything is mounted below the VM copy. It warns when the VM copy has changes not yet pulled or cloned. `pvm rm <vm>` lists the VM's workspaces and keeps them as orphans for `pvm workspace rm`.
+
+### 10. Disk capacity and host space
 
 - VM disks use sparse qcow2 files. `--disk` at create and `pvm resize` set the virtual capacity ceiling; neither allocates the full size on the host up front. `resize` is grow-only and never shrinks the guest partition or filesystem.
 - QEMU enables `discard=unmap` and `detect-zeroes=unmap`. Deleting files alone can leave historical allocations and metadata behind, so run `sudo fstrim -av` in the guest before offline compaction for the best result.
@@ -184,7 +234,7 @@ pvm clone dev1 dev2             # source VM must be stopped; --no-start clones w
   ```
 - `pvm compact` requires a stopped VM and refuses an unconsumed RAM snapshot. It validates the new image, virtual capacity, and backing chain, then atomically replaces the original only when the new file uses less host space. It does not enable compression or reduce virtual capacity.
 
-### 9. Snapshots and troubleshooting
+### 11. Snapshots and troubleshooting
 
 ```bash
 pvm snapshot create dev1        # capture RAM+disk state and stop (VM must be running)
@@ -212,7 +262,7 @@ pvm release binaries are single files from GitHub Releases. Tags publish archite
 
 ```bash
 VPS=root@vps.example.com
-TAG=v1.1.6
+TAG=v1.2.0
 ASSET=pvm_linux_amd64.tar.gz   # use pvm_linux_arm64.tar.gz for an arm64 VPS
 REPO=huangzheng2016/pvm
 WORK=$(mktemp -d)
@@ -271,6 +321,7 @@ Notes:
 - Registrations idle for 24h are reaped by the exit-agent; a gateway returning after sleep re-enrolls automatically with its persisted peer key.
 - Exit timezone suggestions use the local system timezone, or `--timezone`; no geolocation service is contacted. Private/metadata/local-host destinations are blocked unless explicitly permitted by a narrow `--domain-allow-cidr`. Restart after changing VPS interface addresses.
 - exit-agent NAT backends: `nft` / `iptables` / `userspace`; userspace needs no root and forwards TCP/UDP/ICMP. ICMP uses Linux ping sockets, so insufficient socket permission drops only that ICMP flow and never falls back to another egress.
+- VPS firewall: accept TCP 18443 (`--listen`), UDP 18443 (`--udp-port`) and TCP 18444 (`--tcp-port`). With the `nft`/`iptables` backends, also forward from the agent's TUN devices `pvmexit0` (UDP transport) and `pvmexit1` (TCP transport); the prefix follows `--tun-prefix`. A forward drop outside the agent's table, such as ufw's default `deny (routed)`, cannot be overridden by the agent: `pvm exit test` passes while routed VMs cannot open connections (ping may still work). Fix with `ufw route allow in on pvmexit0 out on <uplink>` and the same for `pvmexit1`.
 - Tunnel pools use separate `/16` networks: UDP `10.<base>.0.0/16`, TCP `10.<base+1>.0.0/16` (default base `99`). Set a different `--subnet-base` for multiple agents on one VPS or to avoid VPS-internal networks. A larger pool does not prevent address conflicts. Changing the layout drops stale registrations; expect tunnels to re-enroll.
 
 ### Add a Cloudflare WARP exit without a VPS

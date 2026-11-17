@@ -44,13 +44,19 @@ type Server struct {
 
 	started time.Time
 	ready   atomic.Bool
-	mu      sync.Mutex // guards vms cache
+	mu      sync.Mutex // guards vms cache and desktopForwards
 	vms     map[string]*vm.Spec
+
+	// desktopForwards are the per-VM pvm desktop listeners
+	desktopForwards map[string]*streamForward
+	apps            appHost
 
 	agentDialLocks sync.Map   // name -> chan struct{}
 	agentMu        sync.Mutex // guards agents
 	agents         map[string]*agent.Client
 	agentSeq       map[string]uint64
+
+	streamState streamState
 
 	ctrlWatchMu sync.Mutex // guards ctrlWatch
 	ctrlWatch   map[string]uint64
@@ -75,6 +81,12 @@ type Server struct {
 
 	gwPushLocks  sync.Map // clusterID -> chan struct{} (cap 1), serializes gateway config pushes
 	gwAgentLocks sync.Map // clusterID -> chan struct{} (cap 1), serializes gateway agent deployments
+
+	// syncForwards replaces syncGatewayForwardsQMP in tests.
+	syncForwards func(clusterID int) error
+
+	wsMountOnce sync.Once
+	wsMount     *mountSupervisor
 }
 
 type vmInfo struct {
@@ -170,21 +182,15 @@ func (s *Server) invalidateAgent(name string) {
 	if c != nil {
 		c.Close()
 	}
+	s.dropStream(name)
 }
 
 func (s *Server) instance(spec *vm.Spec) *qemu.Instance {
 	var linkSock string
-	poolBase, poolSize := 0, 0
-	if spec.Role == "gateway" {
-		if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
-			poolBase, poolSize = cl.PoolBase, cl.PoolSize
-		} else if cl := s.clustersByGatewayName(spec.Name); cl != nil {
-			poolBase, poolSize = cl.PoolBase, cl.PoolSize
-		}
-	} else if spec.ClusterID > 0 {
+	if spec.Role != "gateway" && spec.ClusterID > 0 {
 		linkSock = s.Clusters.LinkSock(spec.ClusterID, spec.Name)
 	}
-	cfg := spec.QEMUConfig(s.P, s.Accel, linkSock, poolBase, poolSize)
+	cfg := spec.QEMUConfig(s.P, s.Accel, linkSock)
 	vmDir := s.P.VMDir(spec.Name)
 	cfg.DiskPath = qemu.ActiveDisk(vmDir, cfg.DiskPath)
 	return &qemu.Instance{
@@ -213,7 +219,7 @@ func (s *Server) getSpec(name string) (*vm.Spec, error) {
 	spec, err := vm.Load(s.P, name)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("vm %q not found", name)
+			return nil, fmt.Errorf("vm %q %w", name, errVMNotFound)
 		}
 		return nil, err
 	}
@@ -273,9 +279,21 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /v1/vms/{name}/route", s.handleVMRoute)
 	mux.HandleFunc("POST /v1/vms/{name}/desktop", s.handleDesktop)
 	mux.HandleFunc("DELETE /v1/vms/{name}/desktop", s.handleDesktopStop)
+	mux.HandleFunc("POST /v1/vms/{name}/apps", s.handleAppStart)
+	mux.HandleFunc("GET /v1/vms/{name}/apps", s.handleAppList)
+	mux.HandleFunc("GET /v1/apps", s.handleAppList)
+	mux.HandleFunc("DELETE /v1/vms/{name}/apps", s.handleAppStop)
+	mux.HandleFunc("DELETE /v1/vms/{name}/apps/{id}", s.handleAppStop)
+	mux.HandleFunc("POST /v1/vms/{name}/apps/attach", s.handleAppAttach)
+	mux.HandleFunc("PUT /v1/vms/{name}/apps/config", s.handleAppConfig)
+	mux.HandleFunc("POST /v1/vms/{name}/apps/prepare", s.handleAppPrepare)
 	mux.HandleFunc("GET /v1/vms/{name}/console", s.handleConsole)
+	mux.HandleFunc("GET /v1/vms/{name}/stream", s.handleStream)
 	mux.HandleFunc("GET /v1/vms/{name}/audit", s.handleVMAudit)
 	mux.HandleFunc("GET /v1/dns", s.handleDNSList)
+	mux.HandleFunc("GET /v1/workspaces/{id}/mount", s.handleWorkspaceMountGet)
+	mux.HandleFunc("POST /v1/workspaces/{id}/mount", s.handleWorkspaceMountStart)
+	mux.HandleFunc("DELETE /v1/workspaces/{id}/mount", s.handleWorkspaceMountStop)
 	mux.HandleFunc("POST /v1/shutdown", s.handleShutdown)
 	return mux
 }
@@ -476,6 +494,10 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	base := filepath.Join(s.P.Images, fmt.Sprintf("%s-%s.qcow2", imageFileStem(req.Image), native.Arch))
 	goldenVer := 0
+	kernelArgs := s.Accel.GuestKernelArgs()
+	// a base image has never booted with the args; neither has a golden
+	// image sealed without them
+	argsPending := kernelArgs != ""
 	if distro, version, ok := strings.Cut(req.Image, ":"); ok && !req.NoGolden {
 		g, err := image.LatestGolden(s.P.Images, distro, version)
 		if err != nil {
@@ -485,6 +507,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		if g != nil {
 			base = filepath.Join(image.GoldenDir(s.P.Images), g.File)
 			goldenVer = g.Version
+			argsPending = argsPending && !g.HasKernelArgs(kernelArgs)
 		}
 	}
 	if _, err := os.Stat(base); err != nil {
@@ -509,8 +532,8 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		GuestUID: vm.HostUID(),
 		CPUs:     req.CPUs, MemMB: req.MemMB, DiskGB: req.DiskGB,
 		BaseDisk: base, Mounts: mounts, Golden: goldenVer, GPU: true, Balloon: true,
-		KernelArgs: s.Accel.GuestKernelArgs(),
-		ClusterID:  cl.ID, IP: vnet.IP, MAC: vnet.MAC,
+		KernelArgs: kernelArgs, KernelArgsPending: argsPending,
+		ClusterID: cl.ID, IP: vnet.IP, MAC: vnet.MAC,
 		TZ: req.TZ, Locale: req.Locale,
 		GitEmail: req.GitEmail, GitName: req.GitName,
 		SmbiosSpoof: req.SmbiosSpoof, ShareMode: req.ShareMode,
@@ -861,6 +884,12 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	spec, err := s.getSpec(name)
+	if errors.Is(err, errVMNotFound) {
+		if cl := s.orphanMemberCluster(name); cl != nil {
+			s.deleteOrphanMember(w, name, cl)
+			return
+		}
+	}
 	if err != nil {
 		writeErr(w, 404, err)
 		return
@@ -878,6 +907,8 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, fmt.Errorf("cannot stop %s safely (%v); not deleting", name, err))
 		return
 	}
+	s.stopDesktopForward(name)
+	s.stopAppForward(name)
 	s.invalidateAgent(name)
 	s.resetStages(name)
 	var cl *cluster.Cluster
@@ -981,9 +1012,24 @@ func (s *Server) recoverClusters() {
 			healthy = false
 			log.Printf("recover relays: %v", err)
 		}
+		var members []*vm.Spec
+		for _, vn := range cl.VMs {
+			if spec, err := s.getSpec(vn.Name); err == nil {
+				members = append(members, spec)
+			}
+		}
+		s.recoverDesktopForwards(members)
+		s.recoverAppForwards(members)
 		var running []*vm.Spec
 		for _, vn := range cl.VMs {
 			spec, err := s.getSpec(vn.Name)
+			if errors.Is(err, errVMNotFound) {
+				// Its files are gone, so nothing of it can run; keeping
+				// the daemon unready would also block the `pvm rm` that
+				// cleans it up.
+				log.Printf("recover VM %s: %v; run `pvm rm %s` to drop its leftover cluster membership", vn.Name, err, vn.Name)
+				continue
+			}
 			if err != nil {
 				healthy = false
 				log.Printf("recover VM %s: %v", vn.Name, err)
@@ -1092,6 +1138,11 @@ func Run(p *paths.Paths, srv *Server) error {
 	errCh := make(chan error, 1)
 	go func() { errCh <- httpSrv.Serve(ln) }()
 	go srv.recoverClusters()
+	wsMountsDone := make(chan struct{})
+	go func() {
+		srv.workspaceMounts().run(serveCtx, 5*time.Second)
+		close(wsMountsDone)
+	}()
 
 	select {
 	case <-sigCh:
@@ -1101,6 +1152,7 @@ func Run(p *paths.Paths, srv *Server) error {
 	}
 
 	cancelServe()
+	<-wsMountsDone
 	log.Println("daemon shutting down: stopping VMs")
 	srv.StopAllVMs()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

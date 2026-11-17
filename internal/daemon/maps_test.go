@@ -36,7 +36,7 @@ func newMapTestServer(t *testing.T) (*Server, *vm.Spec, *vm.Spec) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &Server{P: p, Clusters: st, relays: newRelaySet(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}, prog: map[string][]StageEvent{}, mapMu: newMapGate()}
+	s := &Server{P: p, Clusters: st, relays: newRelaySet(), vms: map[string]*vm.Spec{}, agents: map[string]*agent.Client{}, prog: map[string][]StageEvent{}, mapMu: newMapGate(), syncForwards: noForwardSync}
 	t.Cleanup(func() {
 		s.relays.mu.Lock()
 		defer s.relays.mu.Unlock()
@@ -235,5 +235,48 @@ func TestMapEntryJSONShape(t *testing.T) {
 	}
 	if len(fields) != 3 || fields["host_port"] != 8080.0 || fields["guest_port"] != 80.0 || fields["proto"] != "tcp" {
 		t.Fatalf("guest map entry leaks host fields: %s", data)
+	}
+}
+
+func TestMaxGatewayMapsForOS(t *testing.T) {
+	if got := maxGatewayMapsForOS("windows"); got != 32 {
+		t.Fatalf("Windows map limit = %d, want 32", got)
+	}
+	for _, goos := range []string{"darwin", "linux"} {
+		if got := maxGatewayMapsForOS(goos); got != 0 {
+			t.Fatalf("%s map limit = %d, want unlimited", goos, got)
+		}
+	}
+	if err := validateGatewayMapCount("windows", 32); err != nil {
+		t.Fatalf("32 maps rejected: %v", err)
+	}
+	if err := validateGatewayMapCount("windows", 33); err == nil || !strings.Contains(err.Error(), "pvm map rm") {
+		t.Fatalf("33 maps accepted: %v", err)
+	}
+	if err := validateGatewayMapCount("linux", 100); err != nil {
+		t.Fatalf("Linux maps are capped: %v", err)
+	}
+}
+
+// On native Windows a cluster's port maps stop at maxGatewayMaps, with an
+// error instead of silently starving the gateway's UDP.
+func TestAddMapStopsAtGatewayLimit(t *testing.T) {
+	limit := maxGatewayMaps()
+	if limit == 0 {
+		t.Skip("no map limit on this host")
+	}
+	s, dev1, _ := newMapTestServer(t)
+	noRelay := func(string, int, int) error { return nil }
+	for i := range limit {
+		if _, _, err := s.addMap(context.Background(), dev1, 0, 40000+i, "tcp", noRelay, okPush); err != nil {
+			t.Fatalf("map %d: %v", i+1, err)
+		}
+	}
+	_, code, err := s.addMap(context.Background(), dev1, 0, 41000, "udp", noRelay, okPush)
+	if err == nil || code != 409 || !strings.Contains(err.Error(), "pvm map rm") {
+		t.Fatalf("map past the limit: code %d, %v", code, err)
+	}
+	if got := len(s.Clusters.Get(dev1.ClusterID).Maps); got != limit {
+		t.Fatalf("%d maps stored, want %d", got, limit)
 	}
 }

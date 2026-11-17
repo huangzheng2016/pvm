@@ -2,8 +2,15 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
 
 	"github.com/huangzheng2016/pvm/internal/cluster"
+	"github.com/huangzheng2016/pvm/internal/qemu"
+	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
 // removeVMMapsLocked commits membership removal before releasing relays.
@@ -50,4 +57,63 @@ func (s *Server) closeVMResources(name string, cl *cluster.Cluster) error {
 	}
 	s.invalidateAgent(name)
 	return nil
+}
+
+// errVMNotFound marks a VM whose vm.json does not exist.
+var errVMNotFound = errors.New("not found")
+
+// orphanMemberCluster returns the cluster that still lists name as a
+// member although its VM files are gone, for example after ~/.pvm/vms
+// was deleted by hand.
+func (s *Server) orphanMemberCluster(name string) *cluster.Cluster {
+	for _, cl := range s.Clusters.List() {
+		if cl.Gateway != name && cl.VMs[name] != nil {
+			return cl
+		}
+	}
+	return nil
+}
+
+// deleteOrphanMember drops the cluster state of a member that has no
+// vm.json. Without a spec pvm cannot stop it, so a run state that shows a
+// live QEMU refuses instead of freeing an address that VM still uses.
+func (s *Server) deleteOrphanMember(w http.ResponseWriter, name string, cl *cluster.Cluster) {
+	s.cancelAgentInstall(name)
+	lock := qemu.LockVM(name)
+	lock.Lock()
+	defer lock.Unlock()
+	if _, err := vm.Load(s.P, name); !errors.Is(err, os.ErrNotExist) {
+		writeErr(w, 409, fmt.Errorf("vm %q changed during delete; retry", name))
+		return
+	}
+	in := &qemu.Instance{StatePath: filepath.Join(s.P.VMDir(name), "run.json")}
+	if st, err := in.Running(); err != nil || st != nil {
+		writeErr(w, 409, fmt.Errorf("vm %q has no vm.json but its QEMU may still be running (%s); stop that process, then retry", name, in.StatePath))
+		return
+	}
+	s.resetStages(name)
+	lockCtx, lockCancel := mapLockCtx()
+	defer lockCancel()
+	if err := s.mapMu.Lock(lockCtx); err != nil {
+		writeErr(w, 500, fmt.Errorf("map lock: %v; retry the delete", err))
+		return
+	}
+	defer s.mapMu.Unlock()
+	if err := s.closeVMResources(name, cl); err != nil {
+		writeErr(w, 500, fmt.Errorf("remove cluster state: %w; retry delete", err))
+		return
+	}
+	cleanupErr := errors.Join(s.removeLink(cl, name), s.pushBounded(cl.ID))
+	if err := vm.Delete(s.P, name); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	s.mu.Lock()
+	delete(s.vms, name)
+	s.mu.Unlock()
+	if cleanupErr != nil {
+		writeErr(w, 500, fmt.Errorf("leftover membership deleted, but gateway cleanup is incomplete: %w; run `pvm daemon restart` to reconcile gateway state", cleanupErr))
+		return
+	}
+	writeJSON(w, 200, map[string]any{"deleted": name, "orphan": true})
 }

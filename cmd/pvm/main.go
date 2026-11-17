@@ -27,11 +27,25 @@ vm:
   exec          run a command via the guest agent (no network needed): pvm exec dev1 cmd...
   logs          stream a vm console: pvm logs dev1 [--follow] [--tail N]
   desktop       open the vm's native xfce desktop: pvm desktop dev1 [--open] [--stop] [--size WxH] [--public]
+  app           show one vm app as a host window (xpra): pvm app dev1 -- gedit | pvm app dev1 https://example.com
+                [--name ID] [--kiosk] [--no-attach]; pvm app ls [vm] | stop dev1 <id>|--all | attach dev1
+                pvm app config dev1 [--clipboard off|to-guest|to-host|both] [--drop on|off]
   doctor        diagnose local state consistency and permissions (read-only, redacted)
   audit         read-only health audit: pvm audit dev1 [--privacy] (vm, route, tcp/udp/icmp probes, dns, ipv6, timezone, locale)
 
+workspace:
+  workspace create  bind a host folder to a vm at /workspace/<id>:
+                    pvm workspace create web dev1 --mode mount|sync|copy [--path DIR] [--read-only] [-y]
+                    mount: one shared copy (9p; reverse sshfs on native windows)
+                    sync: a copy on each side, moved by push/pull; copy: upload once, clone back
+  workspace ls      list workspaces
+  workspace status|push|pull  sync mode: pvm workspace push web [--prefer host|vm | --keep-both]
+  workspace clone   download the vm copy into a new folder: pvm workspace clone web ./web-result
+  workspace ssh     ssh into the workspace directory: pvm workspace ssh web [cmd...]
+  workspace rm      forget a workspace (host files kept): pvm workspace rm web [--delete-guest] [-y]
+
 network:
-  map           map ports: pvm map dev1 8080:80 [--udp] | ls | rm <port> [--udp]
+  map          map ports: pvm map dev1 8080:80 [--udp] | ls | rm <port> [--udp]
   route         vm default route: pvm route dev1 --via my-exit|direct
                 split rules: pvm route add direct|proxy|internal [--domain-suffix|--domain-prefix|--domain-keyword|--cidr] <v> [--via <exit>] [--dns <srv>]
                 inspect: pvm route ls | pvm route explain dev1 example.com | pvm route rm <index>
@@ -43,7 +57,7 @@ network:
 
 image:
   image fetch   download a base image (ubuntu:26.04, debian:13)
-  image build   bake a golden image (docker + xfce desktop preinstalled; ubuntu/debian only)
+  image build   bake a golden image (docker + firefox + xfce desktop preinstalled; ubuntu/debian only)
                 flags: --keep-vm --cpus N --mem MB --disk GB
   image list    list base and golden images
 
@@ -121,7 +135,7 @@ func main() {
 		os.Exit(cli.DelegateToWSL(os.Args[1:]))
 	}
 	switch os.Args[1] {
-	case "audit", "doctor", "route", "upgrade", "version", "--version", "-v", "skill", "security", "exit-agent", "agent", "gateway", "__snapshot-pipe-out", "__snapshot-pipe-in":
+	case "audit", "doctor", "route", "upgrade", "version", "--version", "-v", "skill", "security", "exit-agent", "agent", "gateway", "__snapshot-pipe-out", "__snapshot-pipe-in", "__probe-rtt":
 	default:
 		cli.MaybeNotifyUpgrade()
 	}
@@ -145,6 +159,8 @@ func main() {
 		code = cli.CmdResize(args)
 	case "compact":
 		code = cli.CmdCompact(args)
+	case "workspace":
+		code = cli.CmdWorkspace(args)
 	case "mount":
 		code = cli.CmdMount(args)
 	case "clone":
@@ -169,6 +185,8 @@ func main() {
 		code = cli.CmdSnapshotPipeOut(args)
 	case "__snapshot-pipe-in":
 		code = cli.CmdSnapshotPipeIn(args)
+	case "__probe-rtt":
+		code = cli.CmdProbeRTT(args)
 	case "exec":
 		code = cli.CmdExec(args)
 	case "agent":
@@ -183,6 +201,8 @@ func main() {
 		code = cli.CmdUpgrade(args)
 	case "desktop":
 		code = cli.CmdDesktop(args)
+	case "app":
+		code = cli.CmdApp(args)
 	case "audit":
 		code = cli.CmdAudit(args)
 	case "doctor":

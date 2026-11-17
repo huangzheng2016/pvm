@@ -19,6 +19,13 @@ The host `pvm` binary exposes the complete pvm control plane and acts with the h
 
 The Linux guest uses a separate binary with only `agent`, `map`, and `skill`. It has no host lifecycle, route, mount, exit, or `security` commands. Every local guest user can use `map`; requests carry no VM name. The daemon derives the VM identity from that guest's virtio-serial channel and limits list, add, and remove operations to maps owned by that VM. These maps still create host loopback listeners into the current VM.
 
+Each VM also has a `pvm.stream` virtio-serial port for display and measurement streams. Only the host daemon opens streams on it, by naming a target from a fixed allowlist in the guest agent; the guest cannot open a stream, connect to host addresses, or reach the network through it, so the VM's egress path and kill-switch are unchanged. The daemon exposes these streams only through its own authenticated API.
+
+`pvm app` runs an Xpra server as the VM user, listening only on a unix socket in its runtime directory with a per-VM password; the host client reaches it through a daemon loopback listener over `pvm.stream`. Window titles end in the VM name, so a VM window cannot pass as a host window by its title. Clipboard and file transfer are off by default and set per VM with `pvm app config`:
+
+- The Xpra client sends the host clipboard even while none of its windows has focus, so pvm never lets Xpra carry host content into the VM. Host content goes in only through pvm's bridge, only when one of the VM's windows is in front, and never content marked `ExcludeClipboardContentFromMonitorProcessing` by password managers. The daemon refuses clipboard streams unless the VM's policy allows them.
+- With drops on, files dropped on a VM window upload into the VM and are never opened there; a file the VM sends to the host needs the user's confirmation in a host dialog. With drops off, the client refuses file transfer in both directions.
+
 This reduced command surface is not an OS privilege sandbox. The guest agent service runs as root and accepts exec requests from the host, so the host retains full control of the guest. `pvm security` is a host command and is intentionally absent from the guest binary.
 
 ## Shared files and cache consistency

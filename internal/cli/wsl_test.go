@@ -2,6 +2,7 @@ package cli
 
 import (
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -119,5 +120,45 @@ func TestRewriteArgsForWSL(t *testing.T) {
 	rmWant := []string{"mount", "rm", "dev1", "/home/dev/proj"}
 	if got := RewriteArgsForWSL(rmIn); !reflect.DeepEqual(got, rmWant) {
 		t.Fatalf("RewriteArgsForWSL(rm) = %v, want %v", got, rmWant)
+	}
+}
+
+func TestRewriteWorkspaceArgsForWSL(t *testing.T) {
+	for _, tc := range []struct{ in, want []string }{
+		{
+			[]string{"workspace", "create", "web", "dev1", "--mode", "sync", "--path", `C:\Users\dev\web`},
+			[]string{"workspace", "create", "web", "dev1", "--mode", "sync", "--path", "/mnt/c/Users/dev/web"},
+		},
+		{
+			[]string{"workspace", "create", "web", "dev1", `--path=D:\web`, "--mode", "copy"},
+			[]string{"workspace", "create", "web", "dev1", "--path=/mnt/d/web", "--mode", "copy"},
+		},
+		{
+			[]string{"workspace", "create", "web", "dev1", "--mode", "mount", "--path", "rel/dir"},
+			[]string{"workspace", "create", "web", "dev1", "--mode", "mount", "--path", "rel/dir"},
+		},
+		{
+			[]string{"workspace", "clone", "web", `C:\out\web`},
+			[]string{"workspace", "clone", "web", "/mnt/c/out/web"},
+		},
+		{
+			[]string{"workspace", "ssh", "web", `C:\x`},
+			[]string{"workspace", "ssh", "web", `C:\x`},
+		},
+	} {
+		if got := RewriteArgsForWSL(tc.in); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("RewriteArgsForWSL(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestWSLEnvPassesWindowsHome(t *testing.T) {
+	got := wslEnv([]string{"Path=x", `USERPROFILE=C:\Users\dev`, "WSLENV=FOO/p"})
+	want := []string{"Path=x", `USERPROFILE=C:\Users\dev`, "WSLENV=FOO/p", `PVM_WINDOWS_HOME=C:\Users\dev`, "WSLENV=FOO/p:PVM_WINDOWS_HOME/up"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("wslEnv = %q", got)
+	}
+	if got := wslEnv([]string{"Path=x"}); !slices.Equal(got, []string{"Path=x"}) {
+		t.Fatalf("without a profile: %q", got)
 	}
 }

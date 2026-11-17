@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/qemu"
@@ -134,6 +136,11 @@ func (s *Server) installAgentGeneration(ctx context.Context, spec *vm.Spec, bin 
 	if err := s.waitGuestProvisionedCtx(ctx, spec, 6*time.Minute); err != nil {
 		return err
 	}
+	if spec.KernelArgsPending {
+		if err := s.applyPendingKernelArgs(ctx, spec, seq); err != nil {
+			return err
+		}
+	}
 	s.stageIfCurrent(spec.Name, seq, "ssh", "SSH and cloud-init ready")
 	phaseCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	err := s.withInstallVM(phaseCtx, spec, seq, func(fresh *vm.Spec) error {
@@ -182,6 +189,59 @@ func (s *Server) installAgentGeneration(ctx context.Context, spec *vm.Spec, bin 
 		}
 	}
 	return fmt.Errorf("agent not reachable after install: %w", readyCtx.Err())
+}
+
+// applyPendingKernelArgs cold-boots a VM whose first boot ran without
+// spec.KernelArgs, once cloud-init has put them into grub; a -no-reboot
+// guest cannot restart itself. It restarts the way pvm start does, so the
+// gateway link and mounts are prepared again. spec is updated in place.
+func (s *Server) applyPendingKernelArgs(ctx context.Context, spec *vm.Spec, seq uint64) error {
+	args := strings.Fields(spec.KernelArgs)
+	check := "sync"
+	for _, a := range args {
+		check += " && sudo grep -qwF -- " + shellQuote(a) + " /boot/grub/grub.cfg"
+	}
+	if out, err := s.sshRunCtx(ctx, spec, check); err != nil {
+		return fmt.Errorf("guest grub lacks kernel args %q: %v%s", spec.KernelArgs, err, indentOutput(out))
+	}
+	s.stageIfCurrent(spec.Name, seq, "provision", "cold boot to apply kernel args "+spec.KernelArgs)
+	err := s.withInstallVM(ctx, spec, seq, func(fresh *vm.Spec) error {
+		if err := s.clearKernelArgsPending(fresh); err != nil {
+			return err
+		}
+		log.Printf("vm %s: cold boot to apply guest kernel args %q", fresh.Name, fresh.KernelArgs)
+		if err := s.instance(fresh).Stop(); err != nil {
+			return fmt.Errorf("stop for kernel args: %w", err)
+		}
+		s.invalidateAgent(fresh.Name)
+		if _, _, err := s.startVM(ctx, fresh); err != nil {
+			return fmt.Errorf("restart for kernel args: %w; run `pvm start %s`", err, fresh.Name)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	spec.KernelArgsPending = false
+	if err := s.waitSSHCtx(ctx, spec, 6*time.Minute); err != nil {
+		return fmt.Errorf("after kernel-args cold boot: %w", err)
+	}
+	cmdline, err := s.sshRunCtx(ctx, spec, "cat /proc/cmdline")
+	if err != nil {
+		return fmt.Errorf("read guest kernel cmdline: %w", err)
+	}
+	for _, a := range args {
+		if !slices.Contains(strings.Fields(cmdline), a) {
+			bootErr := fmt.Errorf("booted without kernel arg %q (cmdline: %s)", a, strings.TrimSpace(cmdline))
+			pendingErr := s.setKernelArgsPending(spec, true)
+			stopErr := s.instance(spec).Stop()
+			if pendingErr == nil && stopErr == nil {
+				return fmt.Errorf("%w; vm stopped and safe boot state restored", bootErr)
+			}
+			return errors.Join(bootErr, pendingErr, stopErr)
+		}
+	}
+	return nil
 }
 
 // Readiness probes do not hold the VM lock. Mutations and publication do,

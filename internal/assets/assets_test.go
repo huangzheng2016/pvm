@@ -20,3 +20,10 @@ func TestManifestRequiresCompleteNativeAssets(t *testing.T) {
 		})
 	}
 }
+
+// Tests build without embedassets, like a plain go build of the host.
+func TestUnpackWithoutEmbeddedAssetsFails(t *testing.T) {
+	if err := Unpack(t.TempDir()); err == nil || !strings.Contains(err.Error(), "script/build.sh") {
+		t.Fatalf("Unpack = %v, want an error pointing at script/build.sh", err)
+	}
+}

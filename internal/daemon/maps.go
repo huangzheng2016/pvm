@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -148,6 +149,9 @@ func (s *Server) addMap(ctx context.Context, spec *vm.Spec, hostPort, guestPort 
 	if hostPort < 1024 || hostPort > 65535 {
 		return nil, 400, fmt.Errorf("host_port must be 1024-65535")
 	}
+	if err := validateGatewayMapCount(runtime.GOOS, len(s.Clusters.Get(spec.ClusterID).Maps)+1); err != nil {
+		return nil, 409, err
+	}
 	// Ownership is global: a port persisted by another cluster without
 	// a live relay is still taken and must not be hijackable.
 	if s.mapPortInUse(hostPort, proto) {
@@ -275,5 +279,30 @@ func portFree(proto string, port int) error {
 		return fmt.Errorf("127.0.0.1:%d/%s unavailable: %w", port, proto, err)
 	}
 	l.Close()
+	return nil
+}
+
+// maxGatewayMaps caps port maps per cluster on native Windows, 0 elsewhere.
+// Each map is a socket in the gateway's QEMU user network, and Windows
+// QEMU polls those with a select() set of 64. libslirp lists listening
+// sockets first, so past the limit the gateway's own UDP, including DNS
+// and a UDP exit, silently stops; 60 TCP maps were enough to cut it off.
+// The rest of the 64 is left to the gateway's ssh forward, its own
+// connections and active flows.
+func maxGatewayMaps() int {
+	return maxGatewayMapsForOS(runtime.GOOS)
+}
+
+func maxGatewayMapsForOS(goos string) int {
+	if goos == "windows" {
+		return 32
+	}
+	return 0
+}
+
+func validateGatewayMapCount(goos string, count int) error {
+	if limit := maxGatewayMapsForOS(goos); limit > 0 && count > limit {
+		return fmt.Errorf("cluster has %d port maps, more than the %d supported by the native Windows backend; remove one with `pvm map rm <port>`", count, limit)
+	}
 	return nil
 }

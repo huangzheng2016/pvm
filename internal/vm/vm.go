@@ -45,6 +45,11 @@ type Spec struct {
 	// cloud-init installs them into grub, so they apply from the boot
 	// after the one that runs cloud-init.
 	KernelArgs string `json:"kernel_args,omitempty"`
+	// KernelArgsPending is set while the disk may boot a kernel without
+	// KernelArgs, as a base image does before cloud-init has run. The VM
+	// then runs on the CPU model that is safe without them, and the
+	// daemon clears it and cold-boots once grub carries them.
+	KernelArgsPending bool `json:"kernel_args_pending,omitempty"`
 
 	// cluster membership (user VMs)
 	ClusterID int    `json:"cluster_id,omitempty"`
@@ -171,7 +176,7 @@ func guestUID(hostUID int) int {
 	return hostUID
 }
 
-func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poolBase, poolSize int) qemu.VMConfig {
+func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string) qemu.VMConfig {
 	dir := s.dir(p)
 	mountDir := ""
 	if s.Role != "gateway" {
@@ -186,7 +191,7 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 	hotplug := 0
 	switch {
 	case s.Role == "gateway":
-		net = qemu.Network{Mode: qemu.NetSlirp, SSHHostPort: s.SSHPort, PoolBase: poolBase, PoolSize: poolSize}
+		net = qemu.Network{Mode: qemu.NetSlirp, SSHHostPort: s.SSHPort}
 		hotplug = 64 // rp10..rp73, one per cluster VM slot
 	case linkSock != "":
 		net = qemu.Network{Mode: qemu.NetCluster, LinkSock: linkSock, MAC: s.MAC}
@@ -205,6 +210,7 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 		QMPSock:         p.QMPSock(s.Name),
 		SerialSock:      p.SerialSock(s.Name),
 		AgentSock:       p.AgentSock(s.Name),
+		StreamSock:      p.StreamSock(s.Name),
 		Network:         net,
 		HotplugPorts:    hotplug,
 		ShareDir:        s.SharedDir(p),
@@ -212,11 +218,19 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string, poo
 		MountDir:        mountDir,
 		ExtraMounts:     mounts,
 		Accel:           accel,
-		GuestKernelArgs: s.KernelArgs,
+		GuestKernelArgs: s.bootKernelArgs(),
 		SmbiosSpoof:     s.SmbiosSpoof,
 		GPU:             s.GPU,
 		Balloon:         s.Balloon,
 	}
+}
+
+// bootKernelArgs are the kernel args the next boot is known to have.
+func (s *Spec) bootKernelArgs() string {
+	if s.KernelArgsPending {
+		return ""
+	}
+	return s.KernelArgs
 }
 
 // Create builds the VM directory: overlay disk, UEFI vars, seed ISO,

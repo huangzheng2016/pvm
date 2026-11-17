@@ -84,13 +84,13 @@ func TestNoShareOmitsGuestAndQEMUExposure(t *testing.T) {
 	if strings.Contains(string(data), "pvmshare") || strings.Contains(string(data), "/share") {
 		t.Fatal("no-share guest still mounts a share")
 	}
-	cfg := spec.QEMUConfig(p, qemu.AccelTCG, "", 0, 0)
+	cfg := spec.QEMUConfig(p, qemu.AccelTCG, "")
 	if !cfg.NoShare || cfg.ShareDir != "" {
 		t.Fatal("no-share VM still exports a host share")
 	}
 	spec.Role = "gateway"
 	spec.ShareMode = ShareGlobal
-	cfg = spec.QEMUConfig(p, qemu.AccelTCG, "", 0, 0)
+	cfg = spec.QEMUConfig(p, qemu.AccelTCG, "")
 	if !cfg.NoShare || cfg.MountDir != "" {
 		t.Fatal("gateway exposes host shares")
 	}
@@ -106,7 +106,7 @@ func TestReadOnlyMountAtBothBoundaries(t *testing.T) {
 	if !strings.Contains(string(data), ",ro,_netdev") {
 		t.Fatal("guest fstab does not enforce readonly")
 	}
-	cfg := spec.QEMUConfig(p, qemu.AccelTCG, "", 0, 0)
+	cfg := spec.QEMUConfig(p, qemu.AccelTCG, "")
 	if !cfg.ExtraMounts[0].ReadOnly {
 		t.Fatal("readonly lost at QEMU boundary")
 	}

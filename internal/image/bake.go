@@ -1,6 +1,7 @@
 package image
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -50,6 +52,10 @@ func (r *sshRunner) args(extra ...string) []string {
 		"-o", "LogLevel=ERROR",
 		"-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=10",
+		// a panicked or hung guest never closes the connection; without
+		// keepalives provisioning would wait on it forever
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=8",
 		"-p", strconv.Itoa(r.port),
 		fmt.Sprintf("%s@127.0.0.1", r.user),
 	}
@@ -141,8 +147,9 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 	if err := vm.Create(o.P, o.TC, spec); err != nil {
 		return nil, err
 	}
+	cfg := spec.QEMUConfig(o.P, o.Accel, "")
 	inst := &qemu.Instance{
-		Cfg:       spec.QEMUConfig(o.P, o.Accel, "", 0, 0),
+		Cfg:       firstBootConfig(cfg),
 		StatePath: filepath.Join(o.P.VMDir(name), "run.json"),
 		Toolchain: o.TC,
 	}
@@ -175,8 +182,13 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 	} else {
 		fmt.Fprintf(o.Out, "waiting for ssh (cloud-init first boot)...\n")
 	}
-	if err := waitSSH(r, sshTimeout); err != nil {
+	if err := waitSSH(r, sshTimeout, cfg.ConsoleLog); err != nil {
 		return nil, err
+	}
+	if spec.KernelArgs != "" {
+		if err := applyKernelArgs(o.Out, r, inst, cfg, spec.KernelArgs, sshTimeout); err != nil {
+			return nil, err
+		}
 	}
 
 	prov, err := renderProvision(ref.Distro, spec.User, o.Proxy)
@@ -192,7 +204,7 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 	// nothing may ssh in afterwards; capture the image list from the log.
 	var provLog strings.Builder
 	if err := r.runScript(prov, io.MultiWriter(o.Out, &provLog)); err != nil {
-		return nil, fmt.Errorf("provision: %w", err)
+		return nil, fmt.Errorf("provision: %w%s", err, guestPanicNote(cfg.ConsoleLog))
 	}
 
 	// Graceful ACPI powerdown via QMP; ssh is gone with the build user.
@@ -256,7 +268,8 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 		Version: version, Distro: ref.Distro, ImageVersion: ref.Version,
 		File:       goldenFileName(ref.Distro, ref.Version, version),
 		BaseDigest: digest, BuiltAt: time.Now(),
-		Packages: append(append([]string{}, GoldenPackages...), DesktopPackages...),
+		Packages:   append(append(append([]string{}, GoldenPackages...), DesktopPackages...), XpraPackages...),
+		KernelArgs: spec.KernelArgs,
 	}
 	if err := os.MkdirAll(GoldenDir(o.P.Images), 0o755); err != nil {
 		return nil, err
@@ -279,11 +292,94 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 	return &entry, nil
 }
 
-func waitSSH(r *sshRunner, timeout time.Duration) error {
+// firstBootConfig boots the base image without the accelerator's guest
+// kernel args: the cloud image does not carry them until cloud-init has
+// installed the grub drop-in, and under WHPX a kernel without noxsave
+// must not run on the host CPU model (see qemu.Accel.ArgsForGuest).
+func firstBootConfig(cfg qemu.VMConfig) qemu.VMConfig {
+	cfg.GuestKernelArgs = ""
+	return cfg
+}
+
+// applyKernelArgs waits for cloud-init to install the kernel args into
+// grub, then cold-boots the build VM with the full config, the way the
+// daemon does for gateways. Provisioning, and with it the systemd upgrade,
+// must run on a kernel that has the args.
+func applyKernelArgs(out io.Writer, r *sshRunner, inst *qemu.Instance, cfg qemu.VMConfig, args string, sshTimeout time.Duration) error {
+	fmt.Fprintf(out, "waiting for cloud-init to install kernel args %q...\n", args)
+	if o, err := r.output("sudo", "cloud-init", "status", "--wait"); err != nil {
+		return fmt.Errorf("cloud-init wait: %v\n%s", err, o)
+	}
+	check := "sync"
+	for _, a := range strings.Fields(args) {
+		check += " && grep -qwF -- '" + a + "' /boot/grub/grub.cfg"
+	}
+	if o, err := r.output("sudo", "sh", "-c", shellQuote(check)); err != nil {
+		return fmt.Errorf("guest grub lacks kernel args %q: %v\n%s", args, err, o)
+	}
+	fmt.Fprintf(out, "cold-booting build vm to apply kernel args...\n")
+	if err := inst.Stop(); err != nil {
+		return fmt.Errorf("stop build vm for kernel args: %w", err)
+	}
+	inst.Cfg = cfg
+	if err := inst.Start(); err != nil {
+		return fmt.Errorf("restart build vm for kernel args: %w", err)
+	}
+	if err := waitSSH(r, sshTimeout, cfg.ConsoleLog); err != nil {
+		return err
+	}
+	cmdline, err := r.output("cat", "/proc/cmdline")
+	if err != nil {
+		return fmt.Errorf("read guest kernel cmdline: %w", err)
+	}
+	have := strings.Fields(cmdline)
+	for _, a := range strings.Fields(args) {
+		if !slices.Contains(have, a) {
+			return fmt.Errorf("build vm booted without kernel arg %q (cmdline: %s)", a, cmdline)
+		}
+	}
+	return nil
+}
+
+// guestPanicNote returns the guest kernel's panic line from the console
+// log, formatted for appending to an error, or "" when there is none.
+func guestPanicNote(consoleLog string) string {
+	if line := guestPanic(consoleLog); line != "" {
+		return "\nbuild vm kernel panicked: " + line + "\nrerun with --keep-vm to keep its console log (" + consoleLog + ")"
+	}
+	return ""
+}
+
+func guestPanic(consoleLog string) string {
+	f, err := os.Open(consoleLog)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	const tail = 256 << 10
+	if fi, err := f.Stat(); err == nil && fi.Size() > tail {
+		f.Seek(fi.Size()-tail, io.SeekStart)
+	}
+	b, _ := io.ReadAll(f)
+	i := bytes.LastIndex(b, []byte("Kernel panic - not syncing"))
+	if i < 0 {
+		return ""
+	}
+	line := b[i:]
+	if j := bytes.IndexAny(line, "\r\n"); j >= 0 {
+		line = line[:j]
+	}
+	return strings.TrimSpace(string(line))
+}
+
+func waitSSH(r *sshRunner, timeout time.Duration, consoleLog string) error {
 	deadline := time.Now().Add(timeout)
 	start := time.Now()
 	var last error
 	for time.Now().Before(deadline) {
+		if line := guestPanic(consoleLog); line != "" {
+			return fmt.Errorf("build vm kernel panicked before ssh came up: %s", line)
+		}
 		cmd := exec.Command("ssh", r.args("true")...)
 		if err := cmd.Run(); err == nil {
 			return nil

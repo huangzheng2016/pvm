@@ -81,7 +81,10 @@
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">
-        <Directory Id="INSTALLDIR" Name="pvm"/>
+        <Directory Id="INSTALLDIR" Name="pvm">
+          <!-- the Xpra client for `pvm app`; pvm looks for it here -->
+          <Directory Id="XPRADIR" Name="xpra"/>
+        </Directory>
       </Directory>
       <!-- Placeholder; SetRuntimeDir redirects it to [PVMHOME]\runtime\qemu\x86_64. -->
       <Directory Id="RUNTIMEDIR" Name="pvm-runtime"/>
@@ -105,6 +108,7 @@
       <ComponentRef Id="UserPath"/>
       <ComponentRef Id="InstallState"/>
       <ComponentGroupRef Id="RuntimeFiles"/>
+      <ComponentGroupRef Id="XpraFiles"/>
     </Feature>
   </Product>
 </Wix>
