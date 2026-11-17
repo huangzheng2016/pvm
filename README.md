@@ -149,12 +149,12 @@ Only explicit direct and internal rules bypass the selected exit. To run your ow
 pvm app dev1 -- gedit
 pvm app dev1 https://mail.example.com --kiosk
 pvm app ls
-pvm app config dev1 --clipboard both --drop on
+pvm app config dev1 --clipboard both --drop on --audio both
 pvm app attach dev1
 pvm app stop dev1 --all
 ```
 
-Clipboard and drops are off until you enable them per VM. With `--clipboard to-guest` or `both`, host content enters the VM only when one of its windows comes to the front or you copy while it is there, and content that password managers mark as excluded is never sent. Text typed with a host input method, such as Chinese with Microsoft Pinyin, reaches the app as well. See [docs/design/app.md](docs/design/app.md).
+Clipboard and drops are off until you enable them per VM. With `--clipboard to-guest` or `both`, host content enters the VM only when one of its windows comes to the front or you copy while it is there, and content that password managers mark as excluded is never sent. Text, images and, on Windows hosts, files and folders copy both ways. Text typed with a host input method, such as Chinese with Microsoft Pinyin or emoji from the emoji panel, reaches the app as well. Sound plays on the host's speakers; `--audio both` also lends the VM the host's microphone. See [docs/design/app.md](docs/design/app.md).
 
 ### Browser desktop
 

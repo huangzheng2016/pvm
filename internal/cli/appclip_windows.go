@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
@@ -9,8 +10,10 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -35,6 +38,15 @@ var (
 	procGetForegroundWindow = user32.NewProc("GetForegroundWindow")
 	procGetWindowTextW      = user32.NewProc("GetWindowTextW")
 	procGetWindowThreadPID  = user32.NewProc("GetWindowThreadProcessId")
+	procEmptyClipboard      = user32.NewProc("EmptyClipboard")
+	procSetClipboardData    = user32.NewProc("SetClipboardData")
+	procCreateWindowEx      = user32.NewProc("CreateWindowExW")
+	procDestroyWindow       = user32.NewProc("DestroyWindow")
+	procMsgWaitForMultiple  = user32.NewProc("MsgWaitForMultipleObjects")
+	procPeekMessage         = user32.NewProc("PeekMessageW")
+	procDispatchMessage     = user32.NewProc("DispatchMessageW")
+	procGlobalAlloc         = kernel32.NewProc("GlobalAlloc")
+	procGlobalFree          = kernel32.NewProc("GlobalFree")
 	procGlobalLock          = kernel32.NewProc("GlobalLock")
 	procGlobalUnlock        = kernel32.NewProc("GlobalUnlock")
 	procGlobalSize          = kernel32.NewProc("GlobalSize")
@@ -44,6 +56,11 @@ var (
 const (
 	cfUnicodeText = 13
 	cfDIB         = 8
+	cfHDrop       = 15
+	hwndMessage   = ^uintptr(2) // HWND_MESSAGE, (HWND)-3
+	qsAllInput    = 0x04FF
+	pmRemove      = 1
+	gmemMoveable  = 2
 	maxClipText   = 1 << 20
 	maxClipImage  = 16 << 20
 )
@@ -53,6 +70,8 @@ var (
 	// password managers mark secrets with this format so that clipboard
 	// tools leave them alone
 	cfExclude = registerFormat("ExcludeClipboardContentFromMonitorProcessing")
+	// tells Explorer to copy, not move, pasted files
+	cfDropEffect = registerFormat("Preferred DropEffect")
 )
 
 func registerFormat(name string) uintptr {
@@ -103,31 +122,60 @@ func inDir(path, dir string) bool {
 
 // clipContent is one snapshot of the host clipboard.
 type clipContent struct {
-	kind string // "text" or "png"
-	data []byte
+	kind  string // "text", "png" or "files"
+	data  []byte
+	paths []string // of files
 }
 
-// readClipboard returns the clipboard as text or PNG; ok is false when it
-// holds neither, holds a secret, or cannot be opened.
-func readClipboard() (clipContent, bool) {
-	var opened bool
+// sum identifies the content; files by their names, sizes and times.
+func (c clipContent) sum() [32]byte {
+	h := sha256.New()
+	h.Write([]byte(c.kind + "\x00"))
+	h.Write(c.data)
+	for _, p := range c.paths {
+		fmt.Fprintf(h, "%s\x00", p)
+		walkClipFiles([]string{p}, func(name, _ string, d fs.DirEntry) error {
+			if fi, err := d.Info(); err == nil {
+				fmt.Fprintf(h, "%s %d %d\x00", name, fi.Size(), fi.ModTime().UnixNano())
+			}
+			return nil
+		})
+	}
+	var sum [32]byte
+	h.Sum(sum[:0])
+	return sum
+}
+
+func openClipboard(hwnd uintptr) bool {
 	for i := 0; i < 10; i++ {
-		if r, _, _ := procOpenClipboard.Call(0); r != 0 {
-			opened = true
-			break
+		if r, _, _ := procOpenClipboard.Call(hwnd); r != 0 {
+			return true
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if !opened {
+	return false
+}
+
+// readClipboard returns the clipboard as files, PNG or text; ok is false
+// when it holds none of them, holds a secret, or cannot be opened.
+func readClipboard() (clipContent, bool) {
+	if !openClipboard(0) {
 		return clipContent{}, false
 	}
 	defer procCloseClipboard.Call()
 	if cfExclude != 0 && formatAvailable(cfExclude) {
 		return clipContent{}, false
 	}
+	if formatAvailable(cfHDrop) {
+		if b := clipboardBytes(cfHDrop, 1<<20); b != nil {
+			if paths := dropFiles(b); len(paths) > 0 {
+				return clipContent{kind: "files", paths: paths}, true
+			}
+		}
+	}
 	if cfPNG != 0 && formatAvailable(cfPNG) {
 		if b := clipboardBytes(cfPNG, maxClipImage); b != nil {
-			return clipContent{"png", b}, true
+			return clipContent{kind: "png", data: b}, true
 		}
 	}
 	if formatAvailable(cfUnicodeText) {
@@ -136,17 +184,42 @@ func readClipboard() (clipContent, bool) {
 			if i := indexZero(u); i >= 0 {
 				u = u[:i]
 			}
-			return clipContent{"text", []byte(string(utf16.Decode(u)))}, true
+			return clipContent{kind: "text", data: []byte(string(utf16.Decode(u)))}, true
 		}
 	}
 	if formatAvailable(cfDIB) {
 		if b := clipboardBytes(cfDIB, maxClipImage); b != nil {
 			if p, err := dibToPNG(b); err == nil {
-				return clipContent{"png", p}, true
+				return clipContent{kind: "png", data: p}, true
 			}
 		}
 	}
 	return clipContent{}, false
+}
+
+// dropFiles returns the paths of a CF_HDROP, a DROPFILES structure.
+func dropFiles(b []byte) []string {
+	if len(b) < 20 {
+		return nil
+	}
+	off := int(binary.LittleEndian.Uint32(b[0:4]))
+	if binary.LittleEndian.Uint32(b[16:20]) == 0 || off < 20 || off >= len(b) {
+		return nil // ANSI paths, which Explorer no longer writes
+	}
+	u := make([]uint16, (len(b)-off)/2)
+	for i := range u {
+		u[i] = binary.LittleEndian.Uint16(b[off+2*i:])
+	}
+	var paths []string
+	for len(u) > 0 && u[0] != 0 {
+		i := indexZero(u)
+		if i < 0 {
+			break
+		}
+		paths = append(paths, string(utf16.Decode(u[:i])))
+		u = u[i+1:]
+	}
+	return paths
 }
 
 func indexZero(u []uint16) int {
@@ -243,55 +316,219 @@ func dibToPNG(b []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// runClipboardBridge copies the host clipboard into vm while one of its
-// Xpra windows is in the foreground: when such a window gains focus, and
-// when the clipboard changes while it has it. Content the Xpra client
-// itself put on the clipboard came from the guest and is not sent back.
-// It returns when the client process exits.
-func runClipboardBridge(vm string, clientPID int, clientDir string, send func(clipContent) error) error {
+// clipBridge is what runClipboardBridge may do for a VM.
+type clipBridge struct {
+	toGuest, toHost bool
+	// send copies host content into the VM
+	send func(clipContent) error
+	// openFiles opens a stream that copies files from the VM's clipboard;
+	// see the agent's clipFilesSource
+	openFiles func() (io.ReadWriteCloser, error)
+	// stage holds files copied from the VM until the next copy
+	stage string
+}
+
+// runClipboardBridge carries what Xpra's clipboard does not, while the
+// Xpra client of vm runs; it returns when the client exits.
+//
+// Host to VM: it copies the host clipboard into the VM while one of its
+// windows is in the foreground: when such a window gains focus, and when
+// the clipboard changes while it has it. Content the Xpra client or the
+// bridge put on the clipboard came from the VM and is not sent back.
+//
+// VM to host, files only, as Xpra carries text and images: when the VM's
+// clipboard reaches the host, and when focus leaves the VM's windows, it
+// fetches the files the VM's clipboard holds, if they changed, and puts
+// them on the host clipboard for pasting in Explorer.
+func runClipboardBridge(vm string, clientPID int, clientDir string, b clipBridge) error {
+	runtime.LockOSThread()
 	proc, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(clientPID))
 	if err != nil {
 		return fmt.Errorf("watch xpra client: %w", err)
 	}
 	defer windows.CloseHandle(proc)
+	// owns the clipboard while it holds files from the VM
+	static, _ := syscall.UTF16PtrFromString("STATIC")
+	hwnd, _, err := procCreateWindowEx.Call(0, uintptr(unsafe.Pointer(static)), 0, 0, 0, 0, 0, 0, hwndMessage, 0, 0, 0)
+	if hwnd == 0 {
+		return fmt.Errorf("create clipboard window: %v", err)
+	}
+	defer procDestroyWindow.Call(hwnd)
 	suffix := " [" + vm + "]"
 	var focused bool
 	var seenSeq uint32
 	var sent [32]byte
+	var fetched string
 	for {
-		if ev, _ := windows.WaitForSingleObject(proc, 150); ev == windows.WAIT_OBJECT_0 {
+		// other programs message the clipboard owner and wait for it
+		h := proc
+		r, _, _ := procMsgWaitForMultiple.Call(1, uintptr(unsafe.Pointer(&h)), 0, 150, qsAllInput)
+		if r == 0 {
 			return nil
 		}
+		pumpMessages()
 		fg, _, _ := procGetForegroundWindow.Call()
 		nowFocused := fg != 0 && strings.HasSuffix(windowTitle(fg), suffix) && inDir(windowProcess(fg), clientDir)
 		seq := clipboardSeq()
-		if nowFocused && (!focused || seq != seenSeq) {
-			owner, _, _ := procGetClipboardOwner.Call()
-			if !inDir(windowProcess(owner), clientDir) {
-				if c, ok := readClipboard(); ok {
-					if sum := sha256.Sum256(append([]byte(c.kind), c.data...)); sum != sent {
-						if err := send(c); err != nil {
-							fmt.Fprintf(os.Stderr, "clipboard to %s: %v\n", vm, err)
-						} else {
-							sent = sum
-						}
+		owner, _, _ := procGetClipboardOwner.Call()
+		fromVM := owner == hwnd || inDir(windowProcess(owner), clientDir)
+		if b.toGuest && nowFocused && (!focused || seq != seenSeq) && !fromVM {
+			if c, ok := readClipboard(); ok {
+				if sum := c.sum(); sum != sent {
+					if err := b.send(c); err != nil {
+						fmt.Fprintf(os.Stderr, "clipboard to %s: %v\n", vm, err)
+					} else {
+						sent = sum
 					}
 				}
 			}
+		}
+		if b.toHost && ((seq != seenSeq && fromVM && owner != hwnd) || (focused && !nowFocused)) {
+			key, err := fetchVMFiles(b, hwnd, fetched)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "files from %s: %v\n", vm, err)
+			} else if key != "" {
+				fetched = key
+			}
+			seq = clipboardSeq()
 		}
 		focused, seenSeq = nowFocused, seq
 	}
 }
 
+func pumpMessages() {
+	var msg [48]byte
+	for {
+		r, _, _ := procPeekMessage.Call(uintptr(unsafe.Pointer(&msg[0])), 0, 0, 0, pmRemove)
+		if r == 0 {
+			return
+		}
+		procDispatchMessage.Call(uintptr(unsafe.Pointer(&msg[0])))
+	}
+}
+
+// fetchVMFiles copies the files on the VM's clipboard into a new folder
+// under b.stage and puts them on the host clipboard, unless they are the
+// ones fetched last, under key have. It returns the key of what it put
+// there, or "" for nothing.
+func fetchVMFiles(b clipBridge, hwnd uintptr, have string) (string, error) {
+	s, err := b.openFiles()
+	if err != nil {
+		return "", err
+	}
+	defer s.Close()
+	r := bufio.NewReader(s)
+	line, err := r.ReadString('\n')
+	if err != nil {
+		return "", fmt.Errorf("read file list: %w", err)
+	}
+	key := strings.TrimSpace(line)
+	if key == "" || key == have {
+		s.Write([]byte("n"))
+		return "", nil
+	}
+	if _, err := s.Write([]byte("y")); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(b.stage, 0o700); err != nil {
+		return "", err
+	}
+	// only the latest copy stays
+	if old, err := os.ReadDir(b.stage); err == nil {
+		for _, e := range old {
+			os.RemoveAll(filepath.Join(b.stage, e.Name()))
+		}
+	}
+	dir, err := os.MkdirTemp(b.stage, "")
+	if err != nil {
+		return "", err
+	}
+	tops, err := extractClipFiles(r, dir, os.Stderr)
+	if err == nil && len(tops) == 0 {
+		err = fmt.Errorf("no files arrived")
+	}
+	if err == nil {
+		err = setClipboardFiles(hwnd, tops)
+	}
+	if err != nil {
+		os.RemoveAll(dir)
+		return "", err
+	}
+	return key, nil
+}
+
+// setClipboardFiles puts paths on the clipboard as Explorer copies files,
+// owned by hwnd.
+func setClipboardFiles(hwnd uintptr, paths []string) error {
+	// DROPFILES: offset of the list, a point, two flags; then UTF-16
+	// paths, each ending in NUL, and a final NUL
+	var list []uint16
+	for _, p := range paths {
+		list = append(list, utf16.Encode([]rune(p))...)
+		list = append(list, 0)
+	}
+	list = append(list, 0)
+	buf := make([]byte, 20+2*len(list))
+	binary.LittleEndian.PutUint32(buf[0:], 20)
+	binary.LittleEndian.PutUint32(buf[16:], 1)
+	for i, c := range list {
+		binary.LittleEndian.PutUint16(buf[20+2*i:], c)
+	}
+	effect := make([]byte, 4)
+	binary.LittleEndian.PutUint32(effect, 1) // DROPEFFECT_COPY
+	if !openClipboard(hwnd) {
+		return fmt.Errorf("the clipboard is busy")
+	}
+	defer procCloseClipboard.Call()
+	procEmptyClipboard.Call()
+	if err := setClipboardBytes(cfHDrop, buf); err != nil {
+		return err
+	}
+	if cfDropEffect != 0 {
+		setClipboardBytes(cfDropEffect, effect)
+	}
+	return nil
+}
+
+func setClipboardBytes(format uintptr, b []byte) error {
+	h, _, err := procGlobalAlloc.Call(gmemMoveable, uintptr(len(b)))
+	if h == 0 {
+		return fmt.Errorf("GlobalAlloc: %v", err)
+	}
+	p, _, _ := procGlobalLock.Call(h)
+	if p == 0 {
+		procGlobalFree.Call(h)
+		return fmt.Errorf("GlobalLock failed")
+	}
+	procMoveMemory.Call(p, uintptr(unsafe.Pointer(&b[0])), uintptr(len(b)))
+	procGlobalUnlock.Call(h)
+	if r, _, err := procSetClipboardData.Call(format, h); r == 0 {
+		procGlobalFree.Call(h)
+		return fmt.Errorf("SetClipboardData: %v", err)
+	}
+	return nil
+}
+
 // sendClipboard writes one snapshot to the guest and waits until the
 // guest holds it.
 func sendClipboard(open func(kind string) (io.ReadWriteCloser, error), c clipContent) error {
+	if c.kind == "files" {
+		// fail before the VM drops the files it holds now
+		if err := checkClipFiles(c.paths); err != nil {
+			return err
+		}
+	}
 	s, err := open(c.kind)
 	if err != nil {
 		return err
 	}
 	defer s.Close()
-	if _, err := s.Write(c.data); err != nil {
+	if c.kind == "files" {
+		err = writeClipFiles(s, c.paths)
+	} else {
+		_, err = s.Write(c.data)
+	}
+	if err != nil {
 		return err
 	}
 	if cw, ok := s.(interface{ CloseWrite() error }); ok {

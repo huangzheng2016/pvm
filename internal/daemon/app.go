@@ -64,9 +64,21 @@ type appState struct {
 	Clipboard string `json:"clipboard,omitempty"`
 	// Drop lets files dropped on the VM's windows upload into it.
 	Drop bool `json:"drop,omitempty"`
+	// Audio is out (the default: VM sound plays on the host), both (the
+	// host microphone also reaches the VM) or off.
+	Audio string `json:"audio,omitempty"`
 }
 
 var clipboardModes = []string{"off", "to-guest", "to-host", "both"}
+
+var audioModes = []string{"off", "out", "both"}
+
+func (st *appState) audio() string {
+	if st.Audio == "" {
+		return "out"
+	}
+	return st.Audio
+}
 
 func (st *appState) clipboard() string {
 	if st.Clipboard == "" {
@@ -78,6 +90,11 @@ func (st *appState) clipboard() string {
 // clipToGuest reports whether host clipboard content may enter the VM.
 func (st *appState) clipToGuest() bool {
 	return st.Clipboard == "to-guest" || st.Clipboard == "both"
+}
+
+// clipToHost reports whether the VM's clipboard content may reach the host.
+func (st *appState) clipToHost() bool {
+	return st.Clipboard == "to-host" || st.Clipboard == "both"
 }
 
 type appView struct {
@@ -93,6 +110,7 @@ type appAttach struct {
 	Title        string `json:"title"`
 	Clipboard    string `json:"clipboard"`
 	Drop         bool   `json:"drop"`
+	Audio        string `json:"audio"`
 	// Connected is true while a client is attached or one was started in
 	// the last appAttachGrace; the CLI then starts no second client.
 	Connected bool `json:"connected"`
@@ -168,17 +186,31 @@ func (s *Server) appSecret(name string) (string, string, error) {
 	return p, secret, nil
 }
 
-// appInstallScript installs the Xpra server unless it is there. It runs
-// as the VM user, who has passwordless sudo.
-func appInstallScript() string {
+// appLatePackages came after the first Xpra install; guests that have the
+// rest only add these, and go without one the release lacks or that fails
+// to install. The fonts are in golden images too, but VMs baked before
+// showed boxes for most scripts and emoji.
+var appLatePackages = []struct{ pkg, without string }{
+	{"gtk3-nocsd", "GTK apps keep their own title bar"},
+	{"xpra-audio-server", "apps have no sound"},
+	{"fonts-noto-core", "apps show boxes for scripts other than Latin and CJK"},
+	{"fonts-noto-color-emoji", "apps show boxes for emoji"},
+}
+
+// appInstallScript installs the Xpra server unless it is there, and with
+// late the packages of appLatePackages, which can take minutes. It runs as
+// the VM user, who has passwordless sudo.
+func appInstallScript(late bool) string {
 	const apt = "sudo -n env DEBIAN_FRONTEND=noninteractive apt-get -q -o DPkg::Lock::Timeout=300"
+	script := "{ { command -v xpra && command -v xclip && command -v wmctrl && command -v xdotool; } >/dev/null 2>&1 || { sudo -n bash -euo pipefail -c " + shellQuote(image.XpraRepoScript) +
+		" && " + apt + " update && " + apt + " install -y --no-install-recommends " + strings.Join(image.XpraPackages, " ") + "; }; }"
+	if late {
+		for _, l := range appLatePackages {
+			script += " && { dpkg -s " + l.pkg + " >/dev/null 2>&1 || " + apt + " install -y --no-install-recommends " + l.pkg + " || { " + apt + " update && " + apt + " install -y --no-install-recommends " + l.pkg + "; } || echo '" + l.pkg + " is unavailable; " + l.without + "' >&2; }"
+		}
+	}
 	// the mask also runs where xpra came preinstalled
-	// gtk3-nocsd came later: guests with the rest only add it, and fall
-	// back to apps drawing their own title bar when it cannot be installed
-	return "{ { command -v xpra && command -v xclip && command -v wmctrl && command -v xdotool; } >/dev/null 2>&1 || { sudo -n bash -euo pipefail -c " + shellQuote(image.XpraRepoScript) +
-		" && " + apt + " update && " + apt + " install -y --no-install-recommends " + strings.Join(image.XpraPackages, " ") + "; }; }" +
-		" && { dpkg -s gtk3-nocsd >/dev/null 2>&1 || " + apt + " install -y --no-install-recommends gtk3-nocsd || { " + apt + " update && " + apt + " install -y --no-install-recommends gtk3-nocsd; } || echo 'gtk3-nocsd is unavailable; GTK apps keep their own title bar' >&2; }" +
-		" && { [ \"$(systemctl is-enabled xpra-server.socket 2>/dev/null)\" = masked ] || ! systemctl cat xpra-server.socket >/dev/null 2>&1 || sudo -n sh -c " + shellQuote(image.XpraMaskScript) + "; }"
+	return script + " && { [ \"$(systemctl is-enabled xpra-server.socket 2>/dev/null)\" = masked ] || ! systemctl cat xpra-server.socket >/dev/null 2>&1 || sudo -n sh -c " + shellQuote(image.XpraMaskScript) + "; }"
 }
 
 // xpraStartPy starts the Xpra server and types text a host input method
@@ -192,7 +224,9 @@ var xpraStartPy string
 // manager, and with it the server, alive after the ssh session ends.
 func appServerScript() string {
 	opts := []string{
-		"--daemon=no", "--mdns=no", "--pulseaudio=no", "--speaker=off", "--microphone=off",
+		// the server runs its own PulseAudio; the client decides whether
+		// sound and the microphone flow
+		"--daemon=no", "--mdns=no", "--pulseaudio=yes", "--speaker=on", "--microphone=on",
 		"--webcam=no", "--printing=no", "--notifications=no", "--html=off", "--http-scripts=off",
 		// the client decides whether files flow; uploads are never opened
 		"--file-transfer=yes", "--open-files=no", "--open-url=no", "--file-size-limit=" + appDropLimit,
@@ -213,10 +247,20 @@ chmod 700 "$d"
 (umask 077; cat > "$d/xpra.secret")
 cat > "$d/xpra-start.py" <<'PVMEOF'
 ` + xpraStartPy + `PVMEOF
+# services D-Bus starts for apps, such as the desktop portal's GTK
+# backend, need the display; without it the portal hung until a timeout
+# and GTK apps waited a minute for it before showing a window. Apps play
+# sound into the PulseAudio of the Xpra server, not the session's.
+env="DISPLAY=` + appDisplay + `"
+command -v pulseaudio >/dev/null && env="$env PULSE_SERVER=unix:${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/xpra/` + strings.TrimPrefix(appDisplay, ":") + `/pulse/native"
+dbus-update-activation-environment --systemd $env 2>/dev/null || systemctl --user set-environment $env
+systemctl --user reset-failed xdg-desktop-portal.service xdg-desktop-portal-gtk.service >/dev/null 2>&1 || true
 if ! systemctl --user is-active --quiet ` + appServerUnit + `; then
   systemctl --user reset-failed ` + appServerUnit + ` >/dev/null 2>&1 || true
   rm -f "$d/xpra.sock"
-  systemd-run --user --quiet --collect --unit=` + appServerUnit + ` -E DISPLAY=` + appDisplay + ` -- python3 "$d/xpra-start.py" start ` + appDisplay + ` --bind="$d/xpra.sock,auth=file:filename=$d/xpra.secret" ` + strings.Join(opts, " ") + `
+  # the server starts that PulseAudio, which refuses to while PULSE_SERVER
+  # names a server
+  systemd-run --user --quiet --collect --unit=` + appServerUnit + ` -E DISPLAY=` + appDisplay + ` -- env -u PULSE_SERVER python3 "$d/xpra-start.py" start ` + appDisplay + ` --bind="$d/xpra.sock,auth=file:filename=$d/xpra.secret" ` + strings.Join(opts, " ") + `
 fi
 for i in $(seq 1 60); do
   if [ -S "$d/xpra.sock" ] && DISPLAY=` + appDisplay + ` xset q >/dev/null 2>&1; then exit 0; fi
@@ -449,7 +493,7 @@ func (s *Server) appVM(w http.ResponseWriter, name string) (*vm.Spec, bool) {
 
 // ensureAppServer installs and starts the VM's Xpra server.
 func (s *Server) ensureAppServer(ctx context.Context, spec *vm.Spec) error {
-	if out, err := s.sshRunCtx(ctx, spec, appInstallScript()); err != nil {
+	if out, err := s.sshRunCtx(ctx, spec, appInstallScript(false)); err != nil {
 		return fmt.Errorf("install xpra in %s: %v%s", spec.Name, err, indentOutput(out))
 	}
 	_, secret, err := s.appSecret(spec.Name)
@@ -498,6 +542,27 @@ func (s *Server) stopAppForward(name string) {
 	}
 }
 
+// closeAppClients stops the VM's Xpra server before the VM goes down. The
+// server tells attached clients that it shuts down, and they exit; they
+// would otherwise keep reconnecting to a VM that is gone, with a window
+// left on the host.
+func (s *Server) closeAppClients(spec *vm.Spec) {
+	s.apps.mu.Lock()
+	f := s.apps.fwd[spec.Name]
+	s.apps.mu.Unlock()
+	if f == nil {
+		return
+	}
+	if run, err := s.instance(spec).Running(); err == nil && run != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if out, err := s.sshRunCtx(ctx, spec, "systemctl --user stop "+appServerUnit+" 2>&1 || true"); err != nil {
+			log.Printf("stop xpra server in %s: %v%s", spec.Name, err, indentOutput(out))
+		}
+	}
+	s.stopAppForward(spec.Name)
+}
+
 // recoverAppForwards restores the listeners of VMs with apps on their
 // recorded ports, so attached clients reconnect after a daemon restart.
 func (s *Server) recoverAppForwards(specs []*vm.Spec) {
@@ -528,7 +593,7 @@ func (s *Server) attachInfo(spec *vm.Spec, st *appState, f *streamForward, force
 		}
 		s.apps.pending[spec.Name] = time.Now()
 	}
-	return appAttach{Port: f.port(), PasswordFile: pw, Title: "@title@ [" + spec.Name + "]", Clipboard: st.clipboard(), Drop: st.Drop, Connected: connected}, nil
+	return appAttach{Port: f.port(), PasswordFile: pw, Title: "@title@ [" + spec.Name + "]", Clipboard: st.clipboard(), Drop: st.Drop, Audio: st.audio(), Connected: connected}, nil
 }
 
 func (s *Server) handleAppStart(w http.ResponseWriter, r *http.Request) {
@@ -867,6 +932,7 @@ func (s *Server) handleAppConfig(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Clipboard string `json:"clipboard"`
 		Drop      *bool  `json:"drop"`
+		Audio     string `json:"audio"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, fmt.Errorf("bad request: %v", err))
@@ -893,21 +959,44 @@ func (s *Server) handleAppConfig(w http.ResponseWriter, r *http.Request) {
 	if req.Drop != nil {
 		st.Drop = *req.Drop
 	}
+	if req.Audio != "" {
+		if !slices.Contains(audioModes, req.Audio) {
+			writeErr(w, 400, fmt.Errorf("--audio must be one of %s", strings.Join(audioModes, ", ")))
+			return
+		}
+		st.Audio = req.Audio
+		if st.Audio == "out" {
+			st.Audio = ""
+		}
+	}
 	if err := s.saveAppState(name, st); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"clipboard": st.clipboard(), "drop": st.Drop})
+	writeJSON(w, 200, map[string]any{"clipboard": st.clipboard(), "drop": st.Drop, "audio": st.audio()})
 }
 
 // clipTarget turns the API's clip:<kind> into the guest's
-// clip:<uid>:<kind>, refused unless the VM lets the host clipboard in.
+// clip:<uid>:<kind>, refused unless the VM lets the host clipboard in, and
+// clipout:files, which copies files from the guest clipboard, into
+// clipout:<uid>:files, refused unless the VM's clipboard may reach the
+// host.
 func (s *Server) clipTarget(spec *vm.Spec, target string) (string, int, error) {
+	if target == "clipout:files" {
+		st, err := s.loadAppState(spec.Name)
+		if err != nil {
+			return "", 500, err
+		}
+		if !st.clipToHost() {
+			return "", 403, fmt.Errorf("the clipboard of %s may not reach the host; allow it with `pvm app config %s --clipboard to-host`", spec.Name, spec.Name)
+		}
+		return "clipout:" + strconv.Itoa(spec.GuestUID) + ":files", 0, nil
+	}
 	kind, ok := strings.CutPrefix(target, "clip:")
 	if !ok {
 		return target, 0, nil
 	}
-	if kind != "text" && kind != "png" {
+	if kind != "text" && kind != "png" && kind != "files" {
 		return "", 400, fmt.Errorf("unknown clipboard kind %q", kind)
 	}
 	st, err := s.loadAppState(spec.Name)
@@ -953,12 +1042,12 @@ func (s *Server) handleAppPrepare(w http.ResponseWriter, r *http.Request) {
 			rc.Flush()
 		}
 	}
-	_, err := s.sshRunCtx(ctx, spec, appInstalledCheck)
+	_, err := s.sshRunCtx(ctx, spec, appInstalledCheck())
 	if err == nil {
 		send(appPrepareFrame{Done: true})
 		return
 	}
-	err = s.sshStreamCtx(ctx, spec, appInstallScript(), lineWriter(func(l string) { send(appPrepareFrame{Out: l}) }))
+	err = s.sshStreamCtx(ctx, spec, appInstallScript(true), lineWriter(func(l string) { send(appPrepareFrame{Out: l}) }))
 	if err != nil {
 		send(appPrepareFrame{Done: true, Error: fmt.Sprintf("install xpra in %s: %v", spec.Name, err)})
 		return
@@ -966,8 +1055,15 @@ func (s *Server) handleAppPrepare(w http.ResponseWriter, r *http.Request) {
 	send(appPrepareFrame{Done: true, Installed: true})
 }
 
-// appInstalledCheck exits 0 when the VM needs no install step.
-const appInstalledCheck = `command -v xpra >/dev/null && command -v xclip >/dev/null && command -v wmctrl >/dev/null && command -v xdotool >/dev/null && { [ "$(systemctl is-enabled xpra-server.socket 2>/dev/null)" = masked ] || ! systemctl cat xpra-server.socket >/dev/null 2>&1; }`
+// appInstalledCheck exits 0 when the VM needs no install step. A late
+// package the release does not carry does not count.
+func appInstalledCheck() string {
+	check := `command -v xpra >/dev/null && command -v xclip >/dev/null && command -v wmctrl >/dev/null && command -v xdotool >/dev/null && { [ "$(systemctl is-enabled xpra-server.socket 2>/dev/null)" = masked ] || ! systemctl cat xpra-server.socket >/dev/null 2>&1; }`
+	for _, l := range appLatePackages {
+		check += " && { dpkg -s " + l.pkg + " >/dev/null 2>&1 || ! apt-cache show " + l.pkg + " >/dev/null 2>&1; }"
+	}
+	return check
+}
 
 // lineWriter calls fn for every complete line written, and for the rest
 // on Close. Carriage returns from progress bars end a line too.

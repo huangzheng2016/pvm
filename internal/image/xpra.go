@@ -11,10 +11,11 @@ const XpraVersion = "6.5"
 // XpraPackages are the server side of `pvm app`: the X11 server, codecs
 // and Xvfb; xclip, which sets the guest clipboard to host content; and
 // wmctrl, which tracks and closes web app windows; xdotool, which types
-// text a host input method commits; and gtk3-nocsd, which makes GTK apps
-// leave their title bar and buttons to the host's window manager.
-// Ubuntu and Debian do not package a current Xpra.
-var XpraPackages = []string{"xpra-server", "xpra-x11", "xpra-codecs", "xclip", "wmctrl", "xdotool", "gtk3-nocsd"}
+// text a host input method commits; gtk3-nocsd, which makes GTK apps
+// leave their title bar and buttons to the host's window manager; and
+// xpra-audio-server, which carries sound and the microphone through
+// PulseAudio. Ubuntu and Debian do not package a current Xpra.
+var XpraPackages = []string{"xpra-server", "xpra-x11", "xpra-codecs", "xclip", "wmctrl", "xdotool", "gtk3-nocsd", "xpra-audio-server"}
 
 // XpraMaskScript masks the packaged system-wide Xpra service, whose socket
 // listens on every interface; pvm runs its own server per user.

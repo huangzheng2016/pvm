@@ -29,7 +29,7 @@ vm:
   desktop       open the vm's native xfce desktop: pvm desktop [dev1] [--open] [--stop] [--size WxH] [--public] [--yes]
   app           show one vm app as a host window (xpra): pvm app [dev1] -- gedit | pvm app [dev1] https://example.com
                 [--name ID] [--kiosk] [--no-attach] [--yes]; pvm app ls [vm] | stop [dev1] <id>|--all | attach [dev1]
-                pvm app config [dev1] [--clipboard off|to-guest|to-host|both] [--drop on|off]
+                pvm app config [dev1] [--clipboard off|to-guest|to-host|both] [--drop on|off] [--audio off|out|both]
   doctor        diagnose local state consistency and permissions (read-only, redacted)
   audit         read-only health audit: pvm audit [dev1] | pvm audit dev1 --privacy (vm, route, tcp/udp/icmp probes, dns, ipv6, timezone, locale)
 

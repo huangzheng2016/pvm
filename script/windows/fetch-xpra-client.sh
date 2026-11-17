@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # fetch-xpra-client.sh: download the Xpra Windows client that the installers
-# ship for `pvm app`, check it, and unpack it into <dest>.
+# ship for `pvm app`, check it, unpack it into <dest> and add pvm's patches
+# from xpra-patch/, which Python loads in place of the compiled modules of
+# the same name.
 #
 #   ./script/windows/fetch-xpra-client.sh <dest>
 #
@@ -48,10 +50,15 @@ src=$(find "$WORK/unpacked" -mindepth 1 -maxdepth 1 -type d)
 [ -f "$src/Xpra.exe" ] && [ -f "$src/Xpra_cmd.exe" ] && [ -f "$src/share/xpra/COPYING" ] \
   || { echo "error: unexpected layout in $XPRA_ZIP" >&2; exit 1; }
 cp -R "$src"/. "$DEST"/
+PATCH_DIR=$(cd "$(dirname "$0")/xpra-patch" && pwd)
+[ -f "$DEST/lib/xpra/client/gui/keyboard_helper.pyc" ]   || { echo "error: $XPRA_ZIP has no lib/xpra/client/gui/keyboard_helper.pyc to patch" >&2; exit 1; }
+cp "$PATCH_DIR/keyboard_helper.py" "$DEST/lib/xpra/client/gui/"
 cat > "$DEST/XPRA-SOURCE.txt" <<EOF
-This folder holds the Xpra client ${XPRA_ZIP%.zip}, unmodified, as published
-at $XPRA_BASE_URL/$XPRA_ZIP. Xpra is free software under the GNU General
-Public License version 2 or later; see share/xpra/COPYING. Its source code
-is available at https://github.com/Xpra-org/xpra and https://xpra.org/src/.
+This folder holds the Xpra client ${XPRA_ZIP%.zip}, as published at
+$XPRA_BASE_URL/$XPRA_ZIP, with one file added by pvm:
+lib/xpra/client/gui/keyboard_helper.py, whose source is the file itself.
+Xpra is free software under the GNU General Public License version 2 or
+later; see share/xpra/COPYING. Its source code is available at
+https://github.com/Xpra-org/xpra and https://xpra.org/src/.
 EOF
 echo "unpacked $XPRA_ZIP into $DEST"

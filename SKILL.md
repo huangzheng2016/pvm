@@ -141,19 +141,22 @@ pvm app dev1 --name notes --no-attach -- gedit notes.txt
 pvm app ls [dev1]
 pvm app attach dev1                         # reopen the windows after closing the Xpra client
 pvm app stop dev1 notes                     # or --all
-pvm app config dev1 --clipboard both --drop on
+pvm app config dev1 --clipboard both --drop on --audio both
 ```
 
 - Uses Xpra: one Xpra server per VM runs as the VM user, and each app is a window on it. The page or program runs in the VM, so cookies, fingerprint and egress stay with the VM and its route; the host only shows pixels.
 - The host needs the Xpra 6.5.x client from xpra.org; the Windows installers include it. On Windows pvm looks in `xpra\Xpra.exe` next to `pvm.exe` and in `Program Files\Xpra`, on macOS in `/Applications/Xpra.app`, elsewhere on `PATH`; `PVM_XPRA` overrides the path. A client from another release line is refused. The first app in a VM without Xpra installs it from xpra.org's APT repository, which takes a few minutes and needs the VM's network; golden images built from this version on include it.
-- Type with the host's own input method, such as Microsoft Pinyin: committed text reaches the app.
+- Type with the host's own input method, such as Microsoft Pinyin or the Windows emoji panel: committed text, emoji included, reaches the app.
+- Sound plays on the host's default output device. `--audio both` also records the host's default microphone into the VM while a client is attached; `--audio off` silences the VM. The default is `out`.
+- The first app in a VM also installs what came after its Xpra: the audio server, `gtk3-nocsd`, and Noto fonts for all major scripts and color emoji, so VMs baked earlier stop showing boxes. Restart apps that were running to pick up new fonts.
 - The command must be installed in the VM; `pvm app` does not install it. Window titles end in `[dev1]`.
 - GTK programs run with `gtk3-nocsd` preloaded, so their title bar and minimize, maximize and close buttons come from the host, like Firefox's. On Windows hosts, programs that draw their own frame, such as Electron apps, get the host's frame too, above their own top bar.
 - Chromium-based programs, recognized by `v8_context_snapshot.bin` next to the binary (Electron apps such as Claude Desktop and VS Code, and Chrome), get `--disable-gpu`: the VM has no GPU, and Chromium's software OpenGL is slower than its plain software drawing. A wrapper script that starts Chromium is not recognized; pass the flag yourself.
-- Closing a window closes that app. Quitting the Xpra client leaves apps running; `pvm app attach` brings them back. A VM restart ends its apps.
+- Closing a window closes that app. Quitting the Xpra client leaves apps running; `pvm app attach` brings them back. `pvm stop` and `pvm rm` close the VM's windows on the host; a VM restart ends its apps.
 - Clipboard and drops are off by default, per VM:
-  - `--clipboard to-host`: copy in the VM, paste on the host (text and images).
-  - `--clipboard to-guest`: host content enters the VM only when one of its windows comes to the front, or when you copy while it is there, never in the background. Content that password managers mark as excluded is never sent. Windows hosts only so far.
+  - `--clipboard to-host`: copy in the VM, paste on the host (text, images and, on Windows hosts, files and folders).
+  - `--clipboard to-guest`: host content enters the VM only when one of its windows comes to the front, or when you copy while it is there, never in the background. Content that password managers mark as excluded is never sent. Text, images, and files and folders copied in Explorer. Windows hosts only so far.
+  - Copied files go up to 256 MB in all. Files from the host land in `~/.cache/pvm/clipboard` in the VM and paste in Thunar, file dialogs, browsers and Electron apps; files from the VM land under the VM's directory in pvm's data and paste in Explorer. Each copy replaces the previous one. Problems go to `client.log` and `clipboard.log` in the VM's `app` directory.
   - `--clipboard both`: both of the above.
   - `--drop on`: files dropped on a VM window upload into `~/Downloads` in the VM (up to 100 MB each, never opened). A file the VM tries to send asks for confirmation on the host.
   - Changes apply to clients attached afterwards: run `pvm app attach dev1`.

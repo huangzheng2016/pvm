@@ -57,7 +57,7 @@ func TestAppScriptsParse(t *testing.T) {
 		t.Skip("no sh")
 	}
 	scripts := map[string]string{
-		"install": appInstallScript(),
+		"install": appInstallScript(true),
 		"server":  appServerScript(),
 		"cmd":     appLaunchScript(&appRecord{ID: "gedit", Kind: "cmd", Argv: []string{"gedit", "it's a file; rm -rf ~", "$(id)"}}),
 		"url":     appLaunchScript(&appRecord{ID: "mail", Kind: "url", URL: "https://example.com/?a=1&b='2'", Kiosk: true}),
@@ -175,6 +175,16 @@ func TestClipTargetFollowsPolicy(t *testing.T) {
 		got, _, err := s.clipTarget(spec, "clip:png")
 		if err != nil || got != "clip:1000:png" {
 			t.Errorf("policy %q: target %q, %v", mode, got, err)
+		}
+	}
+	// files from the guest clipboard need the other direction
+	for mode, allowed := range map[string]bool{"": false, "to-guest": false, "to-host": true, "both": true} {
+		if err := s.saveAppState("dev1", &appState{Clipboard: mode}); err != nil {
+			t.Fatal(err)
+		}
+		got, code, err := s.clipTarget(spec, "clipout:files")
+		if allowed != (err == nil) || (allowed && got != "clipout:1000:files") || (!allowed && code != 403) {
+			t.Errorf("policy %q: clipout target %q, code %d, %v", mode, got, code, err)
 		}
 	}
 	if _, code, _ := s.clipTarget(spec, "clip:../../x"); code != 400 {
