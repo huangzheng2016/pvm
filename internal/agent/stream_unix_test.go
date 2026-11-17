@@ -14,8 +14,8 @@ import (
 // could have planted.
 func TestDialUserSocketChecksOwnership(t *testing.T) {
 	uid := os.Getuid()
-	if uid < 1000 {
-		t.Skip("needs a login uid")
+	if uid <= 0 {
+		t.Skip("needs a non-root uid")
 	}
 	root := t.TempDir()
 	dir := filepath.Join(root, "run", "user", strconv.Itoa(uid), "pvm")
@@ -51,8 +51,8 @@ func TestDialUserSocketChecksOwnership(t *testing.T) {
 	if _, err := dialUserSocket(root, uid+1, xpraSocket); err == nil {
 		t.Error("connected another uid's runtime dir")
 	}
-	if _, err := dialUserSocket(root, 999, xpraSocket); err == nil {
-		t.Error("connected a system uid")
+	if _, err := dialUserSocket(root, 0, xpraSocket); err == nil {
+		t.Error("connected root's runtime dir")
 	}
 	os.Chmod(dir, 0o755)
 	if _, err := dialUserSocket(root, uid, xpraSocket); err == nil {

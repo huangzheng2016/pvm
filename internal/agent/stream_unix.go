@@ -29,8 +29,8 @@ const xpraSocket = "pvm/xpra.sock"
 // directory. The agent runs as root, so the directory and socket must
 // belong to uid; another guest user cannot plant one.
 func dialUserSocket(root string, uid int, rel string) (io.ReadWriteCloser, error) {
-	if uid < 1000 {
-		return nil, fmt.Errorf("uid %d is not a login user", uid)
+	if uid <= 0 {
+		return nil, fmt.Errorf("uid %d is not a user", uid)
 	}
 	runtime := filepath.Join(root, "run", "user", strconv.Itoa(uid))
 	path := filepath.Join(runtime, rel)
@@ -71,10 +71,12 @@ const maxClipboard = 16 << 20
 // clipMIME maps a clipboard target kind to the X selection type.
 var clipMIME = map[string]string{"text": "UTF8_STRING", "png": "image/png"}
 
-// clipUser looks up a login user for the clipboard targets.
+// clipUser looks up the user of the clipboard targets. The VM user's uid
+// follows the host user's, which is below 1000 on macOS, so any user but
+// root is accepted, as for the xpra target.
 func clipUser(uid int) (*user.User, error) {
-	if uid < 1000 {
-		return nil, fmt.Errorf("uid %d is not a login user", uid)
+	if uid <= 0 {
+		return nil, fmt.Errorf("uid %d is not a user", uid)
 	}
 	return user.LookupId(strconv.Itoa(uid))
 }

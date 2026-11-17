@@ -10,12 +10,14 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"log"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
+	"github.com/huangzheng2016/pvm/internal/qemu"
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
@@ -145,7 +147,11 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	public := r.URL.Query().Get("public") == "1"
-	// maps from before pvm.stream carried the desktop through the gateway
+	useStream := s.streamPortAvailable(spec)
+	if !useStream && running && st != nil && st.Public == public && s.desktopRelayMatches(spec, st, public) {
+		writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort, Public: st.Public})
+		return
+	}
 	if err := s.removeDesktopMaps(r.Context(), spec, s.pushGatewayConfigCtx); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -157,7 +163,14 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	port, err := s.ensureDesktopForward(name, st.HostPort, public)
+	var port int
+	if useStream {
+		port, err = s.ensureDesktopForward(name, st.HostPort, public)
+	} else {
+		ensureCtx, ensureCancel := context.WithTimeout(r.Context(), mapPushTimeout)
+		defer ensureCancel()
+		port, err = s.desktopEnsureMap(ensureCtx, spec, public, s.pushGatewayConfigCtx)
+	}
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -168,6 +181,43 @@ func (s *Server) handleDesktop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, desktopResponse{URL: desktopURL(st, name), HostPort: st.HostPort, Public: st.Public})
+}
+
+// desktopEnsureMap keeps desktops working on VMs started before pvm.stream.
+func (s *Server) desktopEnsureMap(ctx context.Context, spec *vm.Spec, public bool, push func(context.Context, int) error) (int, error) {
+	ensure := s.relays.Ensure
+	if public {
+		ensure = s.relays.EnsurePublic
+	}
+	if err := s.mapMu.Lock(ctx); err != nil {
+		return 0, err
+	}
+	defer s.mapMu.Unlock()
+	for _, m := range s.Clusters.Get(spec.ClusterID).Maps {
+		if m.VM == spec.Name && m.GuestPort == desktopWebPort && m.Proto == "tcp" {
+			return m.HostPort, nil
+		}
+	}
+	m, _, err := s.addMap(ctx, spec, 0, desktopWebPort, "tcp", ensure, push)
+	if err != nil {
+		return 0, err
+	}
+	return m.HostPort, nil
+}
+
+func (s *Server) desktopRelayMatches(spec *vm.Spec, st *desktopState, public bool) bool {
+	want := "127.0.0.1"
+	if public {
+		want = "0.0.0.0"
+	}
+	for _, m := range s.Clusters.Get(spec.ClusterID).Maps {
+		if m.VM != spec.Name || m.GuestPort != desktopWebPort || m.Proto != "tcp" || m.HostPort != st.HostPort {
+			continue
+		}
+		bind, ok := s.relays.Binding(m.Proto, m.HostPort)
+		return ok && bind == want
+	}
+	return false
 }
 
 // ensureDesktopForward returns the port of the VM's desktop listener,
@@ -215,11 +265,19 @@ func (s *Server) stopDesktopForward(name string) {
 	}
 }
 
+func (s *Server) streamPortAvailable(spec *vm.Spec) bool {
+	st, err := s.instance(spec).Running()
+	return err == nil && st != nil && slices.Contains(st.Args, qemu.StreamPortDevice)
+}
+
 // recoverDesktopForwards restores the listeners of desktop sessions that
 // outlived a daemon restart, on their recorded ports, so issued URLs keep
 // working.
 func (s *Server) recoverDesktopForwards(specs []*vm.Spec) {
 	for _, spec := range specs {
+		if !s.streamPortAvailable(spec) {
+			continue
+		}
 		st := s.loadDesktopState(spec.Name)
 		if st == nil {
 			continue

@@ -19,7 +19,7 @@ var XpraPackages = []string{"xpra-server", "xpra-x11", "xpra-codecs", "xclip", "
 
 // XpraMaskScript masks the packaged system-wide Xpra service, whose socket
 // listens on every interface; pvm runs its own server per user.
-const XpraMaskScript = `systemctl mask --now xpra-server.socket xpra-server.service >/dev/null 2>&1 || true
+const XpraMaskScript = `systemctl mask --now xpra-server.socket xpra-server.service
 `
 
 // XpraRepoScript adds xpra.org's APT repository for the running release,

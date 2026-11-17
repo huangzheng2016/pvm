@@ -113,8 +113,11 @@ func TestAppScriptsParse(t *testing.T) {
 		t.Errorf("url launch must reuse the shared Firefox:\n%s", url)
 	}
 	stop := scripts["stop"]
-	if !strings.Contains(stop, appUnitPrefix+"gedit") || !strings.Contains(stop, `wmctrl -i -c "$w"`) || !strings.Contains(stop, "'0x00c00003'") || !strings.Contains(stop, "stop "+webappUnit) {
+	if !strings.Contains(stop, appUnitPrefix+"gedit") || !strings.Contains(stop, `wmctrl -i -c "$w"`) || !strings.Contains(stop, "'0x00c00003'") || !strings.Contains(stop, "stop_units "+webappUnit) {
 		t.Errorf("stop script:\n%s", stop)
+	}
+	if !strings.Contains(stop, "is-active --quiet") {
+		t.Errorf("stop script must tolerate units that never started:\n%s", stop)
 	}
 	if strings.Contains(appStopScript([]appRecord{{ID: "mail", Kind: "url", Window: "0x1"}}, true), "stop "+webappUnit) {
 		t.Error("the shared Firefox must keep running while other web apps use it")
@@ -284,6 +287,41 @@ func TestClipTargetFollowsPolicy(t *testing.T) {
 	}
 	if got, _, err := s.clipTarget(spec, "echo"); err != nil || got != "echo" {
 		t.Errorf("other targets must pass through: %q, %v", got, err)
+	}
+}
+
+func TestAppSecretPersistsAndRejectsCorruption(t *testing.T) {
+	s := newAuditTestServer(t, &vm.Spec{Name: "dev1", User: "u"})
+	_, secret, err := s.appSecret("dev1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, again, err := s.appSecret("dev1")
+	if err != nil || again != secret {
+		t.Fatalf("valid secret changed: %v", err)
+	}
+	path := filepath.Join(s.appDir("dev1"), "xpra.secret")
+	if err := os.WriteFile(path, []byte("broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.appSecret("dev1"); err == nil {
+		t.Fatal("corrupt secret was silently replaced")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "broken" {
+		t.Fatalf("corrupt secret was overwritten: %q", data)
+	}
+}
+
+func TestStreamTargetAcceptsMacOSGuestUID(t *testing.T) {
+	if !validStreamTarget("xpra:501") {
+		t.Fatal("macOS guest uid 501 rejected")
+	}
+	if validStreamTarget("xpra:0") {
+		t.Fatal("root uid accepted")
 	}
 }
 

@@ -37,7 +37,7 @@
 计划中：
 
 - [ ] `pvm exit-agent install|uninstall`，注册为 systemd 服务
-- [ ] `pvm app` 支持 macOS、Linux 和 WSL2 宿主机，并让输入法输入稳定可靠
+- [ ] `pvm app` 在 macOS 和 Linux 上支持宿主机到虚拟机的剪贴板，支持 WSL2，并让输入法输入稳定可靠
 - [ ] 输入法候选框跟随应用的文本光标
 - [ ] `pvm desktop` 像 `pvm app` 一样作为宿主机窗口打开，并在虚拟机文件管理器里打开工作区目录
 - [ ] Windows CI：其余包的测试，以及打 tag 时对安装包做冒烟测试
@@ -170,7 +170,7 @@ pvm app install dev1 claude-code codex claude-desktop
 
 ### 浏览器桌面
 
-`pvm desktop dev1` 通过 TigerVNC 和 noVNC 在回环地址上提供虚拟机自己的 XFCE 桌面，分辨率随浏览器窗口调整。`--public` 会监听 `0.0.0.0`，但仍需 VNC 认证。
+`pvm desktop dev1` 通过 TigerVNC 和 noVNC 在回环地址上提供虚拟机自己的 XFCE 桌面，分辨率随浏览器窗口调整。新虚拟机通过 `pvm.stream` 传输；没有该端口的虚拟机继续使用原有 gateway 映射和中继，并在重启后自动迁移。`--public` 会监听 `0.0.0.0`，但仍需 VNC 认证。
 
 ### 工作区
 
