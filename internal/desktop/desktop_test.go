@@ -397,7 +397,12 @@ func TestActionArgv(t *testing.T) {
 	if tk, err := app.RunCatalogApp("dev1", "codex"); err != nil || !tk.OK || len(tk.Steps) != 0 {
 		t.Fatalf("terminal app: %+v, %v", tk, err)
 	}
-	wantTerminals := []string{"|ssh dev1", host + "|ssh dev1", loose + "|ssh", "|ssh -t dev1 codex"}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a VM's terminal starts in ~, whatever the app's working directory
+	wantTerminals := []string{home + "|ssh dev1", host + "|ssh dev1", loose + "|ssh", home + "|ssh -t dev1 codex"}
 	if !slices.Equal(f.terminals, wantTerminals) {
 		t.Errorf("terminals = %q, want %q", f.terminals, wantTerminals)
 	}

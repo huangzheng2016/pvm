@@ -119,7 +119,19 @@ func (a *App) OpenTerminal(name string) error {
 	if err := checkVM(name); err != nil {
 		return err
 	}
-	return a.sys.openTerminal("", []string{"ssh", name})
+	return a.vmTerminal("ssh", name)
+}
+
+// vmTerminal opens `pvm ssh` in the VM's home directory. pvm ssh enters
+// the guest folder of a workspace holding its working directory, and the
+// child would inherit the app's own; the host home directory cannot be
+// a workspace.
+func (a *App) vmTerminal(args ...string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	return a.sys.openTerminal(home, args)
 }
 
 // appTarget turns what the user typed into the arguments of `pvm app`:
@@ -175,7 +187,7 @@ func (a *App) RunCatalogApp(name, id string) (Task, error) {
 	}
 	start := strings.Fields(entry.Start)
 	if !entry.Window {
-		if err := a.sys.openTerminal("", append([]string{"ssh", "-t", name}, start...)); err != nil {
+		if err := a.vmTerminal(append([]string{"ssh", "-t", name}, start...)...); err != nil {
 			return Task{}, err
 		}
 		return Task{Title: "Open " + entry.Name + " in " + name, Steps: []Step{}, Done: true, OK: true, Remaining: []string{}}, nil
