@@ -1,8 +1,8 @@
 # pvm-running.ps1: run by both installers before files are replaced. Files
-# under a running daemon, VM or pvm Desktop cannot be replaced (the MSI would
+# under a running daemon, VM or PVM Desktop cannot be replaced (the MSI would
 # defer them to a reboot), so find those processes by executable path.
-#   -Mode check : exit with the number of running pvm/QEMU/pvm Desktop processes
-#   -Mode prompt: if any run, offer to close pvm Desktop and stop the daemon
+#   -Mode check : exit with the number of running pvm/QEMU/PVM Desktop processes
+#   -Mode prompt: if any run, offer to close PVM Desktop and stop the daemon
 #                 (which stops running VMs) and wait for them to exit; exit 0
 #                 once none remain
 param(
@@ -47,9 +47,9 @@ if ($vms.Count -gt 0 -and -not $daemon) {
 }
 $ask = "pvm is running. Setup must stop the pvm daemon, which also stops all running VMs.`n`nStop it now?"
 if ($apps.Count -gt 0 -and $daemon) {
-    $ask = "pvm is running. Setup must close pvm Desktop and stop the pvm daemon, which also stops all running VMs.`n`nDo it now?"
+    $ask = "pvm is running. Setup must close PVM Desktop and stop the pvm daemon, which also stops all running VMs.`n`nDo it now?"
 } elseif ($apps.Count -gt 0) {
-    $ask = "pvm Desktop is open. Setup must close it.`n`nClose it now?"
+    $ask = "PVM Desktop is open. Setup must close it.`n`nClose it now?"
 }
 if ((Show $ask (1 + 48)) -ne 1) {
     exit 1

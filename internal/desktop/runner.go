@@ -37,7 +37,7 @@ func pvmPath() (string, error) {
 	}
 	path := filepath.Join(filepath.Dir(exe), name)
 	if _, err := os.Stat(path); err != nil {
-		return "", fmt.Errorf("%s is not next to pvm Desktop (%s); run the pvm installer again", name, filepath.Dir(exe))
+		return "", fmt.Errorf("%s is not next to PVM Desktop (%s); run the pvm installer again", name, filepath.Dir(exe))
 	}
 	return path, nil
 }

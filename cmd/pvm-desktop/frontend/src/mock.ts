@@ -231,7 +231,7 @@ const one = (title: string, command: string, lines: string[] = [], effect?: () =
 const refuse = (text: string): Promise<never> => Promise.reject(text);
 
 const backend: Backend = {
-  State: () => (scene === "loading" ? never() : scene === "error" ? refuse("pvm.exe is not next to pvm Desktop (C:\\Users\\me\\pvm); run the pvm installer again") : Promise.resolve({ ...state })),
+  State: () => (scene === "loading" ? never() : scene === "error" ? refuse("pvm.exe is not next to PVM Desktop (C:\\Users\\me\\pvm); run the pvm installer again") : Promise.resolve({ ...state })),
   VMs: async () =>
     machines
       .map((m) => ({

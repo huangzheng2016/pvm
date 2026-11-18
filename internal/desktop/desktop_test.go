@@ -979,7 +979,7 @@ func TestPvmRunner(t *testing.T) {
 		t.Fatalf("lines = %q, want %q", lines, want)
 	}
 
-	r.find = func() (string, error) { return "", errors.New("pvm.exe is not next to pvm Desktop") }
+	r.find = func() (string, error) { return "", errors.New("pvm.exe is not next to PVM Desktop") }
 	if _, err := r.run(command{argv: []string{"ls"}}, func(string) {}); err == nil {
 		t.Fatal("a missing pvm ran")
 	}

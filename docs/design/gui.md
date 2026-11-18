@@ -1,4 +1,4 @@
-# pvm Desktop, a graphical app
+# PVM Desktop, a graphical app
 
 Status: M0 and M1 are implemented for Windows hosts with the native (WHPX) backend. The app has not been run on Windows yet: so far there are backend unit tests on Linux, a cross-build of `pvm-desktop.exe` and compile checks of both installers. The end-to-end list under [Testing](#testing) is still open.
 
@@ -174,7 +174,7 @@ The workspace list shows the id, VM, mode, host folder and last transfer.
 
 - **Default VM** runs `pvm default-vm <vm>`, or `pvm default-vm --clear`.
 - **Start the daemon at login** runs `pvm daemon install` or `pvm daemon uninstall`, which manage the existing `pvm-daemon` scheduled task.
-- **Open pvm Desktop at login** writes or removes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\pvm-desktop`.
+- **Open PVM Desktop at login** writes or removes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\pvm-desktop`.
 - **Language** shows the window in English or Simplified Chinese, or follows the language of Windows. The choice is the window's own: it is kept in the WebView2 profile, not in `config.yaml`, and runs no command. What pvm prints stays as it is in both: task titles, commands, output, error messages and the hint of a failed VM.
 - **About** shows the app version, the daemon version, accelerator and TCG fallback warning, and the data folder. When the two versions differ, it says to run the installer again.
 
@@ -244,8 +244,8 @@ These land in the CLI and daemon before the app. Each is its own commit, with te
   - Upload the result as the raw artifact `raw-pvm-desktop_windows_amd64`; `script/ci/reuse.py` lists it as required.
   - The `package` job checks its Go version, main package and build tags before packing it.
 - **Installers.** `script/windows/pack-setup.sh` adds `pvm-desktop.exe` to the NSIS and MSI packages:
-  - A per-user Start menu shortcut, "pvm Desktop".
-  - An optional "Open pvm Desktop" on the NSIS finish page, off by default: opening the app starts the daemon. The MSI is built with wixl, which has no UI, so it has no finish page.
+  - A per-user Start menu shortcut, "PVM Desktop".
+  - An optional "Open PVM Desktop" on the NSIS finish page, off by default: opening the app starts the daemon. The MSI is built with wixl, which has no UI, so it has no finish page.
   - Uninstall removes the program, the shortcut and the `Run` value. The WebView2 profile under the data folder stays, like all user data.
   - A running `pvm-desktop.exe` is found like a running `pvm.exe`: interactive runs offer to close it, silent runs refuse.
 - **WebView2.** Windows 10 and 11 normally have it. When it is missing, the app shows a message with Microsoft's download page; the installers do not install it silently.

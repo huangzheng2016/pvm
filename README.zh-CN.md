@@ -13,7 +13,7 @@
 - **浏览器标签页里的完整桌面。** `pvm desktop` 打开虚拟机自己的桌面，和 SSH 登录的是同一台机器。见[浏览器桌面](#浏览器桌面)。
 - **项目文件夹直接在虚拟机里用。** 挂载一个目录、保持两份同步副本，或上传一次再把结果下载回来。在项目目录里运行 `pvm ssh`，就会进入对应虚拟机里的同一目录，虚拟机没启动时先问你要不要启动。见[工作区](#工作区)。
 - **秒级快照和克隆**、回环端口映射，以及只读的 `pvm audit` 路由和 DNS 体检。
-- **Windows 免管理员安装。** 一个安装包装好 pvm、pvm Desktop 图形应用、QEMU 和 Xpra 客户端。见[Windows 安装包](#windows-安装包)和 [pvm Desktop](#pvm-desktop)。
+- **Windows 免管理员安装。** 一个安装包装好 pvm、PVM Desktop 图形应用、QEMU 和 Xpra 客户端。见[Windows 安装包](#windows-安装包)和 [PVM Desktop](#pvm-desktop)。
 
 ## 路线图
 
@@ -39,7 +39,7 @@
 - [ ] 输入法候选框跟随应用的文本光标
 - [ ] `pvm desktop` 像 `pvm app` 一样作为宿主机窗口打开，并在虚拟机文件管理器里打开工作区目录
 - [ ] Windows CI：其余包的测试，以及打 tag 时对安装包做冒烟测试
-- [ ] pvm Desktop：类似 Docker Desktop 的图形界面应用，用于创建虚拟机、管理出口、工作区和预装应用；已为原生 Windows 构建并随安装包发布，尚未在 Windows 上做端到端测试
+- [ ] PVM Desktop：类似 Docker Desktop 的图形界面应用，用于创建虚拟机、管理出口、工作区和预装应用；已为原生 Windows 构建并随安装包发布，尚未在 Windows 上做端到端测试
 
 候选：
 
@@ -60,14 +60,14 @@ pvm 支持 arm64 的 macOS、amd64 的 Linux，以及 amd64 的 Windows。
 
 1. 从 [Releases](../../releases) 下载 `pvm_windows_amd64_setup.exe` 或 `pvm_windows_amd64_setup.msi`。可先校验：`gh attestation verify pvm_windows_amd64_setup.exe --repo BitterOrange/pvm`。
 2. 运行它，不需要管理员权限。
-3. 打开新的终端让 `PATH` 变更生效，运行 `pvm doctor` 检查加速和后端。也可以从开始菜单打开 **pvm Desktop**，见 [pvm Desktop](#pvm-desktop)。
+3. 打开新的终端让 `PATH` 变更生效，运行 `pvm doctor` 检查加速和后端。也可以从开始菜单打开 **PVM Desktop**，见 [PVM Desktop](#pvm-desktop)。
 
-两种安装包都会把 `pvm.exe` 和 `pvm-desktop.exe` 装到 `%LOCALAPPDATA%\pvm` 并把该目录加入用户 `PATH`，在开始菜单添加"pvm Desktop"快捷方式，把 Xpra 客户端装到 `%LOCALAPPDATA%\pvm\xpra`，把 QEMU 运行时装到 `%USERPROFILE%\.pvm\runtime\qemu\x86_64`（设置了 `PVM_HOME` 时装在它下面）。每台机器只用一种安装包。两种安装的 `pvm.exe` 和 QEMU 运行时都可以用 `pvm upgrade` 更新；它不更新 `pvm-desktop.exe`，要更新图形应用请运行新版安装包。
+两种安装包都会把 `pvm.exe` 和 `pvm-desktop.exe` 装到 `%LOCALAPPDATA%\pvm` 并把该目录加入用户 `PATH`，在开始菜单添加"PVM Desktop"快捷方式，把 Xpra 客户端装到 `%LOCALAPPDATA%\pvm\xpra`，把 QEMU 运行时装到 `%USERPROFILE%\.pvm\runtime\qemu\x86_64`（设置了 `PVM_HOME` 时装在它下面）。每台机器只用一种安装包。两种安装的 `pvm.exe` 和 QEMU 运行时都可以用 `pvm upgrade` 更新；它不更新 `pvm-desktop.exe`，要更新图形应用请运行新版安装包。
 
-- `.exe` 安装包的最后一页提供"Open pvm Desktop"选项，默认不勾选。MSI 没有这一页。
-- 正在运行的 pvm、虚拟机或 pvm Desktop 占用的文件无法替换。交互运行时会提示关闭 pvm Desktop 并停止 daemon（同时停止正在运行的虚拟机）；静默运行（`/S`、`msiexec /qn`）则直接拒绝，请先关闭 pvm Desktop 并执行 `pvm daemon stop`。
+- `.exe` 安装包的最后一页提供"Open PVM Desktop"选项，默认不勾选。MSI 没有这一页。
+- 正在运行的 pvm、虚拟机或 PVM Desktop 占用的文件无法替换。交互运行时会提示关闭 PVM Desktop 并停止 daemon（同时停止正在运行的虚拟机）；静默运行（`/S`、`msiexec /qn`）则直接拒绝，请先关闭 PVM Desktop 并执行 `pvm daemon stop`。
 - MSI 静默安装：`msiexec /i pvm_windows_amd64_setup.msi /qn`。传入 `PVMHOME=D:\pvm-home` 可指定数据位置，升级和卸载会沿用它。
-- 从"设置 > 应用"卸载会删除 pvm、pvm Desktop 及其开始菜单快捷方式和"登录时打开"的启动项、运行时、Xpra 客户端和 `PATH` 条目。`~/.pvm` 下的虚拟机磁盘、密钥和配置会保留。
+- 从"设置 > 应用"卸载会删除 pvm、PVM Desktop 及其开始菜单快捷方式和"登录时打开"的启动项、运行时、Xpra 客户端和 `PATH` 条目。`~/.pvm` 下的虚拟机磁盘、密钥和配置会保留。
 
 <details>
 <summary>Windows 安装包的已知限制</summary>
@@ -76,8 +76,8 @@ pvm 支持 arm64 的 macOS、amd64 的 Linux，以及 amd64 的 Windows。
 - 安装程序停止 daemon 时会等待正在运行的虚拟机关闭，最长约三分钟，期间不显示进度。
 - 没有 daemon 而遗留运行的虚拟机，安装程序无法停止。它会列出这些虚拟机并拒绝继续；请先关闭它们，再重新运行安装程序。
 - 杀毒软件会短暂锁定刚解压的文件。安装程序对每次文件移动最多重试 10 秒；锁定持续更久时会报错停止并保留旧版本。请重新运行安装程序。
-- 执行 `pvm upgrade` 后，"设置 > 应用"中显示的仍是安装包当初写入的版本号，pvm Desktop 也停留在那个版本。
-- 安装包中与 pvm Desktop 有关的部分（快捷方式、关闭正在运行的应用、卸载时清理它的条目）已能构建，但还没有在 Windows 上运行过。
+- 执行 `pvm upgrade` 后，"设置 > 应用"中显示的仍是安装包当初写入的版本号，PVM Desktop 也停留在那个版本。
+- 安装包中与 PVM Desktop 有关的部分（快捷方式、关闭正在运行的应用、卸载时清理它的条目）已能构建，但还没有在 Windows 上运行过。
 
 </details>
 
@@ -193,11 +193,11 @@ pvm workspace rm web
 
 ### Windows 安装包
 
-每个发布都附带 `pvm_windows_amd64_setup.exe` 和 `pvm_windows_amd64_setup.msi`：按用户安装、不需要管理员权限，一步装好 pvm、pvm Desktop、自带的 QEMU 运行时和 `pvm app` 所需的 Xpra 客户端。替换文件前会检测正在运行的 pvm，卸载时保留你的虚拟机。见[在 Windows 上安装](#windows)。
+每个发布都附带 `pvm_windows_amd64_setup.exe` 和 `pvm_windows_amd64_setup.msi`：按用户安装、不需要管理员权限，一步装好 pvm、PVM Desktop、自带的 QEMU 运行时和 `pvm app` 所需的 Xpra 客户端。替换文件前会检测正在运行的 pvm，卸载时保留你的虚拟机。见[在 Windows 上安装](#windows)。
 
-### pvm Desktop
+### PVM Desktop
 
-pvm Desktop 是一个图形窗口，覆盖最常用的操作，用于采用原生（WHPX）后端的 Windows。从开始菜单打开，或运行 `pvm-desktop.exe`。
+PVM Desktop 是一个图形窗口，覆盖最常用的操作，用于采用原生（WHPX）后端的 Windows。从开始菜单打开，或运行 `pvm-desktop.exe`。
 
 - **虚拟机。** 查看每台虚拟机的状态和启动阶段；启动、停止、删除；打开终端、应用或文件管理器；安装目录应用；设置默认虚拟机。
 - **创建。** 用表单创建虚拟机，包括规格、出口、剪贴板、拖放和音频设置，以及要预装的目录应用。出口在虚拟机首次启动之前就已设置。

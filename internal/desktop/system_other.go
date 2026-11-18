@@ -4,7 +4,7 @@ package desktop
 
 import "errors"
 
-var errWindowsOnly = errors.New("pvm Desktop runs on Windows only")
+var errWindowsOnly = errors.New("PVM Desktop runs on Windows only")
 
 func hostSystem() system {
 	return system{

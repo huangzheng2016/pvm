@@ -1,4 +1,4 @@
-; pvm-setup.nsi: per-user Windows installer for pvm, pvm Desktop, the bundled
+; pvm-setup.nsi: per-user Windows installer for pvm, PVM Desktop, the bundled
 ; QEMU runtime and the Xpra client for `pvm app`. Built by
 ; script/windows/pack-setup.sh; do not run makensis directly.
 ;
@@ -15,7 +15,7 @@ ManifestDPIAware true
 !include "WinMessages.nsh"
 
 !define UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\pvm"
-!define DESKTOP_LNK "$SMPROGRAMS\pvm Desktop.lnk"
+!define DESKTOP_LNK "$SMPROGRAMS\PVM Desktop.lnk"
 
 Name "pvm ${VERSION}"
 OutFile "${OUTFILE}"
@@ -24,11 +24,11 @@ ShowInstDetails show
 ShowUninstDetails show
 
 !define MUI_ABORTWARNING
-!define MUI_FINISHPAGE_TEXT "pvm ${VERSION} is installed.$\r$\n$\r$\nOpen pvm Desktop from the Start menu, or open a new terminal and run:$\r$\n  pvm create --image ubuntu:26.04 --name dev1 --user dev"
+!define MUI_FINISHPAGE_TEXT "pvm ${VERSION} is installed.$\r$\n$\r$\nOpen PVM Desktop from the Start menu, or open a new terminal and run:$\r$\n  pvm create --image ubuntu:26.04 --name dev1 --user dev"
 ; Unchecked: opening the app starts the pvm daemon, which setup must not do
 ; unasked.
 !define MUI_FINISHPAGE_RUN "$INSTDIR\pvm-desktop.exe"
-!define MUI_FINISHPAGE_RUN_TEXT "Open pvm Desktop"
+!define MUI_FINISHPAGE_RUN_TEXT "Open PVM Desktop"
 !define MUI_FINISHPAGE_RUN_NOTCHECKED
 !insertmacro MUI_PAGE_WELCOME
 !insertmacro MUI_PAGE_INSTFILES
@@ -39,7 +39,7 @@ ShowUninstDetails show
 
 Var RuntimeRoot
 
-; Files under a running daemon, VM or pvm Desktop cannot be replaced.
+; Files under a running daemon, VM or PVM Desktop cannot be replaced.
 ; pvm-running.ps1 finds them by path; interactively it offers to close the app
 ; and stop the daemon (which stops running VMs) and waits for them to exit,
 ; silent runs refuse instead.
@@ -55,7 +55,7 @@ Function ${un}EnsureStopped
   nsExec::ExecToLog 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\pvm-running.ps1" -InstallDir "$INSTDIR" -RuntimeDir "$RuntimeRoot\x86_64" -Mode $3'
   Pop $1
   ${If} $1 != 0
-    Abort "pvm, its VMs or pvm Desktop are still running; close pvm Desktop, run 'pvm daemon stop' and start setup again"
+    Abort "pvm, its VMs or PVM Desktop are still running; close PVM Desktop, run 'pvm daemon stop' and start setup again"
   ${EndIf}
 FunctionEnd
 !macroend
@@ -202,7 +202,7 @@ Section "pvm"
     Abort "cannot move the new Xpra client into $INSTDIR\xpra; the previous version was restored"
   ${EndIf}
 
-  ; Swap pvm Desktop the same way.
+  ; Swap PVM Desktop the same way.
   Delete "$INSTDIR\pvm-desktop.old.exe"
   ${If} ${FileExists} "$INSTDIR\pvm-desktop.exe"
     !insertmacro RenameRetry "$INSTDIR\pvm-desktop.exe" "$INSTDIR\pvm-desktop.old.exe"
@@ -213,7 +213,7 @@ Section "pvm"
       Rename "$INSTDIR\.xpra.old" "$INSTDIR\xpra"
       Delete "$INSTDIR\pvm-desktop.new.exe"
       Delete "$INSTDIR\pvm.new.exe"
-      Abort "cannot replace $INSTDIR\pvm-desktop.exe (is pvm Desktop still open?)"
+      Abort "cannot replace $INSTDIR\pvm-desktop.exe (is PVM Desktop still open?)"
     ${EndIf}
   ${EndIf}
   !insertmacro RenameRetry "$INSTDIR\pvm-desktop.new.exe" "$INSTDIR\pvm-desktop.exe"
@@ -281,7 +281,7 @@ Section "pvm"
   ${EndIf}
 SectionEnd
 
-; Removes only what the installer placed, and the value pvm Desktop writes
+; Removes only what the installer placed, and the value PVM Desktop writes
 ; to open at login: VM disks, keys and config under ~/.pvm are user data and
 ; stay.
 Section "Uninstall"

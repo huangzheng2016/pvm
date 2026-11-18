@@ -8,6 +8,6 @@ import (
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "pvm-desktop: pvm Desktop runs on Windows only")
+	fmt.Fprintln(os.Stderr, "pvm-desktop: PVM Desktop runs on Windows only")
 	os.Exit(1)
 }

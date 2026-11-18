@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  pvm-setup.wxs: per-user MSI for pvm, pvm Desktop and the bundled QEMU
+  pvm-setup.wxs: per-user MSI for pvm, PVM Desktop and the bundled QEMU
   runtime, built with wixl (msitools) by script/windows/pack-setup.sh. Runtime
   file components come from wixl-heat (RuntimeFiles).
 
@@ -9,7 +9,7 @@
   custom actions must take their path from a property (SetPowerShell).
   Deferred actions use explicit sequence numbers so they land inside the
   install script. A literal "$" must be written "$$" for the preprocessor.
-  There is no WixUI, so the MSI has no finish page to open pvm Desktop from.
+  There is no WixUI, so the MSI has no finish page to open PVM Desktop from.
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*" Name="pvm" Language="1033" Version="$(var.MsiVersion)" Manufacturer="pvm"
@@ -58,7 +58,7 @@
     <CustomAction Id="RemoveUserPath" Property="POWERSHELL" Execute="deferred" Impersonate="yes" Return="check"
                   ExeCommand="-NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;[INSTALLDIR]user-path.ps1&quot; -Action remove -Dir &quot;[INSTALLDIR].&quot;"/>
 
-    <!-- pvm Desktop writes this value to open at login; the MSI never does,
+    <!-- PVM Desktop writes this value to open at login; the MSI never does,
          so only an action can take it away. The command avoids braces and
          brackets, which MSI would format. -->
     <CustomAction Id="RemoveDesktopRun" Property="POWERSHELL" Execute="deferred" Impersonate="yes" Return="check"
@@ -117,7 +117,7 @@
     <DirectoryRef Id="ProgramMenuFolder">
       <!-- A per-user shortcut cannot be its component's key path. -->
       <Component Id="DesktopShortcut" Guid="CD195DDC-4D24-4873-9F05-72247DDDEDEC">
-        <Shortcut Id="DesktopShortcut" Name="pvm Desktop" Target="[INSTALLDIR]pvm-desktop.exe" WorkingDirectory="INSTALLDIR"/>
+        <Shortcut Id="DesktopShortcut" Name="PVM Desktop" Target="[INSTALLDIR]pvm-desktop.exe" WorkingDirectory="INSTALLDIR"/>
         <RegistryValue Root="HKCU" Key="Software\pvm\msi" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes"/>
       </Component>
     </DirectoryRef>

@@ -13,7 +13,7 @@ Personal QEMU dev VMs in a single binary: create an isolated Linux development m
 - **The full desktop in a browser tab.** `pvm desktop` opens the VM's own desktop, the same machine you reach over SSH. See [Browser desktop](#browser-desktop).
 - **Your project folders in the VM.** Mount a folder, keep two synced copies, or upload once and download the result. In a project folder, `pvm ssh` opens a shell in the same folder in its VM, and offers to start the VM first. See [Workspaces](#workspaces).
 - **Snapshots in seconds and clones**, loopback port maps, and a read-only `pvm audit` of routing and DNS.
-- **Windows without administrator rights.** One installer brings pvm, the pvm Desktop app, QEMU and the Xpra client. See [Windows installers](#windows-installers) and [pvm Desktop](#pvm-desktop).
+- **Windows without administrator rights.** One installer brings pvm, the PVM Desktop app, QEMU and the Xpra client. See [Windows installers](#windows-installers) and [PVM Desktop](#pvm-desktop).
 
 ## Roadmap
 
@@ -39,7 +39,7 @@ Planned:
 - [ ] Input method candidates that follow the app's text cursor
 - [ ] `pvm desktop` as a host window like `pvm app`, opening the workspace folder in the VM's file manager
 - [ ] Windows CI: the remaining packages' tests, and an installer smoke test on tags
-- [ ] pvm Desktop, a graphical app like Docker Desktop for creating VMs, exits, workspaces and app presets: built for native Windows and shipped in the installers, not yet tested end to end on Windows
+- [ ] PVM Desktop, a graphical app like Docker Desktop for creating VMs, exits, workspaces and app presets: built for native Windows and shipped in the installers, not yet tested end to end on Windows
 
 Candidates:
 
@@ -60,14 +60,14 @@ pvm runs on macOS on arm64, Linux on amd64, and Windows on amd64.
 
 1. Download `pvm_windows_amd64_setup.exe` or `pvm_windows_amd64_setup.msi` from [Releases](../../releases). Optionally verify it first: `gh attestation verify pvm_windows_amd64_setup.exe --repo BitterOrange/pvm`.
 2. Run it. No administrator rights are needed.
-3. Open a new terminal, so the `PATH` change applies, and run `pvm doctor` to check acceleration and the backend. Or open **pvm Desktop** from the Start menu; see [pvm Desktop](#pvm-desktop).
+3. Open a new terminal, so the `PATH` change applies, and run `pvm doctor` to check acceleration and the backend. Or open **PVM Desktop** from the Start menu; see [PVM Desktop](#pvm-desktop).
 
-Both installers put `pvm.exe` and `pvm-desktop.exe` in `%LOCALAPPDATA%\pvm`, add that folder to the user `PATH`, add a "pvm Desktop" shortcut to your Start menu, install the Xpra client to `%LOCALAPPDATA%\pvm\xpra`, and install the QEMU runtime to `%USERPROFILE%\.pvm\runtime\qemu\x86_64`, or under `PVM_HOME` when it is set. Use one installer type per machine. `pvm upgrade` updates `pvm.exe` and the QEMU runtime of either; it does not update `pvm-desktop.exe`, so run the new installer to update the app.
+Both installers put `pvm.exe` and `pvm-desktop.exe` in `%LOCALAPPDATA%\pvm`, add that folder to the user `PATH`, add a "PVM Desktop" shortcut to your Start menu, install the Xpra client to `%LOCALAPPDATA%\pvm\xpra`, and install the QEMU runtime to `%USERPROFILE%\.pvm\runtime\qemu\x86_64`, or under `PVM_HOME` when it is set. Use one installer type per machine. `pvm upgrade` updates `pvm.exe` and the QEMU runtime of either; it does not update `pvm-desktop.exe`, so run the new installer to update the app.
 
-- The last page of the `.exe` installer offers "Open pvm Desktop", off by default. The MSI has no such page.
-- Files in use by a running pvm, VM or pvm Desktop cannot be replaced. Interactive runs offer to close pvm Desktop and stop the daemon, which also stops running VMs; silent runs (`/S`, `msiexec /qn`) refuse, so close pvm Desktop and run `pvm daemon stop` first.
+- The last page of the `.exe` installer offers "Open PVM Desktop", off by default. The MSI has no such page.
+- Files in use by a running pvm, VM or PVM Desktop cannot be replaced. Interactive runs offer to close PVM Desktop and stop the daemon, which also stops running VMs; silent runs (`/S`, `msiexec /qn`) refuse, so close PVM Desktop and run `pvm daemon stop` first.
 - Silent MSI install: `msiexec /i pvm_windows_amd64_setup.msi /qn`. Pass `PVMHOME=D:\pvm-home` to choose the data location; upgrades and uninstalls reuse it.
-- Uninstalling from Settings > Apps removes pvm, pvm Desktop with its Start menu shortcut and its "open at login" entry, the runtime, the Xpra client and the `PATH` entry. VM disks, keys and configuration under `~/.pvm` are kept.
+- Uninstalling from Settings > Apps removes pvm, PVM Desktop with its Start menu shortcut and its "open at login" entry, the runtime, the Xpra client and the `PATH` entry. VM disks, keys and configuration under `~/.pvm` are kept.
 
 <details>
 <summary>Known limitations of the Windows installers</summary>
@@ -76,8 +76,8 @@ Both installers put `pvm.exe` and `pvm-desktop.exe` in `%LOCALAPPDATA%\pvm`, add
 - Stopping the daemon from setup waits for running VMs to shut down, up to about three minutes, and setup shows no progress meanwhile.
 - VMs left running without a daemon cannot be stopped by setup. Setup lists them and refuses; shut them down, then run setup again.
 - Antivirus software briefly locks freshly unpacked files. Setup retries each file move for up to 10 seconds; if the lock lasts longer, setup stops and keeps the previous version. Run setup again.
-- After `pvm upgrade`, Settings > Apps still shows the version the installer put there, and pvm Desktop stays at that version.
-- The pvm Desktop parts of the installers (the shortcut, closing a running app, and removing its entries on uninstall) have been built but not yet run on Windows.
+- After `pvm upgrade`, Settings > Apps still shows the version the installer put there, and PVM Desktop stays at that version.
+- The PVM Desktop parts of the installers (the shortcut, closing a running app, and removing its entries on uninstall) have been built but not yet run on Windows.
 
 </details>
 
@@ -193,11 +193,11 @@ Uploads skip `.gitignore` matches and `node_modules`; a `.pvmignore` file adds o
 
 ### Windows installers
 
-Releases ship `pvm_windows_amd64_setup.exe` and `pvm_windows_amd64_setup.msi`: per-user installers that need no administrator rights and bring pvm, pvm Desktop, the bundled QEMU runtime and the Xpra client for `pvm app` in one step. They detect a running pvm before replacing files and keep your VMs on uninstall. See [Installation on Windows](#windows).
+Releases ship `pvm_windows_amd64_setup.exe` and `pvm_windows_amd64_setup.msi`: per-user installers that need no administrator rights and bring pvm, PVM Desktop, the bundled QEMU runtime and the Xpra client for `pvm app` in one step. They detect a running pvm before replacing files and keep your VMs on uninstall. See [Installation on Windows](#windows).
 
-### pvm Desktop
+### PVM Desktop
 
-pvm Desktop is a window for the common paths, on Windows with the native (WHPX) backend. Open it from the Start menu, or run `pvm-desktop.exe`.
+PVM Desktop is a window for the common paths, on Windows with the native (WHPX) backend. Open it from the Start menu, or run `pvm-desktop.exe`.
 
 - **VMs.** See each VM's state and startup stage; start, stop and delete; open a terminal, an app or the file manager; install catalog apps; set the default VM.
 - **Create.** A form for a new VM with its size, exit, clipboard, drop and audio settings, and the catalog apps to preinstall. The exit is set before the VM's first boot.

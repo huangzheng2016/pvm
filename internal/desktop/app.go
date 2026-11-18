@@ -1,4 +1,4 @@
-// Package desktop is the backend of pvm Desktop. It reads state from the
+// Package desktop is the backend of PVM Desktop. It reads state from the
 // daemon API and the store packages, and changes state only by running
 // the pvm CLI as a child process, so the app and the CLI share one
 // implementation of every operation.
@@ -140,7 +140,7 @@ func (a *App) resolveBackend() (string, error) {
 	return a.backendName, nil
 }
 
-var errWSL = errors.New("pvm Desktop works with the native Windows backend only; with the WSL2 backend use the pvm command line")
+var errWSL = errors.New("PVM Desktop works with the native Windows backend only; with the WSL2 backend use the pvm command line")
 
 // native refuses every operation under the WSL2 backend, where the
 // daemon and its state live inside WSL.

@@ -42,7 +42,7 @@ func main() {
 	if err := run(); err != nil {
 		// a windowed program has no console to print to
 		text, _ := syswin.UTF16PtrFromString(err.Error())
-		title, _ := syswin.UTF16PtrFromString("pvm Desktop")
+		title, _ := syswin.UTF16PtrFromString("PVM Desktop")
 		syswin.MessageBox(0, text, title, syswin.MB_ICONERROR)
 		os.Exit(1)
 	}
@@ -75,11 +75,11 @@ func run() error {
 	})
 
 	messages := windows.DefaultMessages()
-	messages.DownloadPage = "pvm Desktop needs the Microsoft Edge WebView2 Runtime, which is not installed. Press OK to open Microsoft's download page. Minimum version: "
+	messages.DownloadPage = "PVM Desktop needs the Microsoft Edge WebView2 Runtime, which is not installed. Press OK to open Microsoft's download page. Minimum version: "
 	// what wails.Run returns after that dialog; main shows it
-	messages.FailedToInstall = "Install the WebView2 Runtime, then open pvm Desktop again."
+	messages.FailedToInstall = "Install the WebView2 Runtime, then open PVM Desktop again."
 	return wails.Run(&options.App{
-		Title:       "pvm Desktop",
+		Title:       "PVM Desktop",
 		Width:       1100,
 		Height:      720,
 		MinWidth:    800,
@@ -101,7 +101,7 @@ func run() error {
 			}
 			answer, err := runtime.MessageDialog(ctx, runtime.MessageDialogOptions{
 				Type:  runtime.QuestionDialog,
-				Title: "pvm Desktop is still working",
+				Title: "PVM Desktop is still working",
 				Message: "Still running: " + strings.Join(tasks, ", ") + ".\n\n" +
 					"If you close now, the pvm command that is running finishes on its own, the steps after it are not run, and nothing reports the result.\n\nClose anyway?",
 				DefaultButton: "No",

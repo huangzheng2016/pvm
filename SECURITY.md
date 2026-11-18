@@ -17,7 +17,7 @@ VMs in one cluster share a gateway and a layer-2 network. The gateway validates 
 
 The host `pvm` binary exposes the complete pvm control plane and acts with the host user's filesystem and process permissions. It can manage all local VMs, cluster routes, host-path mounts, exit registrations, and stored credentials. Access to the host account or pvm data directory is therefore not limited to one guest. On Windows, the daemon uses loopback TCP instead of a Unix socket and requires the bearer token in `~/.pvm/run/admin.token` for every API except `/v1/health`; this token is a local control-plane credential and must remain private.
 
-pvm Desktop (`pvm-desktop.exe`, Windows) is another client of the same daemon and CLI, run as the host user with the same rights as the host `pvm` binary; it adds no privileges and no commands of its own.
+PVM Desktop (`pvm-desktop.exe`, Windows) is another client of the same daemon and CLI, run as the host user with the same rights as the host `pvm` binary; it adds no privileges and no commands of its own.
 
 - It opens no network listener: the window's pages are served from memory inside the process.
 - Every change runs `pvm.exe` from the app's own folder with an argument array, never through a shell, after the names have passed the CLI's own checks.

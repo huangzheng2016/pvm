@@ -22,7 +22,7 @@
 - `cmd/agent`: 独立 guest 入口，仅提供 agent 服务、当前 VM 的 map 操作和 guest skill。
 - `cmd/gateway`: guest 网关入口，由 daemon 推送的 `/etc/pvm/gateway.json` 驱动。
 - `cmd/assetpack`: 构建期压缩 guest 二进制并生成 embed manifest。
-- `cmd/pvm-desktop`: Windows 图形应用 pvm Desktop 的入口（Wails 窗口）和 `frontend/` 前端（TypeScript + Vite）；前端构建产物只在 `production` tag 下 embed，不入库。
+- `cmd/pvm-desktop`: Windows 图形应用 PVM Desktop 的入口（Wails 窗口）和 `frontend/` 前端（TypeScript + Vite）；前端构建产物只在 `production` tag 下 embed，不入库。
 - `internal/cli`: CLI 参数解析和 daemon 瘦客户端；所有用户可见行为都要在这里一致处理。
 - `internal/daemon`: 常驻控制面，unix socket 上的 HTTP/JSON，负责 VM/cluster 生命周期和 readiness；daemon 单实例 flock。
 - `internal/qemu`: QEMU 工具链、进程/QMP、快照和运行状态。
@@ -39,7 +39,7 @@
 - `internal/apps`: `pvm app install` 的内置应用目录，每个应用一个目录（`app.yaml` + `install.sh`）。
 - `internal/workspace`: 宿主目录与单个 VM 之间的工作区（mount/sync/copy）及其存储。
 - `internal/config`: `~/.pvm/config.yaml` 的读取和校验，未知键直接报错。
-- `internal/desktop`: pvm Desktop 的后端，不依赖 Wails；读取走 daemon API 和各 store，所有变更都以子进程运行 `pvm.exe`，绑定结构体的导出方法即前端可调用的全部接口。
+- `internal/desktop`: PVM Desktop 的后端，不依赖 Wails；读取走 daemon API 和各 store，所有变更都以子进程运行 `pvm.exe`，绑定结构体的导出方法即前端可调用的全部接口。
 - `internal/assets`: 内嵌资产解包和 SHA256 校验；仅 `-tags embedassets` 编入。
 - `internal/native`: 架构选择的唯一事实来源，镜像、guest 和 QEMU target 由此派生。
 - `internal/paths`: `~/.pvm` 目录布局。
