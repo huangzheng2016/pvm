@@ -54,7 +54,8 @@ func (s *Server) ensureCluster(id int) (*cluster.Cluster, error) {
 	if st, err := inst.Running(); err != nil {
 		return nil, err
 	} else if st == nil {
-		if err := inst.Start(); err != nil {
+		s.refreshSockets(spec)
+		if err := s.instance(spec).Start(); err != nil {
 			return nil, fmt.Errorf("start gateway: %w", err)
 		}
 		go s.onGatewayStarted(cl)

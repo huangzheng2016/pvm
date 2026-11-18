@@ -104,12 +104,63 @@ func SocketEndpoint(sockPath string) string {
 	if runtime.GOOS != "windows" || strings.HasPrefix(sockPath, "tcp:") {
 		return sockPath
 	}
-	tcpFile := sockPath + ".tcp"
-	if b, err := os.ReadFile(tcpFile); err == nil {
-		if addr := strings.TrimSpace(string(b)); strings.HasPrefix(addr, "tcp:127.0.0.1:") {
-			return addr
+	if addr := storedEndpoint(sockPath); addr != "" {
+		return addr
+	}
+	return allocEndpoint(sockPath)
+}
+
+func storedEndpoint(sockPath string) string {
+	b, err := os.ReadFile(sockPath + ".tcp")
+	if err != nil {
+		return ""
+	}
+	if addr := strings.TrimSpace(string(b)); strings.HasPrefix(addr, "tcp:127.0.0.1:") {
+		return addr
+	}
+	return ""
+}
+
+// RefreshSocketEndpoint picks a new port for sockPath when the stored one
+// can no longer be bound, and reports whether it did. Windows reserves
+// port ranges anew at boot, which can cover a port stored earlier; QEMU
+// then fails to start. Call it only while nothing listens on the port,
+// that is before starting the QEMU that will.
+func RefreshSocketEndpoint(sockPath string) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
+	return refreshEndpoint(sockPath)
+}
+
+func refreshEndpoint(sockPath string) bool {
+	addr := storedEndpoint(sockPath)
+	if addr == "" {
+		return false
+	}
+	if ln, err := net.Listen("tcp", strings.TrimPrefix(addr, "tcp:")); err == nil {
+		ln.Close()
+		return false
+	}
+	os.Remove(sockPath + ".tcp")
+	allocEndpoint(sockPath)
+	return true
+}
+
+// RefreshVMSockets refreshes the endpoints QEMU listens on for a VM that
+// is not running, and reports whether any changed.
+func (p *Paths) RefreshVMSockets(name string) bool {
+	changed := false
+	for _, s := range []string{"qmp.sock", "serial.sock", "agent.sock", "stream.sock"} {
+		if RefreshSocketEndpoint(filepath.Join(p.VMDir(name), s)) {
+			changed = true
 		}
 	}
+	return changed
+}
+
+func allocEndpoint(sockPath string) string {
+	tcpFile := sockPath + ".tcp"
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(filepath.Clean(sockPath)))
 	basePort := 40000 + int(h.Sum32()%15000)
