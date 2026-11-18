@@ -18,10 +18,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/image"
 	"github.com/huangzheng2016/pvm/internal/vm"
+	"github.com/huangzheng2016/pvm/internal/workspace"
 )
 
 // `pvm app` shows single guest applications as host windows through Xpra.
@@ -67,6 +69,8 @@ type appState struct {
 	// Audio is out (the default: VM sound plays on the host), both (the
 	// host microphone also reaches the VM) or off.
 	Audio string `json:"audio,omitempty"`
+	// Installed are the catalog apps `pvm app install` put into the VM.
+	Installed []string `json:"installed,omitempty"`
 }
 
 var clipboardModes = []string{"off", "to-guest", "to-host", "both"}
@@ -121,11 +125,16 @@ type appStartRequest struct {
 	Argv  []string `json:"argv"`
 	URL   string   `json:"url"`
 	Kiosk bool     `json:"kiosk"`
+	// Cwd is the guest directory a command starts in, inside the
+	// workspace CwdRoot. Both are empty outside a workspace.
+	Cwd     string `json:"cwd"`
+	CwdRoot string `json:"cwd_root"`
 }
 
 type appStartResponse struct {
 	App    appView   `json:"app"`
 	Attach appAttach `json:"attach"`
+	Note   string    `json:"note,omitempty"`
 }
 
 const appAttachGrace = 20 * time.Second
@@ -135,6 +144,9 @@ type appHost struct {
 	fwd     map[string]*streamForward
 	pending map[string]time.Time // last client start per VM
 	locks   sync.Map             // vm name -> *sync.Mutex
+	// vm name -> *sync.Mutex; serialises catalog installs without
+	// keeping the app lock, and so the app list, for a script's length
+	installs sync.Map
 }
 
 func (s *Server) appLock(name string) *sync.Mutex {
@@ -385,13 +397,40 @@ bin=$(readlink -f "$(command -v "$1")")
 [ -f "${bin%/*}/v8_context_snapshot.bin" ] && nogpu=--disable-gpu
 `
 
+// Lines the launch script prints about the working directory.
+const (
+	appCwdFallback = "CWD_FALLBACK"
+	appCwdMissing  = "NO_WORKSPACE"
+)
+
+// appWorkDir sets dir to cwd. A sync workspace may not have every host
+// folder yet, so a missing cwd falls back to root and says so on stdout;
+// without root the app does not start.
+func appWorkDir(cwd, root string) string {
+	return `dir=` + shellQuote(cwd) + `
+if [ ! -d "$dir" ]; then
+  dir=` + shellQuote(root) + `
+  if [ ! -d "$dir" ]; then
+    echo "` + appCwdMissing + `"
+    exit 4
+  fi
+  echo "` + appCwdFallback + `"
+fi
+`
+}
+
 // appLaunchScript starts app as a user unit on the Xpra display and fails
 // if it exits within the first seconds; web apps go to webappLaunchScript.
-func appLaunchScript(a *appRecord) string {
+// A command starts in cwd when one is given.
+func appLaunchScript(a *appRecord, cwd, root string) string {
 	if a.Kind == "url" {
 		return webappLaunchScript(a)
 	}
 	unit := appUnitPrefix + a.ID
+	workDir, workDirOpt := "", ""
+	if cwd != "" {
+		workDir, workDirOpt = appWorkDir(cwd, root), ` --working-directory="$dir"`
+	}
 	words := make([]string, len(a.Argv))
 	for i, w := range a.Argv {
 		words[i] = shellQuote(w)
@@ -402,10 +441,10 @@ if ! command -v "$1" >/dev/null 2>&1; then
   echo "NOT_INSTALLED"
   exit 3
 fi
-` + appNoCSD + appChromium + `prog=$1
+` + workDir + appNoCSD + appChromium + `prog=$1
 shift
 systemctl --user reset-failed ` + unit + ` >/dev/null 2>&1 || true
-systemd-run --user --quiet --collect --unit=` + unit + ` -E DISPLAY=` + appDisplay + ` $nocsd -- "$prog" $nogpu "$@"
+systemd-run --user --quiet --collect --unit=` + unit + workDirOpt + ` -E DISPLAY=` + appDisplay + ` $nocsd -- "$prog" $nogpu "$@"
 sleep 2
 if ! systemctl --user is-active --quiet ` + unit + `; then
   echo "app exited right away:" >&2
@@ -467,6 +506,28 @@ func validateAppRequest(req *appStartRequest) error {
 	}
 	if req.Kiosk && req.URL == "" {
 		return fmt.Errorf("--kiosk applies to URLs only")
+	}
+	return validateAppCwd(req)
+}
+
+// validateAppCwd accepts a workspace's guest root and a directory in it.
+// Host folder names end up in cwd, so spaces and non-ASCII are allowed.
+func validateAppCwd(req *appStartRequest) error {
+	if req.Cwd == "" && req.CwdRoot == "" {
+		return nil
+	}
+	if req.URL != "" {
+		return fmt.Errorf("cwd applies to commands only")
+	}
+	id, ok := strings.CutPrefix(req.CwdRoot, workspace.GuestRoot+"/")
+	if !ok || workspace.ValidID(id) != nil {
+		return fmt.Errorf("invalid cwd_root %q: want %s/<workspace>", req.CwdRoot, workspace.GuestRoot)
+	}
+	if req.Cwd != req.CwdRoot && !strings.HasPrefix(req.Cwd, req.CwdRoot+"/") {
+		return fmt.Errorf("invalid cwd %q: not inside %s", req.Cwd, req.CwdRoot)
+	}
+	if req.Cwd != path.Clean(req.Cwd) || strings.ContainsFunc(req.Cwd, unicode.IsControl) {
+		return fmt.Errorf("invalid cwd %q: want a clean path without control characters", req.Cwd)
 	}
 	return nil
 }
@@ -654,13 +715,21 @@ func (s *Server) handleAppStart(w http.ResponseWriter, r *http.Request) {
 			log.Printf("app %s/%s: roll back record: %v", spec.Name, id, err)
 		}
 	}
-	out, err := s.sshRunCtx(ctx, spec, appLaunchScript(&rec))
+	out, err := s.sshRunCtx(ctx, spec, appLaunchScript(&rec, req.Cwd, req.CwdRoot))
 	if err != nil {
 		rollback()
+		if hasLine(out, appCwdMissing) {
+			writeErr(w, 400, fmt.Errorf("%s is not in %s", req.CwdRoot, spec.Name))
+			return
+		}
 		if strings.Contains(out, "NOT_INSTALLED") {
 			prog := rec.Argv
 			if kind == "url" {
 				prog = []string{"firefox"}
+			}
+			if id, ok := catalogAppFor(prog[0]); ok {
+				writeErr(w, 400, fmt.Errorf("%s is not installed in %s; install it with `pvm app install %s %s`", prog[0], spec.Name, spec.Name, id))
+				return
 			}
 			writeErr(w, 400, fmt.Errorf("%s is not installed in %s; install it first, e.g. `pvm exec %s sudo apt-get install -y %s`", prog[0], spec.Name, spec.Name, path.Base(prog[0])))
 			return
@@ -701,7 +770,15 @@ func (s *Server) handleAppStart(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
-	writeJSON(w, 201, appStartResponse{App: appView{VM: spec.Name, appRecord: rec, State: "running"}, Attach: att})
+	note := ""
+	if hasLine(out, appCwdFallback) {
+		note = fmt.Sprintf("%s is not in the vm; starting in %s", req.Cwd, req.CwdRoot)
+	}
+	writeJSON(w, 201, appStartResponse{App: appView{VM: spec.Name, appRecord: rec, State: "running"}, Attach: att, Note: note})
+}
+
+func hasLine(out, line string) bool {
+	return slices.Contains(strings.Split(strings.ReplaceAll(out, "\r", ""), "\n"), line)
 }
 
 // appUnitsActive returns which apps run, or nil when it cannot tell: an
@@ -746,15 +823,18 @@ func (st *appState) hasWebapps() bool {
 	return slices.ContainsFunc(st.Apps, func(a appRecord) bool { return a.Kind == "url" })
 }
 
-// listApps reports a VM's apps. Exited ones are reported once and then
-// dropped from the record.
-func (s *Server) listApps(ctx context.Context, spec *vm.Spec) ([]appView, error) {
+// listApps reports a VM's apps and its installed catalog apps. Exited
+// apps are reported once and then dropped from the record.
+func (s *Server) listApps(ctx context.Context, spec *vm.Spec) ([]appView, []string, error) {
 	lock := s.appLock(spec.Name)
 	lock.Lock()
 	defer lock.Unlock()
 	st, err := s.loadAppState(spec.Name)
-	if err != nil || len(st.Apps) == 0 {
-		return nil, err
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(st.Apps) == 0 {
+		return nil, st.Installed, nil
 	}
 	var active map[string]bool
 	if run, err := s.instance(spec).Running(); err == nil && run != nil {
@@ -778,11 +858,18 @@ func (s *Server) listApps(ctx context.Context, spec *vm.Spec) ([]appView, error)
 		if len(kept) != len(st.Apps) {
 			st.Apps = kept
 			if err := s.saveAppState(spec.Name, st); err != nil {
-				return views, err
+				return views, st.Installed, err
 			}
 		}
 	}
-	return views, nil
+	return views, st.Installed, nil
+}
+
+// appListResponse is the answer of the app list routes. Installed maps a
+// VM to its installed catalog apps; a VM without any is absent.
+type appListResponse struct {
+	Apps      []appView           `json:"apps"`
+	Installed map[string][]string `json:"installed"`
 }
 
 func (s *Server) handleAppList(w http.ResponseWriter, r *http.Request) {
@@ -810,16 +897,19 @@ func (s *Server) handleAppList(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
 	defer cancel()
-	views := []appView{}
+	out := appListResponse{Apps: []appView{}, Installed: map[string][]string{}}
 	for _, spec := range specs {
-		v, err := s.listApps(ctx, spec)
+		v, installed, err := s.listApps(ctx, spec)
 		if err != nil {
 			writeErr(w, 500, err)
 			return
 		}
-		views = append(views, v...)
+		out.Apps = append(out.Apps, v...)
+		if len(installed) > 0 {
+			out.Installed[spec.Name] = installed
+		}
 	}
-	writeJSON(w, 200, views)
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) handleAppStop(w http.ResponseWriter, r *http.Request) {
@@ -1042,17 +1132,25 @@ func (s *Server) handleAppPrepare(w http.ResponseWriter, r *http.Request) {
 			rc.Flush()
 		}
 	}
-	_, err := s.sshRunCtx(ctx, spec, appInstalledCheck())
-	if err == nil {
-		send(appPrepareFrame{Done: true})
-		return
-	}
-	err = s.sshStreamCtx(ctx, spec, appInstallScript(true), lineWriter(func(l string) { send(appPrepareFrame{Out: l}) }))
+	installed, err := s.prepareAppSupport(ctx, spec, func(l string) { send(appPrepareFrame{Out: l}) })
 	if err != nil {
-		send(appPrepareFrame{Done: true, Error: fmt.Sprintf("install xpra in %s: %v", spec.Name, err)})
+		send(appPrepareFrame{Done: true, Error: err.Error()})
 		return
 	}
-	send(appPrepareFrame{Done: true, Installed: true})
+	send(appPrepareFrame{Done: true, Installed: installed})
+}
+
+// prepareAppSupport installs Xpra and the late packages unless they are
+// there, passing the installer's output to out line by line. It reports
+// whether it installed anything.
+func (s *Server) prepareAppSupport(ctx context.Context, spec *vm.Spec, out func(string)) (bool, error) {
+	if _, err := s.sshRunCtx(ctx, spec, appInstalledCheck()); err == nil {
+		return false, nil
+	}
+	if err := s.sshStreamCtx(ctx, spec, appInstallScript(true), lineWriter(out)); err != nil {
+		return false, fmt.Errorf("install xpra in %s: %v", spec.Name, err)
+	}
+	return true, nil
 }
 
 // appInstalledCheck exits 0 when the VM needs no install step. A late

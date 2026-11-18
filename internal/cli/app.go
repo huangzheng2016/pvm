@@ -5,11 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -23,6 +25,8 @@ import (
 const appUsage = `[<vm>] <url> [--name ID] [--kiosk] [--no-attach] [--yes]
        pvm app [<vm>] [--name ID] [--no-attach] [--yes] -- <command> [args...]
        pvm app ls [<vm>]
+       pvm app catalog
+       pvm app install [<vm>] <id>... [--yes]
        pvm app stop [<vm>] [<id> | --all]
        pvm app attach [<vm>] [--yes]
        pvm app config [<vm>] [--clipboard off|to-guest|to-host|both] [--drop on|off] [--audio off|out|both]`
@@ -68,13 +72,16 @@ func CmdApp(args []string) int {
 		if len(args) == 2 {
 			path = "/v1/vms/" + args[1] + "/apps"
 		}
-		var apps []appView
-		if err := c.Get(path, &apps); err != nil {
+		var out struct {
+			Apps      []appView           `json:"apps"`
+			Installed map[string][]string `json:"installed"`
+		}
+		if err := c.Get(path, &out); err != nil {
 			return fatalf("%v", err)
 		}
 		tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 		fmt.Fprintln(tw, "VM\tID\tSTATE\tRUNS")
-		for _, a := range apps {
+		for _, a := range out.Apps {
 			runs := a.URL
 			if a.Kind == "cmd" {
 				runs = strings.Join(a.Argv, " ")
@@ -82,7 +89,40 @@ func CmdApp(args []string) int {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.VM, a.ID, a.State, runs)
 		}
 		tw.Flush()
+		if len(out.Installed) > 0 {
+			fmt.Println()
+			fmt.Fprintln(tw, "VM\tINSTALLED")
+			for _, vm := range slices.Sorted(maps.Keys(out.Installed)) {
+				fmt.Fprintf(tw, "%s\t%s\n", vm, strings.Join(out.Installed[vm], ", "))
+			}
+			tw.Flush()
+		}
 		return 0
+	case "catalog":
+		if len(args) > 1 {
+			return fatalf("usage: pvm app catalog")
+		}
+		c, err := ensureDaemon(p)
+		if err != nil {
+			return fatalf("%v", err)
+		}
+		var catalog []catalogApp
+		if err := c.Get("/v1/apps/catalog", &catalog); err != nil {
+			return fatalf("%v", err)
+		}
+		tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+		fmt.Fprintln(tw, "ID\tNAME\tSOURCE\tWINDOW\tDESCRIPTION")
+		for _, a := range catalog {
+			window := "no"
+			if a.Window {
+				window = "yes"
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", a.ID, a.Name, a.Source, window, a.Description)
+		}
+		tw.Flush()
+		return 0
+	case "install":
+		return cmdAppInstall(p, args[1:])
 	case "stop":
 		fs := newFlagSet("app stop", "[<vm>] [<id> | --all]")
 		all := fs.Bool("all", false, "stop every app in the vm")
@@ -271,8 +311,13 @@ func cmdAppStart(p *paths.Paths, args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	if vmName, _, _, err = resolveVM(c, p, vmName); err != nil {
+	vmName, ws, rel, err := resolveVM(c, p, vmName)
+	if err != nil {
 		return fatalf("%v", err)
+	}
+	// web apps share one Firefox, which has its working directory already
+	if dir, ok := guestDir(ws, rel); ok && len(cmd) > 0 {
+		body["cwd"], body["cwd_root"] = dir, ws.GuestPath
 	}
 	if err := vmUp(c, vmName, *yes); err != nil {
 		return fatalf("%v", err)
@@ -284,9 +329,13 @@ func cmdAppStart(p *paths.Paths, args []string) int {
 	var out struct {
 		App    appView   `json:"app"`
 		Attach appAttach `json:"attach"`
+		Note   string    `json:"note"`
 	}
 	if err := c.Post("/v1/vms/"+vmName+"/apps", body, &out); err != nil {
 		return fatalf("%v", err)
+	}
+	if out.Note != "" {
+		fmt.Fprintf(os.Stderr, "pvm: %s\n", out.Note)
 	}
 	fmt.Printf("started %s in %s\n", out.App.ID, vmName)
 	switch {
@@ -551,6 +600,126 @@ func cmdAppClipboardBridge(p *paths.Paths, args []string) int {
 		return fatalf("%v", err)
 	}
 	return 0
+}
+
+type catalogApp struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Source      string `json:"source"`
+	Window      bool   `json:"window"`
+}
+
+const appInstallUsage = "usage: pvm app install [<vm>] <id>... [--yes]"
+
+// splitInstallArgs separates the optional VM from the app ids: the first
+// word is the VM unless it is a catalog id.
+func splitInstallArgs(args []string, catalog []catalogApp) (string, []catalogApp, error) {
+	find := func(id string) (catalogApp, bool) {
+		i := slices.IndexFunc(catalog, func(a catalogApp) bool { return a.ID == id })
+		if i < 0 {
+			return catalogApp{}, false
+		}
+		return catalog[i], true
+	}
+	if len(args) == 0 {
+		return "", nil, fmt.Errorf("%s", appInstallUsage)
+	}
+	vm := ""
+	if _, ok := find(args[0]); !ok && len(args) > 1 {
+		vm, args = args[0], args[1:]
+	}
+	var list []catalogApp
+	for _, id := range args {
+		a, ok := find(id)
+		if !ok {
+			return "", nil, fmt.Errorf("unknown app %q; see `pvm app catalog`", id)
+		}
+		list = append(list, a)
+	}
+	return vm, list, nil
+}
+
+func cmdAppInstall(p *paths.Paths, args []string) int {
+	fs := newFlagSet("app install", "[<vm>] <id>... [--yes]")
+	yes := fs.Bool("yes", false, "start a stopped vm without asking")
+	if err := fs.Parse(partitionFlags(args)); err != nil {
+		return 2
+	}
+	if fs.NArg() == 0 {
+		return fatalf("%s", appInstallUsage)
+	}
+	c, err := ensureDaemon(p)
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	var catalog []catalogApp
+	if err := c.Get("/v1/apps/catalog", &catalog); err != nil {
+		return fatalf("%v", err)
+	}
+	vmName, list, err := splitInstallArgs(fs.Args(), catalog)
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	if vmName, _, _, err = resolveVM(c, p, vmName); err != nil {
+		return fatalf("%v", err)
+	}
+	if err := vmUp(c, vmName, *yes); err != nil {
+		return fatalf("%v", err)
+	}
+	// one request per app keeps each under the client's response time limit
+	for i, a := range list {
+		err := error(nil)
+		if a.Window {
+			err = prepareApp(c, vmName)
+		}
+		if err == nil {
+			err = installApp(c, vmName, a.ID)
+		}
+		if err != nil {
+			if rest := list[i+1:]; len(rest) > 0 {
+				ids := make([]string, len(rest))
+				for j, b := range rest {
+					ids[j] = b.ID
+				}
+				return fatalf("%v; not attempted: %s", err, strings.Join(ids, ", "))
+			}
+			return fatalf("%v", err)
+		}
+		fmt.Printf("installed %s in %s\n", a.ID, vmName)
+	}
+	return 0
+}
+
+// installApp installs one catalog app in the VM, showing the install
+// script's output as it runs.
+func installApp(c *daemon.Client, vm, id string) error {
+	resp, err := c.PostStream("/v1/vms/"+vm+"/apps/install", map[string]any{"ids": []string{id}})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	fmt.Fprintf(os.Stderr, "installing %s in %s...\n", id, vm)
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var f struct {
+			Out   string `json:"out"`
+			Done  bool   `json:"done"`
+			Error string `json:"error"`
+		}
+		if err := dec.Decode(&f); err != nil {
+			return fmt.Errorf("install %s in %s: %w", id, vm, err)
+		}
+		if f.Out != "" {
+			fmt.Fprintf(os.Stderr, "        | %s\n", f.Out)
+		}
+		if f.Done {
+			if f.Error != "" {
+				return fmt.Errorf("%s", f.Error)
+			}
+			return nil
+		}
+	}
 }
 
 // prepareApp installs Xpra in the VM on first use, showing the

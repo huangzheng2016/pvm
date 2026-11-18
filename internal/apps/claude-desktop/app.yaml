@@ -1,0 +1,6 @@
+name: Claude Desktop
+description: Anthropic's desktop app (Linux beta); Cowork needs KVM and does not run in a vm
+homepage: https://code.claude.com/docs/en/desktop-linux
+source: official
+window: true
+start: claude-desktop

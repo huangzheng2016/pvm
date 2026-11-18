@@ -15,7 +15,7 @@ usage: pvm <command> [args]
 vm:
   create        create (and start) a vm
   clone         clone a stopped vm: pvm clone dev1 dev2 [--inherit-ports] [--no-start] [--no-wait]
-  list          list vms
+  list|ls       list vms; STATUS is stopped, starting (<stage>), ready or failed (gateways: running)
   start|stop    start/stop a vm (start waits for provisioning; --no-wait returns early; stop needs the name)
   rm            stop and delete a vm (asks for confirmation; -y|--force to skip)
   resize        grow a stopped vm's disk (grow-only): pvm resize dev1 40
@@ -30,14 +30,19 @@ vm:
   app           show one vm app as a host window (xpra): pvm app [dev1] -- gedit | pvm app [dev1] https://example.com
                 [--name ID] [--kiosk] [--no-attach] [--yes]; pvm app ls [vm] | stop [dev1] <id>|--all | attach [dev1]
                 pvm app config [dev1] [--clipboard off|to-guest|to-host|both] [--drop on|off] [--audio off|out|both]
+                inside a workspace a command starts in the matching directory
+                pvm app catalog | pvm app install [dev1] <id>... [--yes]: install built-in catalog apps in the vm
+  default-vm    print, set or clear the default vm: pvm default-vm [dev1|--clear]
   doctor        diagnose local state consistency and permissions (read-only, redacted)
   audit         read-only health audit: pvm audit [dev1] | pvm audit dev1 --privacy (vm, route, tcp/udp/icmp probes, dns, ipv6, timezone, locale)
 
 default vm:
   commands shown with [dev1] may leave the vm out. pvm then uses the vm of the
-  workspace that contains the current directory, else the only user vm, and
-  prints which one on stderr. stop, rm, compact, resize, snapshot, clone and
-  route always need the name. at a terminal pvm asks before starting the
+  workspace that contains the current directory, else the one set with
+  pvm default-vm, else the only user vm, and prints which one on stderr. a
+  default vm that was deleted is an error until it is changed or cleared;
+  pvm rm clears it. stop, rm, compact, resize, snapshot, clone and route
+  always need the name. at a terminal pvm asks before starting the
   daemon or a stopped vm, and --yes starts the vm without asking. without a
   terminal the daemon still starts on its own, but a stopped vm is an error.
 
@@ -213,6 +218,8 @@ func main() {
 		code = cli.CmdApp(args)
 	case "audit":
 		code = cli.CmdAudit(args)
+	case "default-vm":
+		code = cli.CmdDefaultVM(args)
 	case "doctor":
 		code = cli.CmdDoctor(args)
 	case "gateway":

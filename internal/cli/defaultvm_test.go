@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/huangzheng2016/pvm/internal/config"
 	"github.com/huangzheng2016/pvm/internal/daemon"
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/workspace"
@@ -59,8 +60,16 @@ func TestGuestDir(t *testing.T) {
 	}
 }
 
-// fakeVMDaemon serves /v1/vms for the given user VMs plus one gateway.
+// fakeVMDaemon serves /v1/vms for the given user VMs plus one gateway, and
+// a ready /v1/health so ensureDaemon does not spawn a real daemon.
 func fakeVMDaemon(t *testing.T, vms ...string) (*paths.Paths, *daemon.Client) {
+	t.Helper()
+	return fakeVMDaemonWith(t, nil, vms...)
+}
+
+// fakeVMDaemonWith lets extra answer a request first; it reports whether
+// it did.
+func fakeVMDaemonWith(t *testing.T, extra func(http.ResponseWriter, *http.Request) bool, vms ...string) (*paths.Paths, *daemon.Client) {
 	t.Helper()
 	home, err := os.MkdirTemp("", "pvm-defvm-")
 	if err != nil {
@@ -88,6 +97,17 @@ func fakeVMDaemon(t *testing.T, vms ...string) (*paths.Paths, *daemon.Client) {
 		return fmt.Sprintf(`{"running":true,"spec":{"name":%q,"role":%q}}`, name, role)
 	}
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/health" {
+			fmt.Fprint(w, `{"ready":true}`)
+			return
+		}
+		if extra != nil && extra(w, r) {
+			return
+		}
+		if r.URL.Path == "/v1/vms/pvm-gw1" {
+			fmt.Fprint(w, view("pvm-gw1", "gateway"))
+			return
+		}
 		if r.URL.Path == "/v1/vms" {
 			items := []string{view("pvm-gw1", "gateway")}
 			for _, n := range vms {
@@ -114,6 +134,80 @@ func saveWorkspace(t *testing.T, p *paths.Paths, id, vm, host string) {
 	ws := &workspace.Workspace{ID: id, VM: vm, Mode: workspace.ModeMount, HostPath: host, GuestPath: workspace.GuestPathFor(id)}
 	if err := workspace.NewStore(p).Save(ws); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func setDefaultVM(t *testing.T, p *paths.Paths, name string) {
+	t.Helper()
+	if err := config.SetDefaultVM(p.ConfigFile(), name); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func defaultVM(t *testing.T, p *paths.Paths) string {
+	t.Helper()
+	cfg, err := config.Load(p.ConfigFile())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg.DefaultVM
+}
+
+func TestCmdDefaultVM(t *testing.T) {
+	p, _ := fakeVMDaemon(t, "dev1", "dev2")
+	if err := os.WriteFile(p.ConfigFile(), []byte("# mine\nupdate_check: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := captureStdout(t, func() int { return CmdDefaultVM(nil) }); code != 0 || !strings.Contains(out, "no default vm") {
+		t.Fatalf("unset: %d %q", code, out)
+	}
+	if code, out := captureStdout(t, func() int { return CmdDefaultVM([]string{"dev2"}) }); code != 0 || out != "default vm: dev2\n" {
+		t.Fatalf("set: %d %q", code, out)
+	}
+	if code, out := captureStdout(t, func() int { return CmdDefaultVM(nil) }); code != 0 || out != "dev2\n" {
+		t.Fatalf("print: %d %q", code, out)
+	}
+	for _, bad := range [][]string{{"gone"}, {"pvm-gw1"}, {"a/b"}} {
+		if code := CmdDefaultVM(bad); code != 1 {
+			t.Errorf("CmdDefaultVM(%q) = %d", bad, code)
+		}
+	}
+	for _, bad := range [][]string{{"dev1", "dev2"}, {"--clear", "dev1"}, {"--nope"}} {
+		if code := CmdDefaultVM(bad); code != 2 {
+			t.Errorf("CmdDefaultVM(%q) = %d", bad, code)
+		}
+	}
+	if got := defaultVM(t, p); got != "dev2" {
+		t.Fatalf("a rejected call changed the default vm to %q", got)
+	}
+	if code, out := captureStdout(t, func() int { return CmdDefaultVM([]string{"--clear"}) }); code != 0 || out != "default vm cleared\n" {
+		t.Fatalf("clear: %d %q", code, out)
+	}
+	if data, _ := os.ReadFile(p.ConfigFile()); string(data) != "# mine\nupdate_check: true\n" {
+		t.Fatalf("config = %q", data)
+	}
+}
+
+func TestRmClearsDefaultVM(t *testing.T) {
+	p, _ := fakeVMDaemon(t, "dev1", "dev2")
+	setDefaultVM(t, p, "dev1")
+	if code, out := captureStdout(t, func() int { return CmdRm([]string{"dev2", "-y"}) }); code != 0 || out != "removed dev2\n" {
+		t.Fatalf("rm of another vm: %d %q", code, out)
+	}
+	if got := defaultVM(t, p); got != "dev1" {
+		t.Fatalf("default vm = %q", got)
+	}
+	code, out := captureStdout(t, func() int { return CmdRm([]string{"dev1", "-y"}) })
+	if code != 0 || !strings.Contains(out, "dev1 was the default vm; the setting is cleared") {
+		t.Fatalf("rm of the default vm: %d %q", code, out)
+	}
+	if got := defaultVM(t, p); got != "" {
+		t.Fatalf("default vm = %q", got)
+	}
+	// a failed delete keeps the setting
+	setDefaultVM(t, p, "dev1")
+	if code := CmdRm([]string{"gone", "-y"}); code != 1 || defaultVM(t, p) != "dev1" {
+		t.Fatalf("failed rm: %d, default vm %q", code, defaultVM(t, p))
 	}
 }
 
@@ -163,6 +257,57 @@ func TestResolveVM(t *testing.T) {
 		name, ws, _, err := resolveVM(c, p, "")
 		if err != nil || name != "dev1" || ws != nil {
 			t.Fatalf("got %q %v %v", name, ws, err)
+		}
+	})
+	t.Run("default vm", func(t *testing.T) {
+		p, c := fakeVMDaemon(t, "dev1", "dev2")
+		setDefaultVM(t, p, "dev2")
+		t.Chdir(t.TempDir())
+		name, ws, _, err := resolveVM(c, p, "")
+		if err != nil || name != "dev2" || ws != nil {
+			t.Fatalf("got %q %v %v", name, ws, err)
+		}
+		if name, _, _, _ := resolveVM(c, p, "dev1"); name != "dev1" {
+			t.Fatalf("explicit name lost to the default vm: %q", name)
+		}
+	})
+	t.Run("workspace before default vm", func(t *testing.T) {
+		p, c := fakeVMDaemon(t, "dev1", "dev2")
+		setDefaultVM(t, p, "dev2")
+		dir := t.TempDir()
+		saveWorkspace(t, p, "web", "dev1", dir)
+		t.Chdir(dir)
+		name, ws, _, err := resolveVM(c, p, "")
+		if err != nil || name != "dev1" || ws == nil || ws.ID != "web" {
+			t.Fatalf("got %q %v %v", name, ws, err)
+		}
+	})
+	t.Run("default vm in a workspace without a vm", func(t *testing.T) {
+		p, c := fakeVMDaemon(t, "dev1", "dev2")
+		setDefaultVM(t, p, "dev2")
+		dir := t.TempDir()
+		saveWorkspace(t, p, "web", "", dir)
+		t.Chdir(dir)
+		name, ws, _, err := resolveVM(c, p, "")
+		if err != nil || name != "dev2" || ws == nil || ws.ID != "web" {
+			t.Fatalf("got %q %v %v", name, ws, err)
+		}
+	})
+	t.Run("default vm deleted", func(t *testing.T) {
+		p, c := fakeVMDaemon(t, "dev1")
+		setDefaultVM(t, p, "gone")
+		t.Chdir(t.TempDir())
+		_, _, _, err := resolveVM(c, p, "")
+		if err == nil || !strings.Contains(err.Error(), "default vm gone does not exist") || !strings.Contains(err.Error(), "pvm default-vm --clear") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+	t.Run("default vm is a gateway", func(t *testing.T) {
+		p, c := fakeVMDaemon(t, "dev1")
+		setDefaultVM(t, p, "pvm-gw1")
+		t.Chdir(t.TempDir())
+		if _, _, _, err := resolveVM(c, p, ""); err == nil || !strings.Contains(err.Error(), "default vm pvm-gw1 does not exist") {
+			t.Fatalf("err = %v", err)
 		}
 	})
 	t.Run("several vms", func(t *testing.T) {

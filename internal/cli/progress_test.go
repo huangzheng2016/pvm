@@ -2,12 +2,16 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"github.com/huangzheng2016/pvm/internal/daemon"
 	"github.com/huangzheng2016/pvm/internal/paths"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
@@ -136,5 +140,81 @@ func TestFollowProvisionReportsInstallationFailure(t *testing.T) {
 	t.Cleanup(func() { srv.Close() })
 	if code := followProvision(daemon.NewClient(p), "dev1", time.Second); code != 1 {
 		t.Fatalf("installation failure returned %d", code)
+	}
+}
+
+func TestVMState(t *testing.T) {
+	view := func(js string) vmInfoView {
+		var in vmInfoView
+		if err := json.Unmarshal([]byte(js), &in); err != nil {
+			t.Fatal(err)
+		}
+		return in
+	}
+	for _, tc := range []struct {
+		js, state, hint string
+	}{
+		{`{"spec":{"role":"user"},"ready":true,"stage":{"stage":"ready"}}`, "stopped", ""},
+		{`{"spec":{"role":"user"},"stage":{"stage":"failed","detail":"retry"}}`, "stopped", ""},
+		{`{"spec":{"role":"user"},"running":true,"ready":true,"stage":{"stage":"ready"}}`, "ready", ""},
+		{`{"spec":{"role":"user"},"running":true,"stage":{"stage":"failed","detail":"retry"}}`, "failed", "retry"},
+		{`{"spec":{"role":"user"},"running":true,"stage":{"stage":"provision","detail":"waiting for ssh"}}`, "starting (provision)", ""},
+		{`{"spec":{"role":"user"},"running":true,"stage":{"stage":"disk+seed"}}`, "starting (disk+seed)", ""},
+		{`{"spec":{"role":"user"},"running":true}`, "starting", ""},
+		{`{"spec":{"role":"user","identity_reset":true},"running":true,"stage":{"stage":"ready"}}`, "starting", ""},
+		{`{"spec":{"role":"gateway"},"running":true}`, "running", ""},
+		{`{"spec":{"role":"gateway"}}`, "stopped", ""},
+	} {
+		if state, hint := vmState(view(tc.js)); state != tc.state || hint != tc.hint {
+			t.Errorf("vmState(%s) = %q, %q; want %q, %q", tc.js, state, hint, tc.state, tc.hint)
+		}
+	}
+}
+
+func TestListShowsReadiness(t *testing.T) {
+	requests := 0
+	fakeVMDaemonWith(t, func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path != "/v1/vms" {
+			return false
+		}
+		requests++
+		fmt.Fprint(w, `[{"running":true,"spec":{"image":"ubuntu:24.04","name":"pvm-gw1","role":"gateway"}},`+
+			`{"running":true,"ready":true,"spec":{"image":"ubuntu:24.04","name":"dev1","role":"user"},"stage":{"stage":"ready"}},`+
+			`{"running":true,"spec":{"image":"ubuntu:24.04","name":"dev2","role":"user"},"stage":{"stage":"ssh"}},`+
+			`{"running":true,"spec":{"image":"ubuntu:24.04","name":"dev3","role":"user"},"stage":{"stage":"failed","detail":"retry with pvm start dev3"}},`+
+			`{"spec":{"image":"ubuntu:24.04","name":"dev4","role":"user"}}]`)
+		return true
+	})
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	code, out := captureStdout(t, func() int { return CmdList(nil) })
+	os.Stderr = old
+	w.Close()
+	errOut, _ := io.ReadAll(r)
+	r.Close()
+	if code != 0 {
+		t.Fatalf("pvm list: exit %d: %s", code, errOut)
+	}
+	stderr := string(errOut)
+	want := map[string]string{"pvm-gw1": "running", "dev1": "ready", "dev2": "starting (ssh)", "dev3": "failed", "dev4": "stopped"}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n")[1:] {
+		cols := regexp.MustCompile(`\s{2,}`).Split(line, -1)
+		if len(cols) < 4 || cols[3] != want[cols[0]] {
+			t.Errorf("row %q: want status %q", line, want[cols[0]])
+		}
+		delete(want, cols[0])
+	}
+	if len(want) != 0 {
+		t.Errorf("rows missing: %v\n%s", want, out)
+	}
+	if stderr != "pvm: dev3 failed: retry with pvm start dev3\n" {
+		t.Errorf("stderr = %q", stderr)
+	}
+	if requests != 1 {
+		t.Errorf("list made %d requests", requests)
 	}
 }

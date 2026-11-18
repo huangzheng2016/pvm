@@ -13,6 +13,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/huangzheng2016/pvm/internal/config"
 	"github.com/huangzheng2016/pvm/internal/daemon"
 	"github.com/huangzheng2016/pvm/internal/image"
 	"github.com/huangzheng2016/pvm/internal/native"
@@ -44,7 +45,11 @@ type vmInfoView struct {
 	GatewayUser       string `json:"gw_user"`
 	GatewaySSHKeyName string `json:"gw_ssh_key_name"`
 	Ready             bool   `json:"ready"`
-	Stages            []struct {
+	Stage             struct {
+		Stage  string `json:"stage"`
+		Detail string `json:"detail"`
+	} `json:"stage"`
+	Stages []struct {
 		Stage  string `json:"stage"`
 		Detail string `json:"detail"`
 	} `json:"stages"`
@@ -389,10 +394,11 @@ func CmdList(args []string) int {
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tIMAGE\tROLE\tSTATUS\tIP\tCPU\tMEM\tUSER\tUPTIME")
+	var failed []string
 	for _, in := range infos {
-		status := "stopped"
-		if in.Running {
-			status = "running"
+		status, hint := vmState(in)
+		if hint != "" {
+			failed = append(failed, fmt.Sprintf("%s failed: %s", in.Spec.Name, hint))
 		}
 		ip := in.Spec.IP
 		if ip == "" {
@@ -407,7 +413,29 @@ func CmdList(args []string) int {
 			in.Spec.Name, in.Spec.Image, role, status, ip, in.Spec.CPUs, mem, in.Spec.User, in.Uptime)
 	}
 	tw.Flush()
+	for _, line := range failed {
+		fmt.Fprintln(os.Stderr, "pvm:", line)
+	}
 	return 0
+}
+
+// vmState maps a list entry to its STATUS cell and, for a failed VM, the
+// daemon's hint. Gateways have no readiness stages, so they stay "running".
+// A running VM without stages is one a restarted daemon has not probed yet.
+func vmState(in vmInfoView) (state, hint string) {
+	switch {
+	case !in.Running:
+		return "stopped", ""
+	case in.Spec.Role == "gateway":
+		return "running", ""
+	case in.Ready:
+		return "ready", ""
+	case in.Stage.Stage == "failed":
+		return "failed", in.Stage.Detail
+	case in.Stage.Stage == "" || in.Stage.Stage == "ready":
+		return "starting", ""
+	}
+	return "starting (" + in.Stage.Stage + ")", ""
 }
 
 func cmdVMSimple(args []string, action string) int {
@@ -550,6 +578,12 @@ func CmdRm(args []string) int {
 		return fatalf("%v", err)
 	}
 	fmt.Printf("removed %s\n", name)
+	if cfg, err := config.Load(p.ConfigFile()); err == nil && cfg.DefaultVM == name {
+		if err := config.SetDefaultVM(p.ConfigFile(), ""); err != nil {
+			return fatalf("%s was the default vm and the setting could not be cleared: %v\nclear it with `pvm default-vm --clear`", name, err)
+		}
+		fmt.Printf("%s was the default vm; the setting is cleared\n", name)
+	}
 	return 0
 }
 

@@ -4,18 +4,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
+	"github.com/huangzheng2016/pvm/internal/config"
 	"github.com/huangzheng2016/pvm/internal/daemon"
 	"github.com/huangzheng2016/pvm/internal/paths"
+	"github.com/huangzheng2016/pvm/internal/vm"
 	"github.com/huangzheng2016/pvm/internal/workspace"
 )
 
 // resolveVM fills in the VM name a command was given without. The cwd's
 // workspace wins: the folder a person stands in already says which VM
-// they mean, and one dir can only be inside one checkout at a time. The
-// only user VM follows when no workspace matches.
+// they mean, and one dir can only be inside one checkout at a time.
+// default_vm from config.yaml follows, then the only user VM.
 //
 // It returns ws and rel when the cwd lies inside a workspace, so callers
 // that land the user in a shell (`pvm ssh`) can start there.
@@ -48,13 +51,23 @@ func resolveVM(c *daemon.Client, p *paths.Paths, explicit string) (name string, 
 		}
 	}
 	sort.Strings(names)
+	cfg, err := config.Load(p.ConfigFile())
+	if err != nil {
+		return "", nil, "", err
+	}
+	if cfg.DefaultVM != "" {
+		// Falling back to another VM would run the command on a machine
+		// the user did not choose.
+		if !slices.Contains(names, cfg.DefaultVM) {
+			return "", nil, "", fmt.Errorf("default vm %s does not exist; choose another with `pvm default-vm <vm>` or clear it with `pvm default-vm --clear`", cfg.DefaultVM)
+		}
+		fmt.Fprintf(os.Stderr, "pvm: using the default vm, %s\n", cfg.DefaultVM)
+		return cfg.DefaultVM, ws, rel, nil
+	}
 	switch len(names) {
 	case 1:
 		fmt.Fprintf(os.Stderr, "pvm: using the only vm, %s\n", names[0])
-		if ws != nil && ws.VM == "" {
-			return names[0], ws, rel, nil
-		}
-		return names[0], nil, "", nil
+		return names[0], ws, rel, nil
 	case 0:
 		return "", nil, "", fmt.Errorf("no vm yet; create one with `pvm create dev1`")
 	}
@@ -135,4 +148,59 @@ func guestDir(ws *workspace.Workspace, rel string) (string, bool) {
 		return ws.GuestPath, true
 	}
 	return ws.GuestPath + "/" + rel, true
+}
+
+// CmdDefaultVM prints, sets or clears default_vm in config.yaml.
+func CmdDefaultVM(args []string) int {
+	fs := newFlagSet("default-vm", "[<vm>|--clear]")
+	clear := fs.Bool("clear", false, "remove the default vm")
+	if err := fs.Parse(partitionFlags(args)); err != nil {
+		return 2
+	}
+	if fs.NArg() > 1 || (*clear && fs.NArg() > 0) {
+		fs.Usage()
+		return 2
+	}
+	p, err := mustPaths()
+	if err != nil {
+		return fatalf("%v", err)
+	}
+	switch {
+	case *clear:
+		if err := config.SetDefaultVM(p.ConfigFile(), ""); err != nil {
+			return fatalf("%v", err)
+		}
+		fmt.Println("default vm cleared")
+	case fs.NArg() == 0:
+		cfg, err := config.Load(p.ConfigFile())
+		if err != nil {
+			return fatalf("%v", err)
+		}
+		if cfg.DefaultVM == "" {
+			fmt.Println("no default vm; set one with `pvm default-vm <vm>`")
+			return 0
+		}
+		fmt.Println(cfg.DefaultVM)
+	default:
+		name := fs.Arg(0)
+		if err := vm.ValidateName(name); err != nil {
+			return fatalf("%v", err)
+		}
+		c, err := ensureDaemon(p)
+		if err != nil {
+			return fatalf("%v", err)
+		}
+		var info vmInfoView
+		if err := c.Get("/v1/vms/"+name, &info); err != nil {
+			return fatalf("%v", err)
+		}
+		if info.Spec.Role == "gateway" {
+			return fatalf("%s is a gateway vm and cannot be the default vm", name)
+		}
+		if err := config.SetDefaultVM(p.ConfigFile(), name); err != nil {
+			return fatalf("%v", err)
+		}
+		fmt.Printf("default vm: %s\n", name)
+	}
+	return 0
 }

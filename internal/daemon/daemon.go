@@ -98,7 +98,13 @@ type vmInfo struct {
 	GatewayUser       string       `json:"gw_user,omitempty"`
 	GatewaySSHKeyName string       `json:"gw_ssh_key_name,omitempty"`
 	Ready             bool         `json:"ready,omitempty"`
+	Stage             *lastStage   `json:"stage,omitempty"`
 	Stages            []StageEvent `json:"stages,omitempty"`
+}
+
+type lastStage struct {
+	Stage  string `json:"stage"`
+	Detail string `json:"detail,omitempty"`
 }
 
 func NewServer(p *paths.Paths, cfg *config.Config, tc *qemu.Toolchain, accel qemu.Accel, clusters *cluster.Store) *Server {
@@ -287,6 +293,8 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /v1/vms/{name}/apps/attach", s.handleAppAttach)
 	mux.HandleFunc("PUT /v1/vms/{name}/apps/config", s.handleAppConfig)
 	mux.HandleFunc("POST /v1/vms/{name}/apps/prepare", s.handleAppPrepare)
+	mux.HandleFunc("GET /v1/apps/catalog", s.handleAppCatalog)
+	mux.HandleFunc("POST /v1/vms/{name}/apps/install", s.handleAppInstall)
 	mux.HandleFunc("GET /v1/vms/{name}/console", s.handleConsole)
 	mux.HandleFunc("GET /v1/vms/{name}/stream", s.handleStream)
 	mux.HandleFunc("GET /v1/vms/{name}/audit", s.handleVMAudit)
@@ -352,6 +360,11 @@ func (s *Server) buildVMInfo(sp *vm.Spec) (vmInfo, error) {
 		info.PID = st.PID
 		info.Uptime = time.Since(st.Started).Round(time.Second).String()
 	}
+	events := s.stages(sp.Name)
+	info.Ready = info.Running && !sp.IdentityReset && stagesReady(events)
+	if n := len(events); n > 0 {
+		info.Stage = &lastStage{Stage: events[n-1].Stage, Detail: events[n-1].Detail}
+	}
 	return info, nil
 }
 
@@ -389,7 +402,6 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info.Stages = s.stages(spec.Name)
-	info.Ready = info.Running && !info.Spec.IdentityReset && s.vmReady(spec.Name)
 	writeJSON(w, 200, info)
 }
 

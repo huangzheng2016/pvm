@@ -1,0 +1,6 @@
+name: Claude Code
+description: Anthropic's coding agent for the terminal
+homepage: https://code.claude.com/docs/en/setup
+source: official
+window: false
+start: claude
