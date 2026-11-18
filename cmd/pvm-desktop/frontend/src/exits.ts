@@ -1,5 +1,27 @@
 import { backend, type Exit } from "./api";
-import { badge, button, checkbox, dialog, field, h, menuButton, pageHeader, table } from "./dom";
+import {
+  badge,
+  banner,
+  button,
+  callout,
+  checkbox,
+  dialog,
+  field,
+  h,
+  input,
+  keyed,
+  loading,
+  menuButton,
+  mono,
+  moreButton,
+  redraw,
+  setFieldError,
+  stagger,
+  tag,
+  type Child,
+} from "./dom";
+import { t } from "./i18n";
+import { icon } from "./icons";
 import { act, busy, data } from "./store";
 import { exitDialog } from "./vms";
 
@@ -11,84 +33,91 @@ const serverRule = /^([^\s:[\]-][^\s:[\]]*|\[[0-9a-fA-F:.]+\]):\d+$/;
 
 function checkName(name: string): string {
   if (!nameRule.test(name)) {
-    return "The name takes letters, digits, - and _, at most 32, starting with a letter.";
+    return t.exits.nameBad;
   }
   if (name === "direct" || data.exits?.some((e) => e.name === name)) {
-    return "An exit named " + name + " already exists.";
+    return t.exits.nameTaken(name);
   }
   return "";
 }
 
-const input = (type: string, placeholder: string) => h("input", { type, placeholder, spellcheck: "false", autocomplete: "off" });
+const nameInput = () => input({ class: "input input--mono", placeholder: "my-exit" });
 
 function addDialog(): void {
-  const name = input("text", "my-exit");
-  const server = input("text", "vps.example.com:18443");
-  const token = input("password", "");
+  const name = nameInput();
+  const server = input({ class: "input input--mono", placeholder: "vps.example.com:18443" });
+  const token = input({ class: "input input--mono", type: "password" });
   dialog({
-    title: "Add an exit",
+    title: [t.exits.agentTitle],
+    text: t.exits.agentText(mono("pvm exit-agent")),
     content: [
-      field("Name", name),
-      field("Server", server, "The address of a server running pvm exit-agent, as host:port."),
-      field("Token", token, "The token of that exit-agent. It is handed to pvm in a private file and is not shown or logged."),
-      h("p", { class: "hint" }, "Adding probes the connection, which can take up to two minutes."),
+      field(t.exits.name, name),
+      field(t.exits.server, server, t.exits.serverHint),
+      field(t.exits.token, token, t.exits.tokenHint),
+      callout("info", "note", t.exits.probe),
     ],
-    submit: "Add exit",
+    submit: t.exits.agentSubmit,
     validate: () => {
-      if (checkName(name.value) !== "") {
-        return checkName(name.value);
-      }
-      if (!serverRule.test(server.value)) {
-        return "The server must be host:port.";
-      }
-      return /^\S+$/.test(token.value) ? "" : "Enter the token, without spaces.";
+      setFieldError(name, checkName(name.value));
+      setFieldError(server, serverRule.test(server.value) ? "" : t.exits.serverBad);
+      setFieldError(token, /^\S+$/.test(token.value) ? "" : t.exits.tokenBad);
+      return ![name, server, token].some((el) => el.hasAttribute("aria-invalid"));
     },
     onSubmit: () => void act(["exit:" + name.value], () => backend().AddExit({ name: name.value, server: server.value, token: token.value })),
   });
 }
 
 function addWarpDialog(): void {
-  const name = input("text", "my-exit");
+  const name = nameInput();
   dialog({
-    title: "Add a WARP exit",
-    content: [field("Name", name), h("p", { class: "hint" }, "This registers a new Cloudflare WARP device and uses it as the exit.")],
-    submit: "Add WARP exit",
-    validate: () => checkName(name.value),
+    title: [t.exits.warpTitle],
+    text: [t.exits.warpText],
+    content: [field(t.exits.name, name)],
+    submit: t.exits.warpSubmit,
+    validate: () => {
+      setFieldError(name, checkName(name.value));
+      return !name.hasAttribute("aria-invalid");
+    },
     onSubmit: () => void act(["exit:" + name.value], () => backend().AddWarpExit(name.value)),
   });
 }
 
 function testDialog(exit: Exit): void {
-  const speed = checkbox("Also run a speed test", false);
+  const speed = checkbox([t.exits.testSpeed], false);
   dialog({
-    title: "Test " + exit.name,
-    content: [h("p", null, "The result shows in Activity."), speed.el],
-    submit: "Test",
+    title: t.exits.testTitle(mono(exit.name)),
+    text: [t.exits.testText],
+    content: [speed.el],
+    submit: t.exits.test,
+    submitIcon: "bolt",
+    narrow: true,
     onSubmit: () => void act(["exit:" + exit.name], () => backend().TestExit(exit.name, speed.box.checked)),
   });
 }
 
 function removeDialog(exit: Exit): void {
   const users = [
-    exit.default && "the default exit",
-    exit.vms.length > 0 && "VMs: " + exit.vms.join(", "),
-    exit.rules.length > 0 && "route rules: " + exit.rules.join(", "),
+    exit.default && t.exits.usedAsDefault,
+    exit.vms.length > 0 && t.exits.usedByVms(exit.vms),
+    exit.rules.length > 0 && t.exits.usedByRules(exit.rules),
   ].filter((u): u is string => u !== false);
   dialog({
-    title: "Remove " + exit.name + "?",
+    title: t.exits.removeTitle(mono(exit.name)),
     content: [
-      h("p", null, "This removes the exit ", h("strong", null, exit.name), " from pvm."),
+      h("p", null, ...t.exits.removeText(h("strong", { lang: "en" }, exit.name))),
       users.length > 0 &&
-        h(
-          "div",
-          { class: "warning" },
-          h("p", null, exit.name + " is still used by:"),
+        callout(
+          "warn",
+          "alert",
+          h("strong", null, t.exits.stillUsed(exit.name)),
           h("ul", null, ...users.map((u) => h("li", null, u))),
-          h("p", null, "pvm does not check this. Point them at another exit first, or they keep naming an exit that no longer exists."),
+          h("p", null, t.exits.notChecked),
         ),
     ],
-    submit: "Remove " + exit.name,
+    submit: t.exits.removeSubmit(exit.name),
+    submitIcon: "trash",
     danger: true,
+    narrow: true,
     onSubmit: () => void act(["exit:" + exit.name], () => backend().RemoveExit(exit.name, true)),
   });
 }
@@ -97,124 +126,194 @@ function setDefault(name: string): void {
   void act(["exit:" + name], () => backend().SetDefaultExit(name));
 }
 
+const sep = (): HTMLElement => h("span", { class: "sep", "aria-hidden": "true" }, "·");
+
+// between puts a dot between the parts that are there.
+const between = (parts: Child[]): Child[] => parts.filter(Boolean).flatMap((part, i) => (i === 0 ? [part] : [sep(), part]));
+
 function usedBy(vms: string[], rules: string[]): HTMLElement {
-  const parts = [vms.join(", "), rules.length > 0 ? rules.length + (rules.length === 1 ? " rule" : " rules") : ""].filter((p) => p !== "");
-  const all = [...vms, ...rules].join("\n");
-  return h("td", { class: "grow" }, parts.length > 0 ? h("div", { class: "clamp", title: all }, parts.join("; ")) : h("span", { class: "muted" }, "nothing"));
+  const note = rules.length > 0 ? t.exits.rules(rules.length) : vms.length === 0 ? t.exits.nothing : "";
+  return h(
+    "div",
+    { class: "meta meta--wide" },
+    h("span", { class: "meta-label" }, t.exits.usedBy),
+    h(
+      "span",
+      { class: "tag-row" },
+      ...vms.map((name) => tag(name)),
+      note !== "" && h("span", { class: "meta-note", "data-tip": rules.length > 0 ? rules.join(", ") : undefined }, note),
+    ),
+  );
 }
 
-function row(exit: Exit): HTMLTableRowElement {
+const busyBar = (name: string): HTMLElement => h("div", { class: "busybar", role: "progressbar", "aria-label": t.common.workingOn(name) });
+
+function row(exit: Exit): HTMLElement {
   const working = busy.has("exit:" + exit.name);
   const k = (action: string) => "exit:" + exit.name + ":" + action;
-  const region = [exit.tz, exit.locale].filter((p) => p !== "").join(" - ");
+  const kind = tag(exit.kind === "warp" ? t.exits.warp : t.exits.agent);
+  if (exit.kind !== "warp") {
+    kind.dataset.tip = t.exits.agentHint;
+  }
   return h(
-    "tr",
-    { class: working ? "working" : "" },
+    "article",
+    { class: "item", "data-busy": working ? "true" : undefined },
+    working && busyBar(exit.name),
     h(
-      "td",
-      { class: "grow" },
-      h("div", { class: "name" }, h("strong", { title: exit.name }, exit.name), exit.default && badge("default", "accent")),
-      h("div", { class: "sub" }, h("code", null, exit.endpoint)),
-      region !== "" && h("div", { class: "sub" }, region),
-    ),
-    h("td", { class: "fit" }, exit.kind === "warp" ? "WARP" : h("span", { title: "pvm exit-agent over WireGuard" }, "Agent")),
-    usedBy(exit.vms, exit.rules),
-    h(
-      "td",
-      { class: "actions" },
-      working && h("span", { class: "spinner", role: "status", "aria-label": "Working" }),
-      // `pvm exit test --speed` is for agent exits only
-      button("Test", () => (exit.kind === "warp" ? void act(["exit:" + exit.name], () => backend().TestExit(exit.name, false)) : testDialog(exit)), {
-        disabled: working,
-        key: k("test"),
-      }),
-      button("Set default", () => setDefault(exit.name), { disabled: working || exit.default, key: k("default") }),
-      button("Remove", () => removeDialog(exit), { kind: "danger", disabled: working, key: k("remove") }),
+      "div",
+      { class: "item-row" },
+      h(
+        "div",
+        { class: "item-id" },
+        h("div", { class: "item-title" }, h("h2", { class: "item-name", lang: "en" }, exit.name), exit.default && badge(t.common.isDefault, "accent"), kind),
+        h(
+          "p",
+          { class: "item-sub", lang: "en" },
+          exit.endpoint !== "" && h("span", { class: "mono" }, exit.endpoint),
+          h("span", { class: "item-specs" }, ...between([exit.tz !== "" && h("span", null, exit.tz), exit.locale !== "" && h("span", null, exit.locale)])),
+        ),
+      ),
+      h("div", { class: "item-meta" }, usedBy(exit.vms, exit.rules)),
+      h(
+        "div",
+        { class: "item-actions" },
+        // `pvm exit test --speed` is for agent exits only
+        button(t.exits.test, () => (exit.kind === "warp" ? void act(["exit:" + exit.name], () => backend().TestExit(exit.name, false)) : testDialog(exit)), {
+          size: "sm",
+          icon: "bolt",
+          disabled: working,
+          key: k("test"),
+        }),
+        moreButton(
+          t.common.moreFor(exit.name),
+          [
+            { label: t.exits.setDefault, icon: "star", action: () => setDefault(exit.name), disabled: exit.default },
+            { label: t.exits.remove, icon: "trash", action: () => removeDialog(exit), danger: true, divided: true },
+          ],
+          { disabled: working, key: k("more") },
+        ),
+      ),
     ),
   );
 }
 
+const directVMs = (): string[] => (data.vms ?? []).filter((vm) => vm.exit === "direct").map((vm) => vm.name);
+
 // directRow stands for no exit at all, which can be the default too.
-function directRow(): HTMLTableRowElement {
+function directRow(): HTMLElement {
   const isDefault = data.defaultExit === "direct";
   const working = busy.has("exit:direct");
-  const vms = (data.vms ?? []).filter((vm) => vm.exit === "direct").map((vm) => vm.name);
   return h(
-    "tr",
-    { class: working ? "working" : "" },
+    "article",
+    { class: "item item--plain", "data-busy": working ? "true" : undefined },
+    working && busyBar("direct"),
     h(
-      "td",
-      { class: "grow" },
-      h("div", { class: "name" }, h("strong", null, "direct"), isDefault && badge("default", "accent")),
-      h("div", { class: "sub" }, "the host's network"),
-    ),
-    h("td", { class: "fit" }, "No exit"),
-    usedBy(vms, []),
-    h(
-      "td",
-      { class: "actions" },
-      working && h("span", { class: "spinner", role: "status", "aria-label": "Working" }),
-      button("Set default", () => setDefault("direct"), { disabled: working || isDefault, key: "exit:direct:default" }),
+      "div",
+      { class: "item-row" },
+      h(
+        "div",
+        { class: "item-id" },
+        h("div", { class: "item-title" }, h("h2", { class: "item-name", lang: "en" }, "direct"), isDefault && badge(t.common.isDefault, "accent"), tag(t.exits.noExit)),
+        h("p", { class: "item-sub" }, t.exits.directText),
+      ),
+      h("div", { class: "item-meta" }, usedBy(directVMs(), [])),
+      h(
+        "div",
+        { class: "item-actions" },
+        button(t.exits.setDefault, () => setDefault("direct"), { size: "sm", disabled: working || isDefault, key: "exit:direct:default" }),
+      ),
     ),
   );
+}
+
+// The rows of the list: the exits, then direct.
+type Entry = { exit: Exit } | { exit: null };
+
+const head = h("header", { class: "page-head" });
+const notice = h("div", { class: "slot" });
+const rest = h("div", { class: "slot" });
+const list = h("div", { class: "list" });
+const after = h("div", { class: "slot" });
+const page = h("div", { class: "page" }, head, h("div", { class: "page-body" }, notice, rest, list, after));
+
+export function enter(): void {
+  stagger(list);
 }
 
 export function render(): HTMLElement {
-  const page = h(
-    "div",
-    { class: "page" },
-    pageHeader(
-      "Exits",
+  const all = data.exits;
+  const def = data.defaultExit;
+  const error = data.errors.exits ?? "";
+  const known = (name: string) => name === "direct" || (all ?? []).some((e) => e.name === name);
+  const defaultGone = all !== null && def !== null && !known(def);
+
+  redraw(head, [all?.length, def], () => [
+    h("h1", { class: "page-title" }, t.exits.title),
+    all && h("span", { class: "page-sub" }, all.length === 0 ? t.exits.none : def === null ? "" : t.exits.summary(all.length, known(def) ? def : t.exits.removed(def))),
+    h(
+      "div",
+      { class: "page-actions" },
       menuButton(
-        "Add exit",
+        t.exits.add,
         [
-          { label: "Agent exit (your own server)", action: addDialog },
-          { label: "Cloudflare WARP", action: addWarpDialog },
+          { label: t.exits.addAgent, icon: "server", action: addDialog },
+          { label: t.exits.addWarp, icon: "cloud", action: addWarpDialog },
         ],
-        { key: "exits:add" },
+        { kind: "primary", icon: "plus", key: "exits:add" },
       ),
     ),
+  ]);
+  redraw(notice, [error, defaultGone, def], () => [
+    error !== "" && banner(t.exits.readError, error),
+    defaultGone && callout("warn", "alert", ...t.exits.defaultGone(def ?? "", mono("pvm route default --via <exit>"))),
+  ]);
+  redraw(rest, [all === null, error !== ""], () => [!all && error === "" && loading()]);
+
+  list.hidden = !all;
+  const entries: Entry[] = all ? [...all.map((exit) => ({ exit })), { exit: null }] : [];
+  keyed(
+    list,
+    entries,
+    (e) => (e.exit ? "exit:" + e.exit.name : "direct"),
+    (e) => (e.exit ? [e.exit, busy.has("exit:" + e.exit.name)] : [def === "direct", busy.has("exit:direct"), directVMs()]),
+    (e) => (e.exit ? row(e.exit) : directRow()),
   );
-  if (data.errors.exits) {
-    page.append(h("p", { class: "error banner", role: "alert" }, "Cannot read the exits: " + data.errors.exits));
-  }
-  if (!data.exits) {
-    page.append(h("p", { class: "muted" }, data.errors.exits ? "" : "Loading..."));
-    return page;
-  }
-  const def = data.defaultExit;
-  if (def !== null && def !== "direct" && !data.exits.some((e) => e.name === def)) {
-    page.append(
+
+  const vms = all ? (data.vms ?? []) : [];
+  redraw(after, [all?.length === 0, vms.map((vm) => [vm.name, vm.exit, vm.exit_own, known(vm.exit), busy.has("vm:" + vm.name)])], () => [
+    all?.length === 0 && h("p", { class: "hint" }, t.exits.emptyHint),
+    vms.length > 0 &&
       h(
-        "p",
-        { class: "warning", role: "alert" },
-        "The default exit " + def + " no longer exists. VMs that follow the default exit have no network until another default is set, here or with `pvm route default --via <exit>`.",
-      ),
-    );
-  }
-  const list = table(["Name", "Kind", "Used by", "Actions"], [...data.exits.map(row), directRow()]);
-  list.classList.add("exits");
-  page.append(list);
-  if (data.exits.length === 0) {
-    page.append(h("p", { class: "muted" }, "No exits yet. An exit is a server the traffic of a VM leaves through; without one, VMs use the host's network."));
-  }
-  const vms = data.vms ?? [];
-  if (vms.length > 0) {
-    page.append(
-      h("h2", null, "Exit of each VM"),
-      table(
-        ["VM", "Exit", "Actions"],
-        vms.map((vm) =>
-          h(
-            "tr",
-            null,
-            h("td", { class: "grow" }, h("div", { class: "name" }, h("strong", { title: vm.name }, vm.name))),
-            h("td", { class: "grow" }, h("div", { class: "name" }, h("span", { title: vm.exit }, vm.exit), !vm.exit_own && badge("default exit"))),
-            h("td", { class: "actions" }, button("Change exit", () => exitDialog(vm.name, vm.exit), { disabled: busy.has("vm:" + vm.name), key: "route:" + vm.name })),
+        "section",
+        { class: "section", "aria-labelledby": "exits-per-vm" },
+        h("div", { class: "section-head" }, h("h2", { class: "section-title", id: "exits-per-vm" }, t.exits.perVm)),
+        h(
+          "div",
+          { class: "panel panel--wide" },
+          ...vms.map((vm) =>
+            h(
+              "div",
+              { class: "setting setting--tight" },
+              h("div", { class: "setting-main" }, h("span", { class: "setting-title", lang: "en" }, vm.name)),
+              h(
+                "div",
+                { class: "setting-value" },
+                icon("route", "sm"),
+                known(vm.exit) ? h("span", { lang: "en" }, vm.exit) : h("span", null, t.exits.removed(vm.exit)),
+                !vm.exit_own && badge(t.common.defaultExit),
+                !known(vm.exit) && badge(t.exits.noNetwork, "danger"),
+              ),
+              button(t.exits.changeExit, () => exitDialog(vm.name, vm.exit), {
+                kind: "ghost",
+                size: "sm",
+                label: t.exits.changeExitOf(vm.name),
+                disabled: busy.has("vm:" + vm.name),
+                key: "route:" + vm.name,
+              }),
+            ),
           ),
         ),
       ),
-    );
-  }
+  ]);
   return page;
 }

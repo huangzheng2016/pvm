@@ -108,7 +108,7 @@ The VM list shows, per VM:
 - The exit.
 - Whether it is the default VM.
 
-Gateway VMs (`role: gateway`) are hidden.
+Gateway VMs (`role: gateway`) are hidden. The list shows as rows or as cards; the window remembers which.
 
 Actions on a VM:
 
@@ -175,6 +175,7 @@ The workspace list shows the id, VM, mode, host folder and last transfer.
 - **Default VM** runs `pvm default-vm <vm>`, or `pvm default-vm --clear`.
 - **Start the daemon at login** runs `pvm daemon install` or `pvm daemon uninstall`, which manage the existing `pvm-daemon` scheduled task.
 - **Open pvm Desktop at login** writes or removes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\pvm-desktop`.
+- **Language** shows the window in English or Simplified Chinese, or follows the language of Windows. The choice is the window's own: it is kept in the WebView2 profile, not in `config.yaml`, and runs no command. What pvm prints stays as it is in both: task titles, commands, output, error messages and the hint of a failed VM.
 - **About** shows the app version, the daemon version, accelerator and TCG fallback warning, and the data folder. When the two versions differ, it says to run the installer again.
 
 ## Core changes first (M0)
@@ -229,6 +230,8 @@ These land in the CLI and daemon before the app. Each is its own commit, with te
 - **Source.**
   - The backend is `internal/desktop`. Its `App` struct is bound to the window, so the frontend calls `window.go.desktop.App.<Method>`; every exported method of that struct is callable from the frontend, and nothing else is.
   - `cmd/pvm-desktop` holds the Wails window (Windows only; elsewhere the program says so and exits) and the frontend in `cmd/pvm-desktop/frontend` (TypeScript and Vite, no framework).
+  - The look of the frontend follows [desktop-design-prompt.md](desktop-design-prompt.md): one stylesheet whose colours and sizes are CSS variables, a light and a dark theme that follow the system, and icons drawn inline. It loads nothing from outside. Headings use one bundled font, Newsreader, from the `@fontsource-variable/newsreader` package (SIL OFL 1.1); the build copies its licence next to it. The text of the window is in `src/en.ts` and `src/zh.ts`.
+  - `npm run dev` in the frontend folder serves the page in a browser with a made-up backend (`src/mock.ts`), for working on the screens without Windows. A build leaves that file out.
   - Wails is pinned in `go.mod` and the frontend dependencies in `package-lock.json`. Choose the latest stable versions released at least two weeks before.
   - The built frontend is not committed. It is embedded only with the `production` build tag, so `go build ./...`, `go vet ./...` and `go test ./...` need no Node.
 - **Build.** `script/build-desktop.sh` runs on any host with Go and Node:
@@ -255,6 +258,7 @@ These land in the CLI and daemon before the app. Each is its own commit, with te
   - The argv for every action, and the name checks.
   - Create stopping at the failed step.
   - That tokens and keys never reach the frontend.
+- **Frontend.** `TestFrontendAPI` and `TestFrontendTypes` keep `api.ts` equal to the backend's methods and types. The screens have no automated tests; they were looked at in Chromium with the made-up backend of `npm run dev`, not in WebView2.
 - **Core change tests:**
   - The resolve order with `default_vm`, including a deleted default VM.
   - The app working directory.

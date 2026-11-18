@@ -203,7 +203,7 @@ pvm Desktop is a window for the common paths, on Windows with the native (WHPX) 
 - **Create.** A form for a new VM with its size, exit, clipboard, drop and audio settings, and the catalog apps to preinstall. The exit is set before the VM's first boot.
 - **Exits.** Add, test and remove exits, set the default exit and change a VM's exit.
 - **Workspaces.** Create and remove workspaces, push and pull, and open the host folder, a terminal, an app or the file manager in the matching guest folder.
-- **Settings.** The default VM, starting the daemon at login and opening the app at login.
+- **Settings.** The default VM, starting the daemon at login, opening the app at login, and the language of the window: English or Simplified Chinese.
 
 The app does nothing the CLI cannot: every change runs `pvm.exe`, and its output shows in the window. Notes:
 

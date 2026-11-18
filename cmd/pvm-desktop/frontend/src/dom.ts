@@ -1,7 +1,10 @@
-// A small DOM builder. Text from VMs and the API only ever becomes text
-// nodes and attribute values; nothing here parses HTML.
+// A small DOM builder and the parts every screen shares. Text from VMs
+// and the API only ever becomes text nodes and attribute values; nothing
+// here parses HTML.
 
 import { copyText } from "./api";
+import { language, t } from "./i18n";
+import { icon, type IconName } from "./icons";
 
 export type Child = Node | string | null | undefined | false;
 
@@ -26,25 +29,130 @@ export function h<K extends keyof HTMLElementTagNameMap>(
   return el;
 }
 
-// button is a push button. key names it across re-renders, so the focus
-// can return to it.
-export function button(
-  label: string,
-  onclick: () => void,
-  opts: { kind?: "primary" | "danger" | "plain"; disabled?: boolean; title?: string; key?: string } = {},
-): HTMLButtonElement {
+const classes = (...names: (string | false | undefined)[]): string => names.filter(Boolean).join(" ");
+
+// mono shows a name or a command as pvm writes it, in every language.
+export const mono = (text: string): HTMLElement => h("span", { class: "mono", lang: "en" }, text);
+
+// The words are part of what a piece of the page shows.
+const signed = (shows: unknown): string => JSON.stringify([language(), shows]);
+
+// redraw fills el again only when what it shows has changed, so a control
+// that did not change keeps its focus and the pointer over it.
+export function redraw(el: HTMLElement, shows: unknown, build: () => Child[]): void {
+  const signature = signed(shows);
+  if (el.dataset.shows === signature) {
+    return;
+  }
+  el.dataset.shows = signature;
+  el.replaceChildren(...build().filter((c): c is Node | string => c !== null && c !== undefined && c !== false));
+}
+
+// keyed makes list show one row per item, in order. A row whose item did
+// not change stays as it is; a changed one is built again in its place,
+// and only a row for a new key is marked to rise in.
+export function keyed<T>(list: HTMLElement, items: T[], key: (item: T) => string, shows: (item: T) => unknown, build: (item: T) => HTMLElement): void {
+  const old = new Map<string, HTMLElement>();
+  for (const row of list.children) {
+    if (row instanceof HTMLElement && row.dataset.row !== undefined) {
+      old.set(row.dataset.row, row);
+    }
+  }
+  const rows = items.map((item, index) => {
+    const name = key(item);
+    const signature = signed(shows(item));
+    const had = old.get(name);
+    old.delete(name);
+    if (had && had.dataset.shows === signature) {
+      return had;
+    }
+    const row = build(item);
+    row.dataset.row = name;
+    row.dataset.shows = signature;
+    if (!had) {
+      row.dataset.enter = "true";
+      row.style.setProperty("--i", String(index));
+    }
+    had?.replaceWith(row);
+    return row;
+  });
+  old.forEach((row) => row.remove());
+  rows.forEach((row, index) => {
+    if (list.children[index] !== row) {
+      list.insertBefore(row, list.children[index] ?? null);
+    }
+  });
+}
+
+// stagger makes the rows of a list rise in one after another, as when its
+// screen opens.
+export function stagger(list: HTMLElement): void {
+  [...list.children].forEach((row, index) => {
+    if (row instanceof HTMLElement) {
+      row.dataset.enter = "true";
+      row.style.setProperty("--i", String(index));
+    }
+  });
+}
+
+export interface ButtonOptions {
+  kind?: "primary" | "danger" | "ghost";
+  size?: "sm" | "lg";
+  icon?: IconName;
+  disabled?: boolean;
+  // label is the accessible name where the text alone does not say what
+  // the button acts on.
+  label?: string;
+  // key names the button across redraws, so the focus can return to it.
+  key?: string;
+}
+
+export function button(label: string, onclick: () => void, opts: ButtonOptions = {}): HTMLButtonElement {
   return h(
     "button",
     {
       type: "button",
-      class: "btn" + (opts.kind ? " " + opts.kind : ""),
+      class: classes("btn", opts.kind && "btn--" + opts.kind, opts.size && "btn--" + opts.size),
       disabled: opts.disabled ?? false,
-      title: opts.title,
+      "aria-label": opts.label,
       "data-key": opts.key,
       onclick,
     },
+    opts.icon && icon(opts.icon, opts.size === "sm" ? "sm" : "md"),
     label,
   );
+}
+
+export interface IconButtonOptions {
+  // tip is the short name shown on hover; label says it in full.
+  tip?: string;
+  disabled?: boolean;
+  small?: boolean;
+  key?: string;
+}
+
+// iconButton is a button that shows only an icon. A disabled one keeps the
+// focus and its tooltip, which can say why, so it is marked aria-disabled
+// and ignores the click.
+export function iconButton(name: IconName, label: string, onclick: () => void, opts: IconButtonOptions = {}): HTMLButtonElement {
+  const el = h(
+    "button",
+    {
+      type: "button",
+      class: classes("icon-btn", opts.small && "icon-btn--sm"),
+      "aria-label": label,
+      "aria-disabled": opts.disabled ? "true" : undefined,
+      "data-tip": opts.tip ?? label,
+      "data-key": opts.key,
+      onclick: () => {
+        if (el.getAttribute("aria-disabled") !== "true") {
+          onclick();
+        }
+      },
+    },
+    icon(name, opts.small ? "sm" : "md"),
+  );
+  return el;
 }
 
 // wanted is the key of the control that should have the focus but is
@@ -74,8 +182,130 @@ export function refocus(): void {
   }
 }
 
-export function badge(text: string, kind = ""): HTMLElement {
-  return h("span", { class: "badge " + kind }, text);
+export const dot = (pulse = false): HTMLElement => h("span", { class: classes("dot", pulse && "dot--pulse"), "aria-hidden": "true" });
+
+export function badge(text: string, kind: "" | "ok" | "info" | "warn" | "danger" | "accent" | "outline" = "", lead?: Child): HTMLElement {
+  return h("span", { class: classes("badge", kind !== "" && "badge--" + kind) }, lead, text);
+}
+
+export const tag = (text: string, warn = false): HTMLElement => h("span", { class: classes("tag", warn && "tag--warn") }, text);
+
+const calloutIcon: Record<string, IconName> = { warn: "warning", danger: "alert", info: "info" };
+
+// callout is a block of advice: amber for a warning, red for what went
+// wrong, grey for a note.
+export function callout(kind: "warn" | "danger" | "info", role: "alert" | "note", ...content: Child[]): HTMLElement {
+  return h("div", { class: classes("callout", kind !== "warn" && "callout--" + kind), role }, icon(calloutIcon[kind]), h("div", null, ...content));
+}
+
+// banner reports a list that could not be read; detail is the backend's
+// own words.
+export function banner(what: string, detail: string): HTMLElement {
+  return h("div", { class: "banner", role: "alert" }, icon("alert"), h("span", null, what, h("span", { lang: "en" }, detail)));
+}
+
+export const spinner = (small = false): HTMLElement => h("span", { class: classes("spinner", small && "spinner--sm"), "aria-hidden": "true" });
+
+export const loading = (): HTMLElement => h("p", { class: "loading", role: "status" }, spinner(true), t.common.loading);
+
+export function empty(art: IconName, title: string, text: string, ...actions: Child[]): HTMLElement {
+  return h(
+    "div",
+    { class: "empty" },
+    h("div", { class: "empty-art", "aria-hidden": "true" }, icon(art, "xl")),
+    h("h2", { class: "empty-title" }, title),
+    h("p", { class: "empty-text" }, text),
+    ...actions,
+  );
+}
+
+// One tooltip for the whole page, placed next to whatever carries
+// data-tip. It hangs under the body, so no scrolling box cuts it off.
+const tip = h("div", { class: "tip", "aria-hidden": "true" });
+let tipFor: HTMLElement | null = null;
+let tipTimer = 0;
+const tipDelay = 350;
+// The text of the tooltip a click sent away. It stays away while the
+// pointer is on that control, also when a redraw has replaced the control.
+let tipQuiet: string | null = null;
+
+function hideTip(forget = true): void {
+  window.clearTimeout(tipTimer);
+  tip.removeAttribute("data-show");
+  if (forget) {
+    tipFor = null;
+  }
+}
+
+function showTip(el: HTMLElement): void {
+  // the names of the rail show only while it is too narrow for them
+  const rail = el.hasAttribute("data-tip-rail") ? el.closest<HTMLElement>(".nav") : null;
+  const text = rail && rail.offsetWidth > 100 ? "" : (el.dataset.tip ?? "");
+  if (text === "" || !el.isConnected) {
+    return;
+  }
+  tip.textContent = text;
+  // a modal dialog covers everything outside it
+  (el.closest("dialog") ?? document.body).append(tip);
+  const box = el.getBoundingClientRect();
+  let left = box.left + (box.width - tip.offsetWidth) / 2;
+  let top = box.bottom + 6;
+  if (rail) {
+    left = box.right + 10;
+    top = box.top + (box.height - tip.offsetHeight) / 2;
+  } else if (top + tip.offsetHeight > window.innerHeight - 4) {
+    top = box.top - tip.offsetHeight - 6;
+  }
+  left = Math.max(4, Math.min(left, window.innerWidth - tip.offsetWidth - 4));
+  tip.style.transform = "translate(" + Math.round(left) + "px, " + Math.round(top) + "px)";
+  tip.dataset.show = "true";
+}
+
+const tipTarget = (e: Event): HTMLElement | null => (e.target instanceof Element ? e.target.closest<HTMLElement>("[data-tip]") : null);
+
+document.addEventListener("pointerover", (e) => {
+  const el = tipTarget(e);
+  if (el === tipFor) {
+    return;
+  }
+  hideTip();
+  if (el && el.dataset.tip === tipQuiet) {
+    tipFor = el;
+    return;
+  }
+  tipQuiet = null;
+  if (el) {
+    tipFor = el;
+    tipTimer = window.setTimeout(() => showTip(el), tipDelay);
+  }
+});
+document.addEventListener("focusin", (e) => {
+  const el = tipTarget(e);
+  if (el && el.matches(":focus-visible")) {
+    hideTip();
+    tipFor = el;
+    showTip(el);
+  }
+});
+document.addEventListener("focusout", () => hideTip());
+document.addEventListener(
+  "pointerdown",
+  (e) => {
+    tipQuiet = tipTarget(e)?.dataset.tip ?? null;
+    hideTip(false);
+  },
+  true,
+);
+document.addEventListener("keydown", (e) => e.key === "Escape" && hideTip(false));
+document.addEventListener("scroll", () => hideTip(false), true);
+document.documentElement.addEventListener("pointerleave", () => hideTip());
+window.addEventListener("blur", () => hideTip());
+
+// dropTip takes the tooltip away when a redraw removed what it was for.
+export function dropTip(): void {
+  if (tipFor && !tipFor.isConnected) {
+    hideTip();
+  }
 }
 
 // held counts open menus: while one is open the list under it is not
@@ -85,28 +315,18 @@ export const held = { count: 0, onRelease: () => {} };
 export interface MenuItem {
   label: string;
   action: () => void;
+  icon?: IconName;
   disabled?: boolean;
   danger?: boolean;
+  // divided draws a line above the item.
+  divided?: boolean;
 }
 
-export function menuButton(label: string, items: MenuItem[], opts: { disabled?: boolean; key?: string } = {}): HTMLElement {
-  const trigger = h(
-    "button",
-    {
-      type: "button",
-      class: "btn menu-trigger",
-      "aria-haspopup": "menu",
-      "aria-expanded": "false",
-      disabled: opts.disabled ?? false,
-      "data-key": opts.key,
-      onclick: () => (list ? close() : open()),
-    },
-    label,
-  );
+function attachMenu(trigger: HTMLButtonElement, name: string, items: MenuItem[], key: string | undefined): void {
   let list: HTMLElement | null = null;
 
   const outside = (e: Event) => {
-    if (list && !list.contains(e.target as Node) && e.target !== trigger) {
+    if (list && e.target instanceof Node && !list.contains(e.target) && !trigger.contains(e.target)) {
       close();
     }
   };
@@ -117,9 +337,9 @@ export function menuButton(label: string, items: MenuItem[], opts: { disabled?: 
       close();
     }
   };
-  // Closing lets a held redraw run, which replaces the trigger: the
+  // Closing lets a held redraw run, which may replace the trigger: the
   // focus goes to the control that has its key now.
-  const backToTrigger = () => (opts.key === undefined ? trigger.focus() : focusKey(opts.key));
+  const backToTrigger = () => (key === undefined ? trigger.focus() : focusKey(key));
   function close(): void {
     if (!list) {
       return;
@@ -142,7 +362,7 @@ export function menuButton(label: string, items: MenuItem[], opts: { disabled?: 
         {
           type: "button",
           role: "menuitem",
-          class: item.danger ? "danger" : "",
+          class: classes("menu-item", item.danger && "menu-item--danger"),
           disabled: item.disabled ?? false,
           onclick: () => {
             close();
@@ -151,6 +371,7 @@ export function menuButton(label: string, items: MenuItem[], opts: { disabled?: 
             item.action();
           },
         },
+        item.icon && icon(item.icon),
         item.label,
       ),
     );
@@ -159,27 +380,32 @@ export function menuButton(label: string, items: MenuItem[], opts: { disabled?: 
       {
         class: "menu",
         role: "menu",
+        "aria-label": name,
         onkeydown: (e) => {
-          const key = (e as KeyboardEvent).key;
+          const pressed = (e as KeyboardEvent).key;
           const enabled = entries.filter((b) => !b.disabled);
           const at = enabled.indexOf(document.activeElement as HTMLButtonElement);
-          if (key === "Escape") {
+          if (pressed === "Escape") {
             close();
             backToTrigger();
-          } else if (key === "ArrowDown" || key === "ArrowUp") {
+          } else if (pressed === "ArrowDown" || pressed === "ArrowUp") {
             e.preventDefault();
-            const step = key === "ArrowDown" ? 1 : -1;
+            const step = pressed === "ArrowDown" ? 1 : -1;
             enabled[(at + step + enabled.length) % enabled.length]?.focus();
-          } else if (key === "Tab") {
+          } else if (pressed === "Home" || pressed === "End") {
+            e.preventDefault();
+            enabled[pressed === "Home" ? 0 : enabled.length - 1]?.focus();
+          } else if (pressed === "Tab") {
             close();
           }
         },
       },
-      ...entries,
+      ...items.flatMap((item, i) => [item.divided && h("div", { class: "menu-sep", role: "separator" }), entries[i]]),
     );
     document.body.append(list);
     const box = trigger.getBoundingClientRect();
     const below = box.bottom + list.offsetHeight + 8 <= window.innerHeight;
+    list.classList.toggle("menu--up", !below);
     list.style.top = (below ? box.bottom + 4 : Math.max(8, box.top - list.offsetHeight - 4)) + "px";
     list.style.left = Math.max(8, box.right - list.offsetWidth) + "px";
     trigger.setAttribute("aria-expanded", "true");
@@ -191,16 +417,51 @@ export function menuButton(label: string, items: MenuItem[], opts: { disabled?: 
     document.addEventListener("scroll", scrolled, true);
     entries.find((b) => !b.disabled)?.focus();
   }
+
+  trigger.setAttribute("aria-haspopup", "menu");
+  trigger.setAttribute("aria-expanded", "false");
+  trigger.addEventListener("click", () => {
+    if (list) {
+      close();
+    } else if (trigger.getAttribute("aria-disabled") !== "true") {
+      open();
+    }
+  });
+}
+
+// menuButton is a button with a caret that opens a menu.
+export function menuButton(label: string, items: MenuItem[], opts: ButtonOptions = {}): HTMLButtonElement {
+  const trigger = button(label, () => {}, opts);
+  const caret = icon("chevronDown");
+  caret.classList.add("ico--caret");
+  trigger.append(caret);
+  attachMenu(trigger, label, items, opts.key);
+  return trigger;
+}
+
+// moreButton is the three dots at the end of a row; label names the row.
+export function moreButton(label: string, items: MenuItem[], opts: { disabled?: boolean; key?: string } = {}): HTMLButtonElement {
+  const trigger = iconButton("more", label, () => {}, { tip: t.common.more, disabled: opts.disabled, key: opts.key });
+  attachMenu(trigger, label, items, opts.key);
   return trigger;
 }
 
 export interface DialogOptions {
-  title: string;
+  title: Child[];
+  // text is a line under the title.
+  text?: Child[];
   content: Child[];
   submit: string;
+  submitIcon?: IconName;
+  // danger makes the dialog a confirmation: red, and starting on Cancel.
   danger?: boolean;
-  // validate returns what is wrong, or "" to go on.
-  validate?: () => string;
+  narrow?: boolean;
+  // submitState is asked when the dialog opens and at every change of
+  // the form: whether there is something to submit, and under what name.
+  submitState?: () => { disabled: boolean; label?: string };
+  // validate marks what is wrong, with setFieldError or fail, and returns
+  // whether to go on.
+  validate?: () => boolean;
   onSubmit: () => void;
 }
 
@@ -210,42 +471,68 @@ export interface DialogOptions {
 // fail shows a problem in the dialog: a toast would sit under it.
 export function dialog(opts: DialogOptions): { close: () => void; fail: (text: string) => void } {
   const opener = (document.activeElement as HTMLElement | null)?.dataset.key;
+  const problem = h("span", { lang: "en" });
+  const error = h("div", { class: "callout callout--danger", role: "alert", hidden: true }, icon("alert"), problem);
   const fail = (text: string) => {
-    error.textContent = text;
+    problem.textContent = text;
     error.hidden = false;
+    error.scrollIntoView({ block: "nearest" });
   };
-  const error = h("p", { class: "error", role: "alert", hidden: true });
-  const cancel = button("Cancel", () => el.close(), { kind: "plain" });
-  const submit = h("button", { type: "submit", class: "btn " + (opts.danger ? "danger" : "primary") }, opts.submit);
+  const cancel = button(t.common.cancel, () => el.close());
+  const submitLabel = h("span", null, opts.submit);
+  const submit = h(
+    "button",
+    { type: "submit", class: classes("btn", opts.danger ? "btn--danger" : "btn--primary") },
+    opts.submitIcon && icon(opts.submitIcon),
+    submitLabel,
+  );
+  const settle = () => {
+    const state = opts.submitState?.();
+    if (state) {
+      submit.disabled = state.disabled;
+      submitLabel.textContent = state.label ?? opts.submit;
+    }
+  };
   // a destructive dialog starts on Cancel
   (opts.danger ? cancel : submit).toggleAttribute("autofocus", true);
-  const heading = h("h2", { id: "dialog-title" }, opts.title);
   const form = h(
     "form",
     {
       method: "dialog",
       novalidate: true,
+      class: "dialog-form",
       // a complaint goes away once the form is touched again
-      oninput: () => (error.hidden = true),
+      oninput: (e) => {
+        error.hidden = true;
+        if (e.target instanceof HTMLElement && e.target.hasAttribute("aria-invalid")) {
+          setFieldError(e.target, "");
+        }
+        settle();
+      },
       onsubmit: (e) => {
         e.preventDefault();
-        const problem = opts.validate?.() ?? "";
-        if (problem !== "") {
-          fail(problem);
+        if (opts.validate && !opts.validate()) {
+          form.querySelector<HTMLElement>("[aria-invalid]")?.focus();
           return;
         }
         el.close();
         opts.onSubmit();
       },
     },
-    heading,
-    h("div", { class: "dialog-body" }, ...opts.content),
-    error,
-    h("div", { class: "dialog-actions" }, cancel, submit),
+    h(
+      "div",
+      { class: "dialog-head" },
+      h("h2", { class: "dialog-title", id: "dialog-title" }, ...opts.title),
+      opts.text && h("p", { class: "dialog-desc" }, ...opts.text),
+    ),
+    h("div", { class: "dialog-body" }, ...opts.content, error),
+    h("div", { class: "dialog-foot" }, cancel, submit),
   );
   const el = h(
     "dialog",
     {
+      class: classes("dialog", opts.narrow && "dialog--narrow"),
+      role: opts.danger ? "alertdialog" : undefined,
       "aria-labelledby": "dialog-title",
       onclose: () => {
         el.remove();
@@ -257,76 +544,98 @@ export function dialog(opts: DialogOptions): { close: () => void; fail: (text: s
     form,
   );
   document.body.append(el);
+  settle();
   el.showModal();
   // a field comes before the buttons for typing dialogs
-  const first = form.querySelector<HTMLElement>(".dialog-body input:not([type=checkbox]), .dialog-body select");
+  const first = form.querySelector<HTMLElement>(".dialog-body input:not([type=checkbox]):not([type=radio]), .dialog-body select");
   if (first && !opts.danger) {
     first.focus();
   }
   return { close: () => el.close(), fail };
 }
 
-// field is a labelled control with room for a hint and an error.
-export function field(label: string, control: HTMLElement, hint = ""): HTMLLabelElement {
+let fields = 0;
+
+// field is a labelled control with room for an error and a hint. control
+// may be a row that holds the input next to a button.
+export function field(label: string, control: HTMLElement, ...hint: Child[]): HTMLElement {
+  const target = control.matches("input, select") ? control : control.querySelector<HTMLElement>("input, select");
+  if (target && target.id === "") {
+    target.id = "field-" + ++fields;
+  }
   return h(
-    "label",
+    "div",
     { class: "field" },
-    h("span", { class: "field-label" }, label),
+    h("label", { class: "label", for: target?.id }, label),
     control,
-    hint !== "" && h("span", { class: "hint" }, hint),
-    h("span", { class: "field-error", role: "alert" }),
+    h("p", { class: "field-error", role: "alert" }),
+    hint.length > 0 && h("p", { class: "hint" }, ...hint),
   );
 }
 
-export function setFieldError(control: HTMLElement, text: string): void {
-  const slot = control.closest(".field")?.querySelector(".field-error");
+// Where a control's complaint goes when it is not the line of its own field.
+const errorSlots = new WeakMap<HTMLElement, Element>();
+
+// setFieldError shows what is wrong with a control under it; "" takes the
+// complaint away. slot is another place for it, remembered for the
+// control: a line that controls in one row share.
+export function setFieldError(control: HTMLElement, text: string, slot?: Element): void {
   if (slot) {
-    slot.textContent = text;
+    errorSlots.set(control, slot);
   }
-  control.toggleAttribute("aria-invalid", text !== "");
+  const place = errorSlots.get(control) ?? control.closest(".field")?.querySelector(".field-error");
+  place?.replaceChildren(...(text === "" ? [] : [icon("alert", "sm"), h("span", null, text)]));
+  if (text === "") {
+    control.removeAttribute("aria-invalid");
+  } else {
+    control.setAttribute("aria-invalid", "true");
+  }
+}
+
+export function input(props: Record<string, Value> = {}): HTMLInputElement {
+  return h("input", { type: "text", class: "input", spellcheck: "false", autocomplete: "off", ...props });
 }
 
 export function select(options: { value: string; label: string }[], value: string, props: Record<string, Value> = {}): HTMLSelectElement {
-  const el = h("select", props, ...options.map((o) => h("option", { value: o.value }, o.label)));
+  const el = h("select", { class: "select", ...props }, ...options.map((o) => h("option", { value: o.value }, o.label)));
   el.value = value;
   return el;
 }
 
 export function checkbox(
-  label: string,
+  label: Child[],
   checked: boolean,
   props: Record<string, Value> = {},
-): { box: HTMLInputElement; text: HTMLElement; el: HTMLLabelElement } {
+): { box: HTMLInputElement; el: HTMLLabelElement } {
   const box = h("input", { type: "checkbox", ...props });
   box.checked = checked;
-  const text = h("span", null, label);
-  return { box, text, el: h("label", { class: "check" }, box, text) };
+  return { box, el: h("label", { class: "check" }, box, h("span", null, ...label)) };
 }
 
 // command is a command line with a button that copies it.
 export function command(line: string): HTMLElement {
-  const copy = button("Copy", () => {
-    copyText(line).then(
-      (ok) => (copy.textContent = ok ? "Copied" : "Copy failed"),
-      () => (copy.textContent = "Copy failed"),
-    );
+  const said = h("span", { class: "cmd-copied", role: "status", hidden: true });
+  let timer = 0;
+  const say = (ok: boolean) => {
+    said.textContent = ok ? t.common.copied : t.common.copyFailed;
+    said.toggleAttribute("data-failed", !ok);
+    said.hidden = false;
+    copy.replaceChildren(icon(ok ? "check" : "copy", "sm"));
+    window.clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      said.hidden = true;
+      copy.replaceChildren(icon("copy", "sm"));
+    }, 1600);
+  };
+  const copy = iconButton("copy", t.common.copyCommand(line), () => void copyText(line).then(say, () => say(false)), {
+    tip: t.common.copy,
+    small: true,
   });
-  copy.classList.add("small");
-  return h("div", { class: "command" }, h("code", null, line), copy);
-}
-
-export function table(headers: string[], rows: HTMLTableRowElement[]): HTMLElement {
   return h(
     "div",
-    { class: "table-wrap" },
-    h("table", null, h("thead", null, h("tr", null, ...headers.map((t) => h("th", { scope: "col" }, t)))), h("tbody", null, ...rows)),
+    { class: "cmd" },
+    h("code", { class: "cmd-text", lang: "en" }, h("span", { class: "cmd-prompt", "aria-hidden": "true" }, "> "), line),
+    said,
+    copy,
   );
-}
-
-export function empty(title: string, text: string, ...actions: Child[]): HTMLElement {
-  return h("div", { class: "empty" }, h("h2", null, title), h("p", null, text), ...actions);
-}
-
-export function pageHeader(title: string, ...actions: Child[]): HTMLElement {
-  return h("header", { class: "page-header" }, h("h1", null, title), h("div", { class: "page-actions" }, ...actions));
 }

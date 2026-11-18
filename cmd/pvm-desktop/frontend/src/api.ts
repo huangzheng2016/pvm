@@ -191,19 +191,42 @@ declare global {
   }
 }
 
-export const backend = (): Backend => window.go.desktop.App;
-
-export function onTask(callback: (task: Task) => void): void {
-  window.runtime.EventsOn("task", callback);
+// Bridge is all the page needs from its host: the bound methods, the two
+// events and two services of the window.
+export interface Bridge {
+  backend(): Backend;
+  onTask(callback: (task: Task) => void): void;
+  onTaskOutput(callback: (output: TaskOutput) => void): void;
+  windowIsMinimised(): Promise<boolean>;
+  copyText(text: string): Promise<boolean>;
 }
 
-export function onTaskOutput(callback: (output: TaskOutput) => void): void {
-  window.runtime.EventsOn("task-output", callback);
+let bridge: Bridge = {
+  backend: () => window.go.desktop.App,
+  onTask: (callback) => void window.runtime.EventsOn("task", callback),
+  onTaskOutput: (callback) => void window.runtime.EventsOn("task-output", callback),
+  windowIsMinimised: () => window.runtime.WindowIsMinimised(),
+  copyText: (text) => window.runtime.ClipboardSetText(text),
+};
+
+// bound is false where no Wails window carries the page, as under
+// `npm run dev` in a browser.
+export const bound = (): boolean => "go" in window;
+
+// connect puts another host in place of the Wails bindings: mock.ts.
+export function connect(other: Bridge): void {
+  bridge = other;
 }
 
-export const windowIsMinimised = (): Promise<boolean> => window.runtime.WindowIsMinimised();
+export const backend = (): Backend => bridge.backend();
 
-export const copyText = (text: string): Promise<boolean> => window.runtime.ClipboardSetText(text);
+export const onTask = (callback: (task: Task) => void): void => bridge.onTask(callback);
+
+export const onTaskOutput = (callback: (output: TaskOutput) => void): void => bridge.onTaskOutput(callback);
+
+export const windowIsMinimised = (): Promise<boolean> => bridge.windowIsMinimised();
+
+export const copyText = (text: string): Promise<boolean> => bridge.copyText(text);
 
 // errorText reads a rejected call: the backend rejects with a string.
 export function errorText(e: unknown): string {

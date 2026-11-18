@@ -2,6 +2,8 @@
 
 import { backend, errorText, type Exit, type Settings, type State, type Task, type VM, type Workspace } from "./api";
 import { button, h } from "./dom";
+import { onLanguage, t } from "./i18n";
+import { icon } from "./icons";
 import * as tasks from "./tasks";
 
 export const data = {
@@ -95,11 +97,20 @@ export function refresh(): Promise<void> {
   return refreshing;
 }
 
-const toasts = h("div", { class: "toasts", role: "alert" });
+const toasts = h("div", { class: "toasts", role: "region", "aria-label": t.common.notices });
 export const toastArea: HTMLElement = toasts;
+onLanguage(() => toasts.setAttribute("aria-label", t.common.notices));
 
-export function toast(text: string): void {
-  const el = h("div", { class: "toast" }, h("span", null, text), button("Dismiss", () => el.remove(), { kind: "plain" }));
+// toast reports something that went wrong. detail is the backend's own
+// words. It stays until dismissed: a failure should not slip by.
+export function toast(title: string, detail = ""): void {
+  const el = h(
+    "div",
+    { class: "toast", role: "alert" },
+    icon("alert"),
+    h("div", { class: "grow" }, h("p", { class: "toast-title" }, title), detail !== "" && h("p", { class: "toast-text", lang: "en" }, detail)),
+    button(t.common.dismiss, () => el.remove(), { kind: "ghost", size: "sm" }),
+  );
   toasts.append(el);
   while (toasts.childElementCount > 3) {
     toasts.firstElementChild?.remove();
@@ -126,13 +137,13 @@ export async function act(keys: string[], call: () => Promise<Task | void>, quie
       tasks.record(task);
       if (!task.ok && !quiet) {
         tasks.reveal(task.id);
-        toast(task.title + " failed: " + task.error);
+        toast(t.common.failed(task.title), task.error);
       }
     }
   } catch (e) {
     outcome.error = errorText(e);
     if (!quiet) {
-      toast(outcome.error);
+      toast(t.common.notRun, outcome.error);
     }
   }
   // the lists are current again before the controls come back
