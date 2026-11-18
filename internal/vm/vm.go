@@ -71,6 +71,10 @@ type Spec struct {
 	SmbiosSpoof bool   `json:"smbios_spoof,omitempty"`
 	PrevTZ      string `json:"prev_tz,omitempty"`
 	PrevLocale  string `json:"prev_locale,omitempty"`
+	// RegionPending is set when the VM's exit changed while it was
+	// stopped: the timezone/locale of that exit can only be set in a
+	// running guest, so the next start does it before the VM is ready.
+	RegionPending bool `json:"region_pending,omitempty"`
 
 	// IdentityReset marks a fresh clone whose guest identity (hostname,
 	// machine-id, ssh host keys) must be regenerated after first boot.

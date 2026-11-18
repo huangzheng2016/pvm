@@ -22,6 +22,10 @@ type routeOpsRecorder struct {
 	startErr  error
 	pushErr   error
 	pushCalls int
+	// gatewayDown makes a stopped VM's switch skip the push.
+	gatewayDown bool
+	gatewayErr  error
+	deferErr    error
 }
 
 func (r *routeOpsRecorder) ops() vmRouteOps {
@@ -38,18 +42,23 @@ func (r *routeOpsRecorder) ops() vmRouteOps {
 			}
 			return nil
 		},
+		gatewayRunning: func() (bool, error) {
+			r.events = append(r.events, "gateway")
+			return !r.gatewayDown, r.gatewayErr
+		},
+		deferRegion: func() error { r.events = append(r.events, "deferRegion"); return r.deferErr },
 	}
 }
 
 func TestSwitchVMRouteStopsBeforeSetExit(t *testing.T) {
 	s := newPushTestServer(t)
 	rec := &routeOpsRecorder{running: true}
-	_, restarted, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "", rec.ops())
+	res, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "", rec.ops())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !restarted {
-		t.Fatal("a running vm must be restarted after the switch")
+	if !res.restarted || !res.pushed {
+		t.Fatalf("a running vm must be pushed and restarted, got %+v", res)
 	}
 	want := []string{"running", "stop", "setExit:my-exit", "push", "start"}
 	if !reflect.DeepEqual(rec.events, want) {
@@ -60,14 +69,94 @@ func TestSwitchVMRouteStopsBeforeSetExit(t *testing.T) {
 func TestSwitchVMRouteStoppedStaysStopped(t *testing.T) {
 	s := newPushTestServer(t)
 	rec := &routeOpsRecorder{running: false}
-	_, restarted, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "", rec.ops())
+	res, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "", rec.ops())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if restarted {
+	if res.restarted {
 		t.Fatal("a stopped vm must not be started by a route switch")
 	}
-	want := []string{"running", "setExit:my-exit", "push"}
+	if !res.pushed || !strings.Contains(res.note, "when dev1 next starts") {
+		t.Fatalf("want a pushed config and a deferred region note, got %+v", res)
+	}
+	want := []string{"running", "deferRegion", "setExit:my-exit", "gateway", "push"}
+	if !reflect.DeepEqual(rec.events, want) {
+		t.Fatalf("call order = %v, want %v", rec.events, want)
+	}
+}
+
+func TestSwitchVMRouteStoppedWithoutGatewaySavesOnly(t *testing.T) {
+	s := newPushTestServer(t)
+	rec := &routeOpsRecorder{gatewayDown: true, pushErr: errors.New("gateway unreachable")}
+	res, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "", rec.ops())
+	if err != nil || res.restarted || res.pushed {
+		t.Fatalf("res = %+v, err = %v", res, err)
+	}
+	want := []string{"running", "deferRegion", "setExit:my-exit", "gateway"}
+	if !reflect.DeepEqual(rec.events, want) {
+		t.Fatalf("call order = %v, want %v", rec.events, want)
+	}
+}
+
+func TestSwitchVMRouteStoppedToDirectDefersOnlyARestore(t *testing.T) {
+	s := newPushTestServer(t)
+	rec := &routeOpsRecorder{}
+	res, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "direct", "old-exit", rec.ops())
+	if err != nil || res.note != "" {
+		t.Fatalf("res = %+v, err = %v", res, err)
+	}
+	if want := []string{"running", "setExit:direct", "gateway", "push"}; !reflect.DeepEqual(rec.events, want) {
+		t.Fatalf("call order = %v, want %v", rec.events, want)
+	}
+	rec = &routeOpsRecorder{}
+	res, err = s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1, PrevTZ: "Asia/Tokyo"}, "direct", "old-exit", rec.ops())
+	if err != nil || res.note == "" {
+		t.Fatalf("res = %+v, err = %v", res, err)
+	}
+	if want := []string{"running", "deferRegion", "setExit:direct", "gateway", "push"}; !reflect.DeepEqual(rec.events, want) {
+		t.Fatalf("call order = %v, want %v", rec.events, want)
+	}
+}
+
+func TestSwitchVMRouteStoppedDeferFailureKeepsRoute(t *testing.T) {
+	s := newPushTestServer(t)
+	rec := &routeOpsRecorder{deferErr: errors.New("disk full")}
+	_, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "old-exit", rec.ops())
+	if err == nil || !strings.Contains(err.Error(), "vm route unchanged") || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("got %v", err)
+	}
+	if want := []string{"running", "deferRegion"}; !reflect.DeepEqual(rec.events, want) {
+		t.Fatalf("call order = %v, want %v", rec.events, want)
+	}
+}
+
+func TestSwitchVMRouteStoppedGatewayCheckFailureRollsBack(t *testing.T) {
+	s := newPushTestServer(t)
+	rec := &routeOpsRecorder{gatewayErr: errors.New("pid file unreadable")}
+	_, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "old-exit", rec.ops())
+	if err == nil || !strings.Contains(err.Error(), "vm route unchanged") || !strings.Contains(err.Error(), "pid file unreadable") {
+		t.Fatalf("got %v", err)
+	}
+	want := []string{"running", "deferRegion", "setExit:my-exit", "gateway", "setExit:old-exit"}
+	if !reflect.DeepEqual(rec.events, want) {
+		t.Fatalf("call order = %v, want %v", rec.events, want)
+	}
+}
+
+func TestSwitchVMRouteStoppedPushFailureRollsBack(t *testing.T) {
+	s := newPushTestServer(t)
+	rec := &routeOpsRecorder{pushErr: errors.New("gateway unreachable")}
+	_, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "old-exit", rec.ops())
+	if err == nil {
+		t.Fatal("push failure must fail the switch")
+	}
+	for _, want := range []string{"rolled back to old-exit", "gateway unreachable", "pvm route dev1 --via my-exit"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q must contain %q", err, want)
+		}
+	}
+	// the rollback config is pushed too, and a stopped VM stays stopped
+	want := []string{"running", "deferRegion", "setExit:my-exit", "gateway", "push", "setExit:old-exit", "push"}
 	if !reflect.DeepEqual(rec.events, want) {
 		t.Fatalf("call order = %v, want %v", rec.events, want)
 	}
@@ -76,7 +165,7 @@ func TestSwitchVMRouteStoppedStaysStopped(t *testing.T) {
 func TestSwitchVMRouteStopFailureKeepsRoute(t *testing.T) {
 	s := newPushTestServer(t)
 	rec := &routeOpsRecorder{running: true, stopErr: errors.New("qmp stuck")}
-	_, _, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "", rec.ops())
+	_, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "", rec.ops())
 	if err == nil || !strings.Contains(err.Error(), "route unchanged") {
 		t.Fatalf("stop failure must leave the route unchanged, got %v", err)
 	}
@@ -89,7 +178,7 @@ func TestSwitchVMRouteStopFailureKeepsRoute(t *testing.T) {
 func TestSwitchVMRoutePushFailureRollsBack(t *testing.T) {
 	s := newPushTestServer(t)
 	rec := &routeOpsRecorder{running: true, pushErr: errors.New("gateway unreachable")}
-	_, _, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "old-exit", rec.ops())
+	_, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "old-exit", rec.ops())
 	if err == nil {
 		t.Fatal("push failure must fail the switch")
 	}
@@ -107,7 +196,7 @@ func TestSwitchVMRoutePushFailureRollsBack(t *testing.T) {
 func TestSwitchVMRoutePushFailureRestoreStartFails(t *testing.T) {
 	s := newPushTestServer(t)
 	rec := &routeOpsRecorder{running: true, pushErr: errors.New("gateway unreachable"), startErr: errors.New("qemu exploded")}
-	_, _, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "old-exit", rec.ops())
+	_, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "old-exit", rec.ops())
 	if err == nil || !strings.Contains(err.Error(), "pvm start dev1") {
 		t.Fatalf("restore start failure must hint `pvm start dev1`, got %v", err)
 	}
@@ -119,7 +208,7 @@ func TestSwitchVMRoutePushFailureRestoreStartFails(t *testing.T) {
 func TestSwitchVMRouteStartFailureKeepsRoute(t *testing.T) {
 	s := newPushTestServer(t)
 	rec := &routeOpsRecorder{running: true, startErr: errors.New("qemu exploded")}
-	_, restarted, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "", rec.ops())
+	res, err := s.switchVMRoute(&vm.Spec{Name: "dev1", ClusterID: 1}, "my-exit", "", rec.ops())
 	if err == nil {
 		t.Fatal("start failure must not pretend success")
 	}
@@ -128,7 +217,7 @@ func TestSwitchVMRouteStartFailureKeepsRoute(t *testing.T) {
 			t.Fatalf("error %q must contain %q", err, want)
 		}
 	}
-	if restarted {
+	if res.restarted {
 		t.Fatal("restarted must be false when the restart failed")
 	}
 	// The push succeeded, so the route stays switched: no rollback to the
@@ -139,7 +228,7 @@ func TestSwitchVMRouteStartFailureKeepsRoute(t *testing.T) {
 	}
 }
 
-func TestHandleVMRoutePushFailureRollsBackStore(t *testing.T) {
+func TestHandleVMRouteStoppedWithoutGatewaySavesExit(t *testing.T) {
 	s := newPushTestServer(t)
 	if _, err := s.Clusters.Ensure(1); err != nil {
 		t.Fatal(err)
@@ -163,16 +252,69 @@ func TestHandleVMRoutePushFailureRollsBackStore(t *testing.T) {
 	req := httptest.NewRequest("POST", "/v1/vms/dev1/route", strings.NewReader(`{"via":"new-exit"}`))
 	rr := httptest.NewRecorder()
 	s.handler().ServeHTTP(rr, req)
-	// No gateway VM exists in this environment, so the config push fails
-	// and the handler must roll the store back to the previous exit.
-	if rr.Code != 500 {
-		t.Fatalf("status = %d, want 500 (gateway push must fail without a gateway vm)", rr.Code)
+	// No gateway VM exists and dev1 is stopped: the exit is saved for the
+	// next start, which pushes the config before dev1 boots.
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200: %s", rr.Code, rr.Body.String())
+	}
+	if got := s.Clusters.Get(1).VMExits["dev1"]; got != "new-exit" {
+		t.Fatalf("store has exit %q, want new-exit", got)
+	}
+	if !strings.Contains(rr.Body.String(), `"pushed":false`) {
+		t.Fatalf("the response must say nothing was pushed: %s", rr.Body.String())
+	}
+	saved, err := vm.Load(s.P, "dev1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !saved.RegionPending {
+		t.Fatal("the exit's timezone/locale must be left to the next start")
+	}
+}
+
+// A gateway whose state cannot be read fails the switch, and
+// the handler puts the stored exit back.
+func TestHandleVMRouteGatewayCheckFailureRollsBackStore(t *testing.T) {
+	s := newPushTestServer(t)
+	if _, err := s.Clusters.Ensure(1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Clusters.AddVM(1, "dev1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Clusters.SetVMExit(1, "dev1", "old-exit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := exit.SaveEntry(filepath.Join(s.P.Home, "exits"), &exit.Entry{Name: "new-exit", Server: "vps.example.com:443", Token: "YOUR_TOKEN", Transport: "udp"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, spec := range []*vm.Spec{
+		{Name: "dev1", Role: "user", User: "pvm", ClusterID: 1},
+		{Name: s.Clusters.Get(1).Gateway, Role: "gateway", User: "pvmgw"},
+	} {
+		if err := os.MkdirAll(s.P.VMDir(spec.Name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := spec.Save(s.P); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// an unreadable run state: whether the gateway runs is unknown
+	gw, err := vm.Load(s.P, s.Clusters.Get(1).Gateway)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.instance(gw).StatePath, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/v1/vms/dev1/route", strings.NewReader(`{"via":"new-exit"}`))
+	rr := httptest.NewRecorder()
+	s.handler().ServeHTTP(rr, req)
+	if rr.Code != 500 || !strings.Contains(rr.Body.String(), "vm route unchanged") {
+		t.Fatalf("status = %d, body %s", rr.Code, rr.Body.String())
 	}
 	if got := s.Clusters.Get(1).VMExits["dev1"]; got != "old-exit" {
-		t.Fatalf("route must roll back to old-exit, store has %q", got)
-	}
-	if !strings.Contains(rr.Body.String(), "rolled back") {
-		t.Fatalf("body must say the route rolled back: %s", rr.Body.String())
+		t.Fatalf("store has exit %q, want old-exit", got)
 	}
 }
 
@@ -203,5 +345,49 @@ func TestStartForRouteSwitchFailureHintsPvmStart(t *testing.T) {
 	err := s.startForRouteSwitch(&vm.Spec{Name: "dev1", Role: "user", User: "pvm", ClusterID: 1})
 	if err == nil || !strings.Contains(err.Error(), "pvm start dev1") {
 		t.Fatalf("start failure must hint `pvm start dev1`, got %v", err)
+	}
+}
+
+func TestApplyPendingRegion(t *testing.T) {
+	s := newPushTestServer(t)
+	if _, err := s.Clusters.Ensure(1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Clusters.AddVM(1, "dev1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := exit.SaveEntry(filepath.Join(s.P.Home, "exits"), &exit.Entry{Name: "my-exit", Server: "vps.example.com:443", Token: "YOUR_TOKEN", Transport: "udp", TZ: "Asia/Tokyo"}); err != nil {
+		t.Fatal(err)
+	}
+	spec := &vm.Spec{Name: "dev1", Role: "user", User: "pvm", ClusterID: 1, RegionPending: true}
+	if err := os.MkdirAll(s.P.VMDir("dev1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := spec.Save(s.P); err != nil {
+		t.Fatal(err)
+	}
+
+	// The guest cannot be reached (no gateway VM here): the start must
+	// fail and keep the mark, not report a VM on the exit's region.
+	if err := s.Clusters.SetVMExit(1, "dev1", "my-exit"); err != nil {
+		t.Fatal(err)
+	}
+	err := s.applyPendingRegion(spec)
+	if err == nil || !strings.Contains(err.Error(), "timezone/locale for route my-exit not set") {
+		t.Fatalf("got %v", err)
+	}
+	if saved, _ := vm.Load(s.P, "dev1"); saved == nil || !saved.RegionPending {
+		t.Fatal("a failed apply must keep the mark for the next start")
+	}
+
+	// Nothing to set for a VM without its own exit: the mark is cleared.
+	if err := s.Clusters.SetVMExit(1, "dev1", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.applyPendingRegion(spec); err != nil {
+		t.Fatal(err)
+	}
+	if saved, _ := vm.Load(s.P, "dev1"); saved == nil || saved.RegionPending {
+		t.Fatal("the mark must be cleared once the region is settled")
 	}
 }

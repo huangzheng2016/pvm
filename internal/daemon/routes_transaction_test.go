@@ -109,7 +109,7 @@ func TestSwitchVMRouteRollbackFailureLeavesVMStopped(t *testing.T) {
 					return rollback
 				},
 			}
-			_, _, err := s.switchVMRoute(&vm.Spec{Name: "dev1"}, "my-exit", "", ops)
+			_, err := s.switchVMRoute(&vm.Spec{Name: "dev1"}, "my-exit", "", ops)
 			if !errors.Is(err, original) || !errors.Is(err, rollback) {
 				t.Fatalf("failure causes lost: %v", err)
 			}

@@ -19,6 +19,7 @@ concurrency:
 env:
   GO_VERSION: '1.27.4'
   GARBLE_VERSION: 'v0.18.0'
+  NODE_VERSION: '22.22.1'
   GOVULNCHECK_VERSION: 'v1.9.0'
   CYCLONEDX_VERSION: 'v1.12.0'
   UBUNTU_MIRROR: 'https://mirrors.edge.kernel.org/ubuntu/'
@@ -95,7 +96,7 @@ jobs:
           GOOS=windows GOARCH=amd64 go vet ./...
           GOOS=windows GOARCH=amd64 go build ./...
           sh -n scripts/install.sh
-          bash -n script/build.sh script/pack_assets.sh script/qemu/*.sh script/windows/*.sh
+          bash -n script/build.sh script/build-desktop.sh script/pack_assets.sh script/qemu/*.sh script/windows/*.sh
           python3 -B -m unittest discover -s script/ci -p 'test_*.py'
       - name: Test and vet native VPS agent
         if: ${{ !matrix.host }}
@@ -112,6 +113,11 @@ jobs:
         if: matrix.host
         run: |
           if ! command -v garble >/dev/null; then go install mvdan.cc/garble@"$GARBLE_VERSION"; fi
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        if: matrix.out == 'pvm_linux_amd64'
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          package-manager-cache: false
       - name: Build once and check embedded documentation
         env:
           PVM_PACK_QEMU: '0'
@@ -123,6 +129,7 @@ jobs:
               CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags embedassets -buildvcs=false -trimpath \
                 -ldflags "-s -w -buildid= -X github.com/huangzheng2016/pvm/internal/buildinfo.Version=${PVM_VERSION}" \
                 -o pvm.exe ./cmd/pvm
+              bash script/build-desktop.sh
             fi
           else
             CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags "-s -w -buildid= -X github.com/huangzheng2016/pvm/internal/buildinfo.Version=${PVM_VERSION}" -o pvm ./cmd/pvm
@@ -145,6 +152,13 @@ jobs:
         with:
           name: raw-pvm_windows_amd64
           path: pvm.exe
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: github.event_name == 'push' && matrix.out == 'pvm_linux_amd64'
+        with:
+          name: raw-pvm-desktop_windows_amd64
+          path: pvm-desktop.exe
           retention-days: 14
           if-no-files-found: error
 
@@ -183,7 +197,7 @@ jobs:
         run: |
           go vet ./...
           go build ./...
-          go test ./cmd/agent ./cmd/assetpack ./cmd/pvm ./internal/agent ./internal/assets ./internal/cluster ./internal/config             ./internal/gw/policy ./internal/gw/rules ./internal/stream ./internal/tunnel ./internal/warp             ./internal/workspace ./internal/workspace/guest ./internal/workspace/sftpd ./internal/workspace/threeway
+          go test ./cmd/agent ./cmd/assetpack ./cmd/pvm ./internal/agent ./internal/assets ./internal/cluster ./internal/config ./internal/desktop             ./internal/gw/policy ./internal/gw/rules ./internal/stream ./internal/tunnel ./internal/warp             ./internal/workspace ./internal/workspace/guest ./internal/workspace/sftpd ./internal/workspace/threeway
           go test ./internal/cli -run '^(TestClip|TestExtractClip|TestResolveVM|TestResolveImageSpec|TestWorkspace|TestVMWorkspaceNotes|TestRewriteWorkspaceArgsForWSL)'
 
   network:
@@ -302,6 +316,12 @@ jobs:
           name: raw-pvm_windows_amd64
           github-token: ${{ github.token }}
           run-id: ${{ needs.prepare.outputs.run_id || github.run_id }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        if: matrix.out == 'pvm_linux_amd64'
+        with:
+          name: raw-pvm-desktop_windows_amd64
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.prepare.outputs.run_id || github.run_id }}
       - name: Verify reused binary
         run: |
           chmod +x pvm
@@ -313,6 +333,10 @@ jobs:
             go version -m pvm.exe > "$RUNNER_TEMP/build-info-win.txt"
             grep -F 'go1.27.4' "$RUNNER_TEMP/build-info-win.txt"
             grep -F 'github.com/huangzheng2016/pvm/cmd/pvm' "$RUNNER_TEMP/build-info-win.txt"
+            go version -m pvm-desktop.exe > "$RUNNER_TEMP/build-info-desktop.txt"
+            grep -F 'go1.27.4' "$RUNNER_TEMP/build-info-desktop.txt"
+            grep -F 'github.com/huangzheng2016/pvm/cmd/pvm-desktop' "$RUNNER_TEMP/build-info-desktop.txt"
+            grep -F -e '-tags=desktop,production,wv2runtime.browser' "$RUNNER_TEMP/build-info-desktop.txt"
           fi
       - name: Record QEMU package inputs
         if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
@@ -372,11 +396,12 @@ jobs:
             QEMU_METADATA_JSON=qemu-windows.json ./script/qemu/pack-windows-runtime.sh "$RUNNER_TEMP/win-qemu/x86_64"
             tar -czf pvm-qemu-runtime-windows-x86_64.tar.gz -C "$RUNNER_TEMP/win-qemu" x86_64
             ./script/windows/fetch-xpra-client.sh "$RUNNER_TEMP/win-xpra"
-            ./script/windows/pack-setup.sh pvm.exe "$RUNNER_TEMP/win-qemu/x86_64" "$RUNNER_TEMP/win-xpra" pvm_windows_amd64_setup
+            ./script/windows/pack-setup.sh pvm.exe pvm-desktop.exe "$RUNNER_TEMP/win-qemu/x86_64" "$RUNNER_TEMP/win-xpra" pvm_windows_amd64_setup
             QEMU_METADATA_JSON=qemu-linux.json ./script/qemu/pack-linux-runtime.sh "$RUNNER_TEMP/linux-qemu/x86_64"
             tar -czf pvm-qemu-runtime-linux-x86_64.tar.gz -C "$RUNNER_TEMP/linux-qemu" x86_64
             tar -czf pvm_windows_amd64.tar.gz pvm.exe
             go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@"$CYCLONEDX_VERSION" bin -json -std -version "$(cat VERSION)" -output pvm_windows_amd64.cdx.json pvm.exe
+            go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@"$CYCLONEDX_VERSION" bin -json -std -version "$(cat VERSION)" -output pvm-desktop_windows_amd64.cdx.json pvm-desktop.exe
           fi
           tar -czf '${{ matrix.out }}.tar.gz' pvm
           go run github.com/CycloneDX/cyclonedx-gomod/cmd/cyclonedx-gomod@"$CYCLONEDX_VERSION" bin -json -std -version "$(cat VERSION)" -output '${{ matrix.out }}.cdx.json' pvm

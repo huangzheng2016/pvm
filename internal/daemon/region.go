@@ -73,6 +73,32 @@ func (s *Server) applyRegionProfile(spec *vm.Spec, via string) string {
 	return s.setGuestRegion(spec, tz, locale)
 }
 
+// applyPendingRegion sets the timezone/locale that belong to the VM's own
+// exit once the guest answers ssh, for a route switched while the VM was
+// stopped. The mark stays on failure, so the next start tries again.
+func (s *Server) applyPendingRegion(spec *vm.Spec) error {
+	via := ""
+	if cl := s.Clusters.Get(spec.ClusterID); cl != nil {
+		via = cl.VMExits[spec.Name]
+	}
+	var note string
+	if via == "" || via == "direct" {
+		note = s.restoreRegion(spec)
+	} else {
+		note = s.applyRegionProfile(spec, via)
+	}
+	if note != "" && !strings.HasPrefix(note, "region applied") {
+		return fmt.Errorf("timezone/locale for route %s not set: %s", routeExitLabel(via), note)
+	}
+	spec.RegionPending = false
+	if err := spec.Save(s.P); err != nil {
+		spec.RegionPending = true
+		return fmt.Errorf("save %s spec: %w", spec.Name, err)
+	}
+	s.cacheSpec(spec)
+	return nil
+}
+
 func (s *Server) restoreRegion(spec *vm.Spec) string {
 	if spec.PrevTZ == "" && spec.PrevLocale == "" {
 		return ""

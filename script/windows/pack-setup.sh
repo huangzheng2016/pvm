@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# pack-setup.sh: build the per-user Windows installers from a built pvm.exe, an
-# assembled Windows QEMU runtime (script/qemu/pack-windows-runtime.sh) and the
-# Xpra client for `pvm app` (script/windows/fetch-xpra-client.sh):
-# <out>.exe (NSIS) and <out>.msi (wixl).
+# pack-setup.sh: build the per-user Windows installers from a built pvm.exe,
+# pvm-desktop.exe (script/build-desktop.sh), an assembled Windows QEMU runtime
+# (script/qemu/pack-windows-runtime.sh) and the Xpra client for `pvm app`
+# (script/windows/fetch-xpra-client.sh): <out>.exe (NSIS) and <out>.msi (wixl).
 #
-#   ./script/windows/pack-setup.sh <pvm.exe> <runtime-x86_64-dir> <xpra-dir> [out-basename]
+#   ./script/windows/pack-setup.sh <pvm.exe> <pvm-desktop.exe> <runtime-x86_64-dir> <xpra-dir> [out-basename]
 #
 # Needs makensis (NSIS 3) for exe and wixl/wixl-heat (msitools) plus python3
 # for msi; on Ubuntu: apt install nsis wixl. PVM_SETUP_FORMATS selects a subset, e.g.
@@ -12,12 +12,13 @@
 set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
-[ $# -ge 3 ] || { echo "usage: $0 <pvm.exe> <runtime-x86_64-dir> <xpra-dir> [out-basename]" >&2; exit 2; }
+[ $# -ge 4 ] || { echo "usage: $0 <pvm.exe> <pvm-desktop.exe> <runtime-x86_64-dir> <xpra-dir> [out-basename]" >&2; exit 2; }
 abs() { (cd "$(dirname "$1")" && printf '%s/%s\n' "$(pwd)" "$(basename "$1")"); }
 PVM_EXE=$(abs "$1")
-RUNTIME_DIR=$(cd "$2" && pwd)
-XPRA_DIR=$(cd "$3" && pwd)
-OUT=$(abs "${4:-pvm_windows_amd64_setup}")
+DESKTOP_EXE=$(abs "$2")
+RUNTIME_DIR=$(cd "$3" && pwd)
+XPRA_DIR=$(cd "$4" && pwd)
+OUT=$(abs "${5:-pvm_windows_amd64_setup}")
 FORMATS=${PVM_SETUP_FORMATS:-exe msi}
 # tr: a CRLF checkout (core.autocrlf) would otherwise leave \r in the version.
 VERSION=$(printf %s "${PVM_VERSION:-$(cat "$SCRIPT_DIR/../../VERSION")}" | tr -d '\r\n')
@@ -29,6 +30,7 @@ case "$MSI_VERSION" in
 esac
 
 [ -f "$PVM_EXE" ] || { echo "error: $PVM_EXE not found" >&2; exit 1; }
+[ -f "$DESKTOP_EXE" ] || { echo "error: $DESKTOP_EXE not found" >&2; exit 1; }
 for f in bin/qemu-system-x86_64.exe bin/qemu-img.exe bin/share/bios-256k.bin; do
   [ -f "$RUNTIME_DIR/$f" ] || { echo "error: runtime is missing $f" >&2; exit 1; }
 done
@@ -51,6 +53,7 @@ build_exe() {
   "$makensis" -V2 -WX -INPUTCHARSET UTF8 \
     "-DVERSION=$VERSION" \
     "-DPVM_EXE=$(native "$PVM_EXE")" \
+    "-DDESKTOP_EXE=$(native "$DESKTOP_EXE")" \
     "-DRUNTIME_DIR=$(native "$RUNTIME_DIR")" \
     "-DXPRA_DIR=$(native "$XPRA_DIR")" \
     "-DOUTFILE=$(native "$OUT.exe")" \
@@ -72,7 +75,7 @@ build_msi() {
   wixl -a x64 \
     -D "Version=$VERSION" -D "MsiVersion=$MSI_VERSION" -D Win64=yes \
     -D "RunningPs1B64=$running_b64" \
-    -D "PvmExe=$PVM_EXE" -D "RuntimeDir=$RUNTIME_DIR" -D "XpraDir=$XPRA_DIR" -D "UserPathPs1=$SCRIPT_DIR/user-path.ps1" \
+    -D "PvmExe=$PVM_EXE" -D "DesktopExe=$DESKTOP_EXE" -D "RuntimeDir=$RUNTIME_DIR" -D "XpraDir=$XPRA_DIR" -D "UserPathPs1=$SCRIPT_DIR/user-path.ps1" \
     -o "$OUT.msi" "$SCRIPT_DIR/pvm-setup.wxs" "$work/runtime.wxs" "$work/xpra.wxs"
   echo "built $OUT.msi"
 }

@@ -13,7 +13,7 @@ Personal QEMU dev VMs in a single binary: create an isolated Linux development m
 - **The full desktop in a browser tab.** `pvm desktop` opens the VM's own desktop, the same machine you reach over SSH. See [Browser desktop](#browser-desktop).
 - **Your project folders in the VM.** Mount a folder, keep two synced copies, or upload once and download the result. In a project folder, `pvm ssh` opens a shell in the same folder in its VM, and offers to start the VM first. See [Workspaces](#workspaces).
 - **Snapshots in seconds and clones**, loopback port maps, and a read-only `pvm audit` of routing and DNS.
-- **Windows without administrator rights.** One installer brings pvm, QEMU and the Xpra client. See [Windows installers](#windows-installers).
+- **Windows without administrator rights.** One installer brings pvm, the pvm Desktop app, QEMU and the Xpra client. See [Windows installers](#windows-installers) and [pvm Desktop](#pvm-desktop).
 
 ## Roadmap
 
@@ -39,7 +39,7 @@ Planned:
 - [ ] Input method candidates that follow the app's text cursor
 - [ ] `pvm desktop` as a host window like `pvm app`, opening the workspace folder in the VM's file manager
 - [ ] Windows CI: the remaining packages' tests, and an installer smoke test on tags
-- [ ] A graphical app like Docker Desktop for creating VMs, exits, workspaces and app presets (native Windows first)
+- [ ] pvm Desktop, a graphical app like Docker Desktop for creating VMs, exits, workspaces and app presets: built for native Windows and shipped in the installers, not yet tested end to end on Windows
 
 Candidates:
 
@@ -60,13 +60,14 @@ pvm runs on macOS on arm64, Linux on amd64, and Windows on amd64.
 
 1. Download `pvm_windows_amd64_setup.exe` or `pvm_windows_amd64_setup.msi` from [Releases](../../releases). Optionally verify it first: `gh attestation verify pvm_windows_amd64_setup.exe --repo BitterOrange/pvm`.
 2. Run it. No administrator rights are needed.
-3. Open a new terminal, so the `PATH` change applies, and run `pvm doctor` to check acceleration and the backend.
+3. Open a new terminal, so the `PATH` change applies, and run `pvm doctor` to check acceleration and the backend. Or open **pvm Desktop** from the Start menu; see [pvm Desktop](#pvm-desktop).
 
-Both installers put `pvm.exe` in `%LOCALAPPDATA%\pvm`, add it to the user `PATH`, install the Xpra client to `%LOCALAPPDATA%\pvm\xpra`, and install the QEMU runtime to `%USERPROFILE%\.pvm\runtime\qemu\x86_64`, or under `PVM_HOME` when it is set. Use one installer type per machine; `pvm upgrade` updates either.
+Both installers put `pvm.exe` and `pvm-desktop.exe` in `%LOCALAPPDATA%\pvm`, add that folder to the user `PATH`, add a "pvm Desktop" shortcut to your Start menu, install the Xpra client to `%LOCALAPPDATA%\pvm\xpra`, and install the QEMU runtime to `%USERPROFILE%\.pvm\runtime\qemu\x86_64`, or under `PVM_HOME` when it is set. Use one installer type per machine. `pvm upgrade` updates `pvm.exe` and the QEMU runtime of either; it does not update `pvm-desktop.exe`, so run the new installer to update the app.
 
-- Files in use by a running pvm or VM cannot be replaced. Interactive runs offer to stop the daemon, which also stops running VMs; silent runs (`/S`, `msiexec /qn`) refuse, so run `pvm daemon stop` first.
+- The last page of the `.exe` installer offers "Open pvm Desktop", off by default. The MSI has no such page.
+- Files in use by a running pvm, VM or pvm Desktop cannot be replaced. Interactive runs offer to close pvm Desktop and stop the daemon, which also stops running VMs; silent runs (`/S`, `msiexec /qn`) refuse, so close pvm Desktop and run `pvm daemon stop` first.
 - Silent MSI install: `msiexec /i pvm_windows_amd64_setup.msi /qn`. Pass `PVMHOME=D:\pvm-home` to choose the data location; upgrades and uninstalls reuse it.
-- Uninstalling from Settings > Apps removes pvm, the runtime, the Xpra client and the `PATH` entry. VM disks, keys and configuration under `~/.pvm` are kept.
+- Uninstalling from Settings > Apps removes pvm, pvm Desktop with its Start menu shortcut and its "open at login" entry, the runtime, the Xpra client and the `PATH` entry. VM disks, keys and configuration under `~/.pvm` are kept.
 
 <details>
 <summary>Known limitations of the Windows installers</summary>
@@ -75,7 +76,8 @@ Both installers put `pvm.exe` in `%LOCALAPPDATA%\pvm`, add it to the user `PATH`
 - Stopping the daemon from setup waits for running VMs to shut down, up to about three minutes, and setup shows no progress meanwhile.
 - VMs left running without a daemon cannot be stopped by setup. Setup lists them and refuses; shut them down, then run setup again.
 - Antivirus software briefly locks freshly unpacked files. Setup retries each file move for up to 10 seconds; if the lock lasts longer, setup stops and keeps the previous version. Run setup again.
-- After `pvm upgrade`, Settings > Apps still shows the version the installer put there.
+- After `pvm upgrade`, Settings > Apps still shows the version the installer put there, and pvm Desktop stays at that version.
+- The pvm Desktop parts of the installers (the shortcut, closing a running app, and removing its entries on uninstall) have been built but not yet run on Windows.
 
 </details>
 
@@ -109,6 +111,8 @@ pvm map dev1 8080:80
 pvm exit add-warp my-warp
 pvm route dev1 --via my-warp
 ```
+
+`pvm list` shows each VM as `stopped`, `starting` with the current stage, `ready` or `failed`; the hint for a failed VM is printed below the table.
 
 Each VM gets a private host folder at `/share` (`~/.pvm/vms/<name>/share`) where 9p is available; `pvm mount` adds more, with the mount profiles described in [SKILL.md](SKILL.md).
 
@@ -154,9 +158,13 @@ pvm app ls
 pvm app config dev1 --clipboard both --drop on --audio both
 pvm app attach dev1
 pvm app stop dev1 --all
+pvm app catalog
+pvm app install dev1 claude-code codex claude-desktop
 ```
 
 Clipboard and drops are off until you enable them per VM. With `--clipboard to-guest` or `both`, host content enters the VM only when one of its windows comes to the front or you copy while it is there, and content that password managers mark as excluded is never sent. Text, images and, on Windows hosts, files and folders copy both ways. Text typed with a host input method, such as Chinese with Microsoft Pinyin or emoji from the emoji panel, reaches the app as well. Sound plays on the host's speakers; `--audio both` also lends the VM the host's microphone. See [docs/design/app.md](docs/design/app.md).
+
+`pvm app catalog` lists the apps pvm can install for you: Claude Code, Codex CLI and Claude Desktop, each the vendor's official Linux build. `pvm app install [<vm>] <id>...` runs the app's built-in install script as root inside the VM; downloads happen in the VM and leave through its exit, never through the host. `pvm app ls` also shows the catalog apps installed in each VM.
 
 ### Browser desktop
 
@@ -179,13 +187,30 @@ pvm workspace clone web ~/src/web-result
 pvm workspace rm web
 ```
 
-Inside a workspace folder, commands such as `pvm ssh`, `pvm exec`, `pvm app` and `pvm map` can leave out the VM name and use the workspace's VM; `pvm ssh` starts in the matching directory. Outside a workspace they use the only VM, if there is one. At a terminal pvm asks before starting a stopped VM.
+Inside a workspace folder, commands such as `pvm ssh`, `pvm exec`, `pvm app` and `pvm map` can leave out the VM name and use the workspace's VM; `pvm ssh` and commands started with `pvm app` start in the matching directory. Outside a workspace they use the VM set with `pvm default-vm dev1` (stored as `default_vm` in `~/.pvm/config.yaml`; `pvm default-vm --clear` removes it), else the only VM, if there is one. At a terminal pvm asks before starting a stopped VM.
 
 Uploads skip `.gitignore` matches and `node_modules`; a `.pvmignore` file adds or re-includes paths. pvm refuses to upload or mount the home directory, a file system root, its own data directory, or a tree with credentials such as `.ssh` or `.aws`, and `pvm workspace rm` never deletes host files. See [docs/design/workspace.md](docs/design/workspace.md).
 
 ### Windows installers
 
-Releases ship `pvm_windows_amd64_setup.exe` and `pvm_windows_amd64_setup.msi`: per-user installers that need no administrator rights and bring pvm, the bundled QEMU runtime and the Xpra client for `pvm app` in one step. They detect a running pvm before replacing files and keep your VMs on uninstall. See [Installation on Windows](#windows).
+Releases ship `pvm_windows_amd64_setup.exe` and `pvm_windows_amd64_setup.msi`: per-user installers that need no administrator rights and bring pvm, pvm Desktop, the bundled QEMU runtime and the Xpra client for `pvm app` in one step. They detect a running pvm before replacing files and keep your VMs on uninstall. See [Installation on Windows](#windows).
+
+### pvm Desktop
+
+pvm Desktop is a window for the common paths, on Windows with the native (WHPX) backend. Open it from the Start menu, or run `pvm-desktop.exe`.
+
+- **VMs.** See each VM's state and startup stage; start, stop and delete; open a terminal, an app or the file manager; install catalog apps; set the default VM.
+- **Create.** A form for a new VM with its size, exit, clipboard, drop and audio settings, and the catalog apps to preinstall. The exit is set before the VM's first boot.
+- **Exits.** Add, test and remove exits, set the default exit and change a VM's exit.
+- **Workspaces.** Create and remove workspaces, push and pull, and open the host folder, a terminal, an app or the file manager in the matching guest folder.
+- **Settings.** The default VM, starting the daemon at login and opening the app at login.
+
+The app does nothing the CLI cannot: every change runs `pvm.exe`, and its output shows in the window. Notes:
+
+- It needs the Microsoft Edge WebView2 Runtime, which Windows 10 and 11 normally have. When it is missing, the app says so and opens Microsoft's download page; nothing is installed for you.
+- With the WSL2 backend the app only shows an explanation; use the CLI there.
+- `pvm upgrade` does not update the app. When the app and the daemon report different versions, Settings says so; run the new installer.
+- It is new and has not yet been tested end to end on Windows. There is no tray icon, and no screens for snapshots, port maps, mounts or logs. See [docs/design/gui.md](docs/design/gui.md).
 
 ### Architecture
 
@@ -254,6 +279,8 @@ go install mvdan.cc/garble@v0.18.0
 .\script\build.ps1
 .\pvm.exe version
 ```
+
+`./script/build-desktop.sh` builds `pvm-desktop.exe` on any host with Go and Node.js 22 (npm): it builds the frontend in `cmd/pvm-desktop/frontend`, then cross-compiles the app. `go build ./...` and `go test ./...` need no Node.js, as the frontend is only embedded by that script.
 
 Do not run the full `go test ./...` on a Windows host. The test suite is written for Unix (file permission bits, paths such as `/tmp`, symlinks, and tools like `ip`, `gh` and `bash`), so many tests fail there for reasons unrelated to your change, and the `internal/cli` tests keep respawning themselves and leave `cli.test.exe` processes behind. On Windows, run only targeted tests for what you changed, for example `go test ./internal/qemu -run Accel`, and rely on Linux or macOS (CI or WSL2) for the full suite.
 

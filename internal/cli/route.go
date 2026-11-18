@@ -115,16 +115,23 @@ func CmdRoute(args []string) int {
 			return fatalf("%v", err)
 		}
 		fmt.Printf("%s: default route -> %s\n", args[0], *via)
-		if restarted, _ := resp["restarted"].(bool); restarted {
-			fmt.Println("vm was running; it was stopped and restarted to apply the route, and is ssh-ready again.")
-		} else {
-			fmt.Println("config pushed; the gateway converges within a few seconds. Live connections whose route changed have been reset and will reconnect via the new route.")
-		}
+		fmt.Println(vmRouteOutcome(args[0], resp))
 		if note, _ := resp["note"].(string); note != "" {
 			fmt.Println(note)
 		}
 		return 0
 	}
+}
+
+// vmRouteOutcome says what the daemon did beyond saving the route.
+func vmRouteOutcome(name string, resp map[string]any) string {
+	if restarted, _ := resp["restarted"].(bool); restarted {
+		return "vm was running; it was stopped and restarted to apply the route, and is ssh-ready again."
+	}
+	if pushed, _ := resp["pushed"].(bool); !pushed {
+		return fmt.Sprintf("route saved; no gateway is running, so it is applied when %s next starts.", name)
+	}
+	return "config pushed; the gateway converges within a few seconds. Live connections whose route changed have been reset and will reconnect via the new route."
 }
 
 func routeAdd(c *daemon.Client, args []string) int {

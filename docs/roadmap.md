@@ -12,7 +12,15 @@ Planned work for the next release of this fork. Items move to the release notes 
 
 - **`pvm desktop` as a host window.** Open the VM's desktop the way `pvm app` opens a program: an Xpra window on the host instead of a noVNC page, with the same per-VM clipboard and drop settings and host input method text. Inside a workspace, the VM's file manager opens on the workspace folder. Needs a decision on running the XFCE session under Xpra's desktop mode next to the app display, and on what happens to `--public`, which only makes sense for the browser page.
 
-- **A graphical desktop app.** pvm Desktop, a window in the spirit of Docker Desktop, native Windows (WHPX) first, built with Wails and shipped in the Windows installers. M1 covers the VM list with start, stop, delete, terminal, app and file manager; a create form with exit, app settings and preinstalled programs; exits and the default exit; workspaces with one-click terminal, app and file manager in the matching folder; the default VM and starting at login. It first needs core changes usable from the CLI: a stored default VM, `pvm app` starting in the workspace folder, readiness in the VM list, and a built-in app catalog with `pvm app install`. See [docs/design/gui.md](design/gui.md).
+- **pvm Desktop, the graphical app.** A window in the spirit of Docker Desktop for native Windows (WHPX), built with Wails and shipped in the Windows installers. Implemented: the core changes it needed in the CLI (a stored default VM, `pvm app` starting in the workspace folder, readiness in the VM list, the app catalog with `pvm app install`); the app itself, with the VM list (start, stop, delete, terminal, app, file manager), a create form with exit, app settings and preinstalled programs, exits and the default exit, workspaces with one-click terminal, app and file manager in the matching folder, the default VM and starting at login; the CI build; and the installers' file, Start menu shortcut and uninstall cleanup. Left:
+  - The end-to-end test on a native Windows host has not been done: so far the backend is unit-tested on Linux, and the app and both installers are only built. The list is in [docs/design/gui.md](design/gui.md#testing).
+  - `pvm upgrade` updates only `pvm.exe`; the app is updated by running the installer again.
+  - A tray icon with VM state.
+  - A daemon event stream in place of polling.
+  - Screens for snapshots, port maps, mounts and logs.
+  - The WSL2 backend, which today only gets an explanation page.
+  - Exit lists with failover, a candidate below.
+  - macOS and Linux builds.
 
 ## Candidates
 
