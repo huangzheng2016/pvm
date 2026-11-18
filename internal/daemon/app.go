@@ -231,6 +231,12 @@ func appInstallScript(late bool) string {
 //go:embed xpra_start.py
 var xpraStartPy string
 
+// keyringUnlockPy unlocks the Secret Service keyring for the apps; see
+// the file.
+//
+//go:embed keyring_unlock.py
+var keyringUnlockPy string
+
 // appServerScript starts the Xpra server unit unless it runs, and waits
 // for its display. The password arrives on stdin. Linger keeps the user
 // manager, and with it the server, alive after the ssh session ends.
@@ -267,6 +273,10 @@ env="DISPLAY=` + appDisplay + `"
 command -v pulseaudio >/dev/null && env="$env PULSE_SERVER=unix:${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/xpra/` + strings.TrimPrefix(appDisplay, ":") + `/pulse/native"
 dbus-update-activation-environment --systemd $env 2>/dev/null || systemctl --user set-environment $env
 systemctl --user reset-failed xdg-desktop-portal.service xdg-desktop-portal-gtk.service >/dev/null 2>&1 || true
+if command -v gnome-keyring-daemon >/dev/null; then
+  python3 - <<'PVMEOF' || echo "pvm: could not unlock the keyring; apps may ask for its password" >&2
+` + keyringUnlockPy + `PVMEOF
+fi
 if ! systemctl --user is-active --quiet ` + appServerUnit + `; then
   systemctl --user reset-failed ` + appServerUnit + ` >/dev/null 2>&1 || true
   rm -f "$d/xpra.sock"

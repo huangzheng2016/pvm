@@ -94,6 +94,8 @@ Both directions use Opus. Measured on a Windows host: a 440 Hz tone played in th
 
 GTK programs started through D-Bus activation services that need the display, such as the desktop portal's GTK backend. The user manager had no `DISPLAY`, so the backend exited, the portal hung until its start timed out, and gedit and Thunar took 50 to 60 seconds to show a window. The server script now puts `DISPLAY` in the activation environment and clears the failed units; both open in about one second.
 
+Apps such as Claude Desktop keep secrets in the Secret Service. gnome-keyring locks it until a desktop login unlocks it, and the app display has no login, so a keyring dialog asked for a password on every start. When the server starts, `keyring_unlock.py` creates a `login` keyring with an empty password if there is none, makes it the default, and unlocks it, as a passwordless login would. Its contents are then stored unencrypted, readable only by the VM user. A keyring the user gave a password is left locked. Measured in a VM: the keyring was locked after a reboot and unlocked once `pvm app` started the server, and a secret was stored and read back without a prompt.
+
 The first app in a VM installs what came after the VM's Xpra: `gtk3-nocsd`, `xpra-audio-server` and the Noto fonts for all major scripts and color emoji (about 25 MB). Packages the release lacks do not block, and an install that fails leaves a warning. `pvm app` shows the install's output.
 
 ## Clipboard
