@@ -7,5 +7,6 @@
 internal/assets/packed/*.zst
 internal/assets/packed/gateway-*
 internal/assets/packed/agent-*
+internal/assets/packed/manifest.json
 .vps-test-env
 dist/
