@@ -98,7 +98,13 @@ type vmInfo struct {
 	GatewayUser       string       `json:"gw_user,omitempty"`
 	GatewaySSHKeyName string       `json:"gw_ssh_key_name,omitempty"`
 	Ready             bool         `json:"ready,omitempty"`
+	Stage             *lastStage   `json:"stage,omitempty"`
 	Stages            []StageEvent `json:"stages,omitempty"`
+}
+
+type lastStage struct {
+	Stage  string `json:"stage"`
+	Detail string `json:"detail,omitempty"`
 }
 
 func NewServer(p *paths.Paths, cfg *config.Config, tc *qemu.Toolchain, accel qemu.Accel, clusters *cluster.Store) *Server {
@@ -200,6 +206,28 @@ func (s *Server) instance(spec *vm.Spec) *qemu.Instance {
 	}
 }
 
+// refreshSockets gives a VM that is about to start new ports for the
+// sockets QEMU listens on whose stored ports can no longer be bound,
+// which happens on Windows when a reboot reserves a range covering them.
+// A gateway also listens on its VMs' links; those whose port changes are
+// rebuilt by onGatewayStarted, and a running VM's NIC is repaired there.
+func (s *Server) refreshSockets(spec *vm.Spec) {
+	// a running QEMU holds its own ports, which then fail to bind too
+	if st, err := s.instance(spec).Running(); err != nil || st != nil {
+		return
+	}
+	if s.P.RefreshVMSockets(spec.Name) {
+		log.Printf("vm %s: stored socket ports are no longer usable; picked new ones", spec.Name)
+	}
+	if cl := s.clustersByGatewayName(spec.Name); cl != nil {
+		for name := range cl.VMs {
+			if s.Clusters.RefreshLinkSock(cl.ID, name) {
+				log.Printf("vm %s: link port is no longer usable; picked a new one", name)
+			}
+		}
+	}
+}
+
 func (s *Server) clustersByGatewayName(name string) *cluster.Cluster {
 	for _, cl := range s.Clusters.List() {
 		if cl.Gateway == name {
@@ -287,6 +315,8 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("POST /v1/vms/{name}/apps/attach", s.handleAppAttach)
 	mux.HandleFunc("PUT /v1/vms/{name}/apps/config", s.handleAppConfig)
 	mux.HandleFunc("POST /v1/vms/{name}/apps/prepare", s.handleAppPrepare)
+	mux.HandleFunc("GET /v1/apps/catalog", s.handleAppCatalog)
+	mux.HandleFunc("POST /v1/vms/{name}/apps/install", s.handleAppInstall)
 	mux.HandleFunc("GET /v1/vms/{name}/console", s.handleConsole)
 	mux.HandleFunc("GET /v1/vms/{name}/stream", s.handleStream)
 	mux.HandleFunc("GET /v1/vms/{name}/audit", s.handleVMAudit)
@@ -352,6 +382,11 @@ func (s *Server) buildVMInfo(sp *vm.Spec) (vmInfo, error) {
 		info.PID = st.PID
 		info.Uptime = time.Since(st.Started).Round(time.Second).String()
 	}
+	events := s.stages(sp.Name)
+	info.Ready = info.Running && !sp.IdentityReset && stagesReady(events)
+	if n := len(events); n > 0 {
+		info.Stage = &lastStage{Stage: events[n-1].Stage, Detail: events[n-1].Detail}
+	}
 	return info, nil
 }
 
@@ -389,7 +424,6 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	info.Stages = s.stages(spec.Name)
-	info.Ready = info.Running && !info.Spec.IdentityReset && s.vmReady(spec.Name)
 	writeJSON(w, 200, info)
 }
 
@@ -627,6 +661,7 @@ func (s *Server) prepareClusterStart(ctx context.Context, spec *vm.Spec) error {
 
 func (s *Server) startVM(ctx context.Context, spec *vm.Spec) (*qemu.Instance, *qemu.SnapshotManifest, error) {
 	if spec.Role == "gateway" {
+		s.refreshSockets(spec)
 		inst := s.instance(spec)
 		if err := inst.Start(); err != nil {
 			return nil, nil, err
@@ -640,6 +675,7 @@ func (s *Server) startVM(ctx context.Context, spec *vm.Spec) (*qemu.Instance, *q
 	if err := s.prepareMountSlots(spec); err != nil {
 		return nil, nil, err
 	}
+	s.refreshSockets(spec)
 	if err := s.prepareClusterStart(ctx, spec); err != nil {
 		return nil, nil, err
 	}
@@ -872,6 +908,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
+	s.closeAppClients(spec)
 	if err := s.instance(spec).Stop(); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -903,6 +940,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
+	s.closeAppClients(spec)
 	if err := s.instance(spec).Stop(); err != nil {
 		writeErr(w, 500, fmt.Errorf("cannot stop %s safely (%v); not deleting", name, err))
 		return
@@ -970,6 +1008,7 @@ func (s *Server) StopAllVMs() {
 		lock := qemu.LockVM(spec.Name)
 		lock.Lock()
 		defer lock.Unlock()
+		s.closeAppClients(spec)
 		if err := s.instance(spec).Stop(); err != nil {
 			log.Printf("graceful stop %s: %v", spec.Name, err)
 		}

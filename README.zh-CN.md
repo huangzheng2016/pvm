@@ -11,9 +11,9 @@
 - **按域名或网段分流。** 让部分域名直连或走另一个出口，规则即时生效，无需重启。
 - **虚拟机里的程序变成宿主机原生窗口。** `pvm app dev1 -- gedit` 或一个网页在你的桌面上开成独立窗口，Cookie、指纹和出口都留在虚拟机里，还能直接用宿主机输入法打字。见[虚拟机应用作为宿主机窗口](#虚拟机应用作为宿主机窗口)。
 - **浏览器标签页里的完整桌面。** `pvm desktop` 打开虚拟机自己的桌面，和 SSH 登录的是同一台机器。见[浏览器桌面](#浏览器桌面)。
-- **项目文件夹直接在虚拟机里用。** 挂载一个目录、保持两份同步副本，或上传一次再把结果下载回来。见[工作区](#工作区)。
+- **项目文件夹直接在虚拟机里用。** 挂载一个目录、保持两份同步副本，或上传一次再把结果下载回来。在项目目录里运行 `pvm ssh`，就会进入对应虚拟机里的同一目录，虚拟机没启动时先问你要不要启动。见[工作区](#工作区)。
 - **秒级快照和克隆**、回环端口映射，以及只读的 `pvm audit` 路由和 DNS 体检。
-- **Windows 免管理员安装。** 一个安装包装好 pvm、QEMU 和 Xpra 客户端。见[Windows 安装包](#windows-安装包)。
+- **Windows 免管理员安装。** 一个安装包装好 pvm、PVM Desktop 图形应用、QEMU 和 Xpra 客户端。见[Windows 安装包](#windows-安装包)和 [PVM Desktop](#pvm-desktop)。
 
 ## 路线图
 
@@ -26,21 +26,32 @@
 - [x] `pvm.stream` 通道，以及更快的 `pvm desktop`（v1.2.0）
 - [x] 原生 Windows 上的 UDP 和 UDP 出口（v1.2.0）
 - [x] Windows 安装包自带 Xpra 客户端（v1.2.0）
+- [x] 默认使用当前工作区的虚拟机，`pvm ssh` 进入对应目录，虚拟机未启动时询问是否启动（v1.2.1）
+- [x] `pvm app` 窗口使用宿主机窗口边框，Chromium 类应用不走 GPU 渲染（v1.2.1）
+- [x] golden 镜像自带各主要文字的字体和彩色 emoji（v1.2.1）
+- [x] `pvm app` 支持声音、剪贴板复制文件和 emoji 输入，GTK 应用约一秒打开（v1.2.2）
+- [x] CI 在 Windows runner 上跑单元测试（v1.2.2）
+- [x] PVM Desktop：原生 Windows 上管理虚拟机、出口和工作区的图形应用，随安装包发布（v1.3.0）
+- [x] 保存的默认虚拟机、`pvm ls` 显示就绪状态，以及用 `pvm app install` 安装内置应用（v1.3.0）
+- [x] 合并上游：内核参数与端口映射加固、旧虚拟机上的 `pvm desktop`、macOS 的 uid 和更严格的停止错误处理（v1.3.1）
 
 计划中：
 
 - [ ] `pvm exit-agent install|uninstall`，注册为 systemd 服务
 - [ ] `pvm app` 在 macOS 和 Linux 上支持宿主机到虚拟机的剪贴板，支持 WSL2，并让输入法输入稳定可靠
 - [ ] 输入法候选框跟随应用的文本光标
+- [ ] `pvm desktop` 像 `pvm app` 一样作为宿主机窗口打开，并在虚拟机文件管理器里打开工作区目录
+- [ ] Windows CI：其余包的测试，以及打 tag 时对安装包做冒烟测试
+- [ ] PVM Desktop：在 Windows 上测试安装包、托盘图标，以及快照、端口映射和挂载的界面
 
 候选：
 
 - [ ] `pvm ssh-config`，供 VS Code Remote-SSH、rsync 等工具使用
 - [ ] `pvm exit test` 增加出网探测
-- [ ] 默认镜像和默认虚拟机
+- [ ] 默认镜像
 - [ ] 端口映射改走 `pvm.stream`，不再经过 gateway 虚拟机
-- [ ] 提示启动已停止的虚拟机
 - [ ] 修复 gateway 规则漂移误报
+- [ ] 在 self-hosted runner 上跑 WHPX 端到端测试
 
 详见 [docs/roadmap.md](docs/roadmap.md)。
 
@@ -52,13 +63,14 @@ pvm 支持 arm64 的 macOS、amd64 的 Linux，以及 amd64 的 Windows。
 
 1. 从 [Releases](../../releases) 下载 `pvm_windows_amd64_setup.exe` 或 `pvm_windows_amd64_setup.msi`。可先校验：`gh attestation verify pvm_windows_amd64_setup.exe --repo huangzheng2016/pvm`。
 2. 运行它，不需要管理员权限。
-3. 打开新的终端让 `PATH` 变更生效，运行 `pvm doctor` 检查加速和后端。
+3. 打开新的终端让 `PATH` 变更生效，运行 `pvm doctor` 检查加速和后端。也可以从开始菜单打开 **PVM Desktop**，见 [PVM Desktop](#pvm-desktop)。
 
-两种安装包都会把 `pvm.exe` 装到 `%LOCALAPPDATA%\pvm` 并加入用户 `PATH`，把 Xpra 客户端装到 `%LOCALAPPDATA%\pvm\xpra`，把 QEMU 运行时装到 `%USERPROFILE%\.pvm\runtime\qemu\x86_64`（设置了 `PVM_HOME` 时装在它下面）。每台机器只用一种安装包；两种都可以用 `pvm upgrade` 更新。
+两种安装包都会把 `pvm.exe` 和 `pvm-desktop.exe` 装到 `%LOCALAPPDATA%\pvm` 并把该目录加入用户 `PATH`，在开始菜单添加"PVM Desktop"快捷方式，把 Xpra 客户端装到 `%LOCALAPPDATA%\pvm\xpra`，把 QEMU 运行时装到 `%USERPROFILE%\.pvm\runtime\qemu\x86_64`（设置了 `PVM_HOME` 时装在它下面）。每台机器只用一种安装包。两种安装的 `pvm.exe` 和 QEMU 运行时都可以用 `pvm upgrade` 更新；它不更新 `pvm-desktop.exe`，要更新图形应用请运行新版安装包。
 
-- 正在运行的 pvm 或虚拟机占用的文件无法替换。交互运行时会提示停止 daemon（同时停止正在运行的虚拟机）；静默运行（`/S`、`msiexec /qn`）则直接拒绝，请先执行 `pvm daemon stop`。
+- `.exe` 安装包的最后一页提供"Open PVM Desktop"选项，默认不勾选。MSI 没有这一页。
+- 正在运行的 pvm、虚拟机或 PVM Desktop 占用的文件无法替换。交互运行时会提示关闭 PVM Desktop 并停止 daemon（同时停止正在运行的虚拟机）；静默运行（`/S`、`msiexec /qn`）则直接拒绝，请先关闭 PVM Desktop 并执行 `pvm daemon stop`。
 - MSI 静默安装：`msiexec /i pvm_windows_amd64_setup.msi /qn`。传入 `PVMHOME=D:\pvm-home` 可指定数据位置，升级和卸载会沿用它。
-- 从"设置 > 应用"卸载会删除 pvm、运行时、Xpra 客户端和 `PATH` 条目。`~/.pvm` 下的虚拟机磁盘、密钥和配置会保留。
+- 从"设置 > 应用"卸载会删除 pvm、PVM Desktop 及其开始菜单快捷方式和"登录时打开"的启动项、运行时、Xpra 客户端和 `PATH` 条目。`~/.pvm` 下的虚拟机磁盘、密钥和配置会保留。
 
 <details>
 <summary>Windows 安装包的已知限制</summary>
@@ -67,7 +79,8 @@ pvm 支持 arm64 的 macOS、amd64 的 Linux，以及 amd64 的 Windows。
 - 安装程序停止 daemon 时会等待正在运行的虚拟机关闭，最长约三分钟，期间不显示进度。
 - 没有 daemon 而遗留运行的虚拟机，安装程序无法停止。它会列出这些虚拟机并拒绝继续；请先关闭它们，再重新运行安装程序。
 - 杀毒软件会短暂锁定刚解压的文件。安装程序对每次文件移动最多重试 10 秒；锁定持续更久时会报错停止并保留旧版本。请重新运行安装程序。
-- 执行 `pvm upgrade` 后，"设置 > 应用"中显示的仍是安装包当初写入的版本号。
+- 执行 `pvm upgrade` 后，"设置 > 应用"中显示的仍是安装包当初写入的版本号，PVM Desktop 也停留在那个版本。
+- 安装包中与 PVM Desktop 有关的部分（快捷方式、关闭正在运行的应用、卸载时清理它的条目）已能构建，但还没有在 Windows 上运行过。
 
 </details>
 
@@ -101,6 +114,8 @@ pvm map dev1 8080:80
 pvm exit add-warp my-warp
 pvm route dev1 --via my-warp
 ```
+
+`pvm list` 显示每台虚拟机的状态：`stopped`、带当前阶段的 `starting`、`ready` 或 `failed`；失败的虚拟机会在表格下方给出提示。
 
 支持 9p 的宿主机上，每台虚拟机都有一个私有的宿主机目录挂在 `/share`（`~/.pvm/vms/<name>/share`）；`pvm mount` 可以添加更多挂载，挂载配置见 [SKILL.md](SKILL.md)。
 
@@ -143,12 +158,16 @@ pvm route ls
 pvm app dev1 -- gedit
 pvm app dev1 https://mail.example.com --kiosk
 pvm app ls
-pvm app config dev1 --clipboard both --drop on
+pvm app config dev1 --clipboard both --drop on --audio both
 pvm app attach dev1
 pvm app stop dev1 --all
+pvm app catalog
+pvm app install dev1 claude-code codex claude-desktop
 ```
 
-剪贴板和拖放默认关闭，需按虚拟机单独开启。使用 `--clipboard to-guest` 或 `both` 时，宿主机内容只在该虚拟机的窗口切到前台、或窗口在前台时复制，才会进入虚拟机；被密码管理器标记为排除的内容永远不会发送。用宿主机输入法（比如微软拼音）输入的中文等文字，也能正常输入到应用里。详见 [docs/design/app.md](docs/design/app.md)。
+剪贴板和拖放默认关闭，需按虚拟机单独开启。使用 `--clipboard to-guest` 或 `both` 时，宿主机内容只在该虚拟机的窗口切到前台、或窗口在前台时复制，才会进入虚拟机；被密码管理器标记为排除的内容永远不会发送。文本、图片，以及在 Windows 宿主机上的文件和文件夹，都可以双向复制粘贴。用宿主机输入法（比如微软拼音）输入的中文，或表情面板里的 emoji，也能正常输入到应用里。声音从宿主机扬声器播放；`--audio both` 还会把宿主机的麦克风借给虚拟机。详见 [docs/design/app.md](docs/design/app.md)。
+
+`pvm app catalog` 列出 pvm 可以代为安装的应用：Claude Code、Codex CLI 和 Claude Desktop，均为厂商官方的 Linux 版本。`pvm app install [<vm>] <id>...` 在虚拟机内以 root 运行该应用的内置安装脚本；下载只发生在虚拟机里，经它的出口出网，不经过宿主机。`pvm app ls` 还会显示每台虚拟机里已安装的目录应用。
 
 ### 浏览器桌面
 
@@ -165,17 +184,36 @@ pvm app stop dev1 --all
 ```bash
 cd ~/src/web
 pvm workspace create web dev1 --mode sync
-pvm workspace ssh web 'npm install && npm test'
+pvm ssh 'npm install && npm test'
 pvm workspace pull web
 pvm workspace clone web ~/src/web-result
 pvm workspace rm web
 ```
 
+在工作区目录里，`pvm ssh`、`pvm exec`、`pvm app`、`pvm map` 等命令可以省略虚拟机名，使用该工作区的虚拟机；`pvm ssh` 和用 `pvm app` 启动的程序会从对应目录开始。不在工作区里时，使用 `pvm default-vm dev1` 设置的虚拟机（保存为 `~/.pvm/config.yaml` 中的 `default_vm`；`pvm default-vm --clear` 取消设置），没有设置且只有一台虚拟机时就用它。在终端里，虚拟机没启动时 pvm 会先问你要不要启动。
+
 上传会跳过 `.gitignore` 匹配的路径和 `node_modules`；`.pvmignore` 文件可以追加规则或重新包含路径。pvm 拒绝上传或挂载主目录、文件系统根目录、它自己的数据目录，以及包含 `.ssh`、`.aws` 等凭据的目录树；`pvm workspace rm` 从不删除宿主机文件。详见 [docs/design/workspace.md](docs/design/workspace.md)。
 
 ### Windows 安装包
 
-每个发布都附带 `pvm_windows_amd64_setup.exe` 和 `pvm_windows_amd64_setup.msi`：按用户安装、不需要管理员权限，一步装好 pvm、自带的 QEMU 运行时和 `pvm app` 所需的 Xpra 客户端。替换文件前会检测正在运行的 pvm，卸载时保留你的虚拟机。见[在 Windows 上安装](#windows)。
+每个发布都附带 `pvm_windows_amd64_setup.exe` 和 `pvm_windows_amd64_setup.msi`：按用户安装、不需要管理员权限，一步装好 pvm、PVM Desktop、自带的 QEMU 运行时和 `pvm app` 所需的 Xpra 客户端。替换文件前会检测正在运行的 pvm，卸载时保留你的虚拟机。见[在 Windows 上安装](#windows)。
+
+### PVM Desktop
+
+PVM Desktop 是一个图形窗口，覆盖最常用的操作，用于采用原生（WHPX）后端的 Windows。从开始菜单打开，或运行 `pvm-desktop.exe`。
+
+- **虚拟机。** 查看每台虚拟机的状态和启动阶段；启动、停止、删除；打开终端、应用或文件管理器；安装目录应用；设置默认虚拟机。
+- **创建。** 用表单创建虚拟机，包括规格、出口、剪贴板、拖放和音频设置，以及要预装的目录应用。出口在虚拟机首次启动之前就已设置。
+- **出口。** 添加、测试和删除出口，设置默认出口，修改某台虚拟机的出口。
+- **工作区。** 创建和删除工作区，推送和拉取，并在对应的虚拟机目录里打开宿主机文件夹、终端、应用或文件管理器。
+- **设置。** 默认虚拟机、登录时启动 daemon、登录时打开应用，以及窗口的语言：英文或简体中文。
+
+图形应用不做 CLI 做不到的事：每个改动都是运行一次 `pvm.exe`，输出显示在窗口里。说明：
+
+- 需要 Microsoft Edge WebView2 Runtime，Windows 10 和 11 通常已自带。缺少时应用会提示并打开微软的下载页面，不会替你安装任何东西。
+- 使用 WSL2 后端时，应用只显示一页说明；请在那里使用 CLI。
+- `pvm upgrade` 不会更新图形应用。应用和 daemon 报告的版本不一致时，设置页会提示；请运行新版安装包。
+- 它是新功能，还没有在 Windows 上做过端到端测试。目前没有托盘图标，也没有快照、端口映射、挂载和日志的界面。见 [docs/design/gui.md](docs/design/gui.md)。
 
 ### 架构
 
@@ -244,6 +282,8 @@ go install mvdan.cc/garble@v0.18.0
 .\script\build.ps1
 .\pvm.exe version
 ```
+
+`./script/build-desktop.sh` 在任何装有 Go 和 Node.js 22（npm）的宿主机上构建 `pvm-desktop.exe`：先构建 `cmd/pvm-desktop/frontend` 里的前端，再交叉编译应用。`go build ./...` 和 `go test ./...` 不需要 Node.js，因为只有这个脚本会嵌入前端。
 
 不要在 Windows 宿主机上运行完整的 `go test ./...`。测试套件按 Unix 编写（文件权限位、`/tmp` 等路径、符号链接，以及 `ip`、`gh`、`bash` 等工具），在 Windows 上会有大量与改动无关的失败，而且 `internal/cli` 的测试会不断重新拉起自身，留下大量 `cli.test.exe` 进程。在 Windows 上只运行与改动相关的定向测试，例如 `go test ./internal/qemu -run Accel`；完整测试以 Linux 或 macOS（CI 或 WSL2）为准。
 

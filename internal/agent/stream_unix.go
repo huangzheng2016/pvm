@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"io/fs"
@@ -70,26 +71,45 @@ const maxClipboard = 16 << 20
 // clipMIME maps a clipboard target kind to the X selection type.
 var clipMIME = map[string]string{"text": "UTF8_STRING", "png": "image/png"}
 
+// clipUser looks up the user of the clipboard targets. The VM user's uid
+// follows the host user's, which is below 1000 on macOS, so any user but
+// root is accepted, as for the xpra target.
+func clipUser(uid int) (*user.User, error) {
+	if uid <= 0 {
+		return nil, fmt.Errorf("uid %d is not a user", uid)
+	}
+	return user.LookupId(strconv.Itoa(uid))
+}
+
+// asUser runs argv as u on the pvm app display.
+func asUser(ctx context.Context, u *user.User, extraEnv []string, argv ...string) *exec.Cmd {
+	args := append([]string{"-u", u.Username, "--", "env", "DISPLAY=" + appDisplay, "HOME=" + u.HomeDir, "XDG_RUNTIME_DIR=/run/user/" + u.Uid}, extraEnv...)
+	return exec.CommandContext(ctx, "runuser", append(args, argv...)...)
+}
+
 // clipboardSink sets uid's clipboard on the pvm app display from what the
 // host writes, as that user, through xclip. xclip keeps serving the
 // selection in the background after the stream ends.
 func clipboardSink(uid int, kind string) (io.ReadWriteCloser, error) {
 	mime, ok := clipMIME[kind]
-	if !ok {
+	if !ok && kind != "files" {
 		return nil, fmt.Errorf("unknown clipboard kind %q", kind)
 	}
-	if uid <= 0 {
-		return nil, fmt.Errorf("uid %d is not a user", uid)
-	}
-	u, err := user.LookupId(strconv.Itoa(uid))
+	u, err := clipUser(uid)
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command("runuser", "-u", u.Username, "--",
-		"env", "DISPLAY="+appDisplay, "HOME="+u.HomeDir, "XDG_RUNTIME_DIR=/run/user/"+u.Uid,
-		"xclip", "-selection", "clipboard", "-t", mime, "-i")
+	var cmd *exec.Cmd
+	limit := int64(maxClipboard)
+	if kind == "files" {
+		cmd = asUser(context.Background(), u, []string{"PVM_CLIP_FILES_PY=" + clipFilesPy}, "sh", "-c", clipFilesScript)
+		limit = maxClipFiles
+	} else {
+		cmd = asUser(context.Background(), u, nil, "xclip", "-selection", "clipboard", "-t", mime, "-i")
+	}
 	r, w := io.Pipe()
-	cmd.Stdin = io.LimitReader(r, maxClipboard)
+	// past the limit tar sees a cut archive and fails
+	cmd.Stdin = io.LimitReader(r, limit)
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start xclip: %w", err)
 	}
@@ -120,7 +140,7 @@ func (c *clipConn) Read([]byte) (int, error) {
 	<-c.closed
 	if err := <-c.done; err != nil {
 		c.done <- err
-		return 0, fmt.Errorf("xclip: %w", err)
+		return 0, fmt.Errorf("set clipboard: %w", err)
 	}
 	c.done <- nil
 	return 0, io.EOF

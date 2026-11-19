@@ -11,7 +11,7 @@
 - 纯文本使用普通连字符和直引号，命令和代码输出必须可直接复制粘贴。
 - 并行工作只处理互不依赖的文件或验证任务；同一文件、共享状态和最终合并由一个人负责，避免并发覆盖。
 - 不为某个目录增加 Git 特殊规则或反向排除。`.gitignore` 只描述通用构建产物和临时文件；测试源码是正常源码，不得通过忽略规则隐藏。
-- 不提交二进制、QEMU runtime、压缩 guest、临时脚本、工作笔记或测试残留。测试结束后删除生成的二进制和临时产物，并确认 `git status` 干净地只包含预期源码、测试和生成清单变化。
+- 不提交二进制、QEMU runtime、压缩 guest、临时脚本、工作笔记或测试残留。测试结束后删除生成的二进制和临时产物，并确认 `git status` 干净地只包含预期源码和测试变化。
 - 提交、推送、打 tag、发版和 force-push 都要用户明确要求；`master` 是主分支。提交信息、PR 和说明中不加入 agent 身份或 co-author 信息。
 
 ## Project Map
@@ -22,6 +22,7 @@
 - `cmd/agent`: 独立 guest 入口，仅提供 agent 服务、当前 VM 的 map 操作和 guest skill。
 - `cmd/gateway`: guest 网关入口，由 daemon 推送的 `/etc/pvm/gateway.json` 驱动。
 - `cmd/assetpack`: 构建期压缩 guest 二进制并生成 embed manifest。
+- `cmd/pvm-desktop`: Windows 图形应用 PVM Desktop 的入口（Wails 窗口）和 `frontend/` 前端（TypeScript + Vite）；前端构建产物只在 `production` tag 下 embed，不入库。
 - `internal/cli`: CLI 参数解析和 daemon 瘦客户端；所有用户可见行为都要在这里一致处理。
 - `internal/daemon`: 常驻控制面，unix socket 上的 HTTP/JSON，负责 VM/cluster 生命周期和 readiness；daemon 单实例 flock。
 - `internal/qemu`: QEMU 工具链、进程/QMP、快照和运行状态。
@@ -34,6 +35,11 @@
 - `internal/warp`: Cloudflare WARP 设备注册、删除和出口配置转换。
 - `internal/tunnel`: UDP/TCP 两种传输的 WireGuard device 封装。
 - `internal/agent`: guest 内 exec agent 和并发会话。
+- `internal/stream`: `pvm.stream` virtio-serial 通道上的二进制多路流，只能由宿主发起。
+- `internal/apps`: `pvm app install` 的内置应用目录，每个应用一个目录（`app.yaml` + `install.sh`）。
+- `internal/workspace`: 宿主目录与单个 VM 之间的工作区（mount/sync/copy）及其存储。
+- `internal/config`: `~/.pvm/config.yaml` 的读取和校验，未知键直接报错。
+- `internal/desktop`: PVM Desktop 的后端，不依赖 Wails；读取走 daemon API 和各 store，所有变更都以子进程运行 `pvm.exe`，绑定结构体的导出方法即前端可调用的全部接口。
 - `internal/assets`: 内嵌资产解包和 SHA256 校验；仅 `-tags embedassets` 编入。
 - `internal/native`: 架构选择的唯一事实来源，镜像、guest 和 QEMU target 由此派生。
 - `internal/paths`: `~/.pvm` 目录布局。
@@ -48,6 +54,7 @@
 - Go 使用 1.27；只构建宿主原生架构（darwin/arm64、linux/amd64、windows/amd64 host，其中 Windows 支持 WSL2 桥接与原生 WHPX/QEMU 双模式）。Linux amd64/arm64 release 二进制用于对应 VPS，不做跨架构 host 模拟。
 - 完整构建使用 Go 1.27.4 和 garble v0.18.0：`go install mvdan.cc/garble@v0.18.0`；CI 固定这两个版本。
 - `./script/build.sh` 从 `./cmd/agent` 构建专用 guest，使用 garble `-tiny`、固定 seed、`-trimpath`、`-buildvcs=false` 和空 build ID，再构建 gateway、assetpack 和带 `embedassets` 的 host 二进制；macOS 默认追加 bundled QEMU，`PVM_PACK_QEMU=0` 可跳过。根目录 `./pvm` 是构建产物，不是源码，验证后必须删除。
+- `./script/build-desktop.sh` 构建 `pvm-desktop.exe`，需要 Node.js 22（npm）：先在 `cmd/pvm-desktop/frontend` 执行 `npm ci && npm run build`，再交叉编译；`go build/vet/test ./...` 不需要先构建前端。根目录 `./pvm-desktop.exe` 同样是构建产物。
 - 常规提交和发布默认通过 `go test ./...`、`go vet ./...`、`sh -n scripts/install.sh` 和必要构建，不把全仓 `go test -race` 作为门槛。
 - 不要在 Windows 宿主上运行全仓 `go test ./...`：测试套件按 Unix 编写（文件权限位、`/tmp` 等路径、symlink、`ip`/`gh`/`bash` 等工具），在 Windows 上大量失败且与改动无关；`internal/cli` 测试还会反复拉起自身进程，留下大量 `cli.test.exe` 拖慢机器。Windows 上只运行与改动相关的定向测试（`go test ./internal/<pkg> -run '<Name>'`），全仓测试以 Linux/macOS（CI 或 WSL2）为准。
 - 修改并发或状态路径时，仍须完成相关包的定向测试和必要行为验证；仅在专项任务或用户明确要求时，对相关包运行 `go test -race`。
@@ -67,5 +74,5 @@
 ## Delivery Checklist
 
 - 变更前先读文件并确认工作树没有用户未提交修改；变更后检查 `git diff --check`、`git status` 和敏感信息。
-- 运行完整构建和测试，复核生成清单只包含预期变化；删除根目录 `./pvm` 等构建产物，不能把二进制带入提交。
+- 运行完整构建和测试；删除根目录 `./pvm` 等构建产物，不能把二进制带入提交。
 - 最终说明实际执行的验证、仍未验证的项目和任何运行时限制，不把代码审查或编译结果冒充端到端成功。

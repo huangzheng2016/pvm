@@ -139,11 +139,11 @@ func (s *Server) restartStalledVM(spec *vm.Spec) error {
 	lock := qemu.LockVM(spec.Name)
 	lock.Lock()
 	defer lock.Unlock()
-	inst := s.instance(spec)
-	if err := inst.Stop(); err != nil {
+	if err := s.instance(spec).Stop(); err != nil {
 		return err
 	}
-	return inst.Start()
+	s.refreshSockets(spec)
+	return s.instance(spec).Start()
 }
 
 func consoleSize(path string) int64 {

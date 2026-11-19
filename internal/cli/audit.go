@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-
-	"github.com/huangzheng2016/pvm/internal/daemon"
 )
 
 type auditCheck struct {
@@ -24,20 +22,27 @@ func CmdAudit(args []string) int {
 	if len(args) == 2 && args[1] == "--privacy" {
 		return cmdPrivacyAudit(args[0])
 	}
-	if len(args) != 1 {
-		fmt.Fprintln(os.Stderr, "usage: pvm audit <vm> [--privacy]")
+	if len(args) > 1 || (len(args) == 1 && args[0] == "--privacy") {
+		fmt.Fprintln(os.Stderr, "usage: pvm audit [<vm>] | pvm audit <vm> --privacy")
 		return 2
 	}
 	p, err := mustPaths()
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
 		return fatalf("%v", err)
 	}
+	name := ""
+	if len(args) == 1 {
+		name = args[0]
+	}
+	if name, _, _, err = resolveVM(c, p, name); err != nil {
+		return fatalf("%v", err)
+	}
 	var checks []auditCheck
-	if err := c.Get("/v1/vms/"+args[0]+"/audit", &checks); err != nil {
+	if err := c.Get("/v1/vms/"+name+"/audit", &checks); err != nil {
 		return fatalf("%v", err)
 	}
 	return printAudit(os.Stdout, checks)

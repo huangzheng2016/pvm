@@ -207,6 +207,12 @@ func (c *Client) Get(path string, out any) error {
 	return c.getCtx(context.Background(), path, out)
 }
 
+// GetContext is Get bounded by ctx, for callers that cannot wait out the
+// client's own long timeout.
+func (c *Client) GetContext(ctx context.Context, path string, out any) error {
+	return c.getCtx(ctx, path, out)
+}
+
 func (c *Client) getCtx(ctx context.Context, path string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", "http://d"+path, nil)
 	if err != nil {

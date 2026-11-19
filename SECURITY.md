@@ -17,6 +17,15 @@ VMs in one cluster share a gateway and a layer-2 network. The gateway validates 
 
 The host `pvm` binary exposes the complete pvm control plane and acts with the host user's filesystem and process permissions. It can manage all local VMs, cluster routes, host-path mounts, exit registrations, and stored credentials. Access to the host account or pvm data directory is therefore not limited to one guest. On Windows, the daemon uses loopback TCP instead of a Unix socket and requires the bearer token in `~/.pvm/run/admin.token` for every API except `/v1/health`; this token is a local control-plane credential and must remain private.
 
+PVM Desktop (`pvm-desktop.exe`, Windows) is another client of the same daemon and CLI, run as the host user with the same rights as the host `pvm` binary; it adds no privileges and no commands of its own.
+
+- It opens no network listener: the window's pages are served from memory inside the process.
+- Every change runs `pvm.exe` from the app's own folder with an argument array, never through a shell, after the names have passed the CLI's own checks.
+- The daemon's admin token, exit tokens and private keys stay in the app's Go backend and are never sent to the window. A token typed into the "add exit" form is written to a private file under the pvm run directory, passed to `pvm exit add --token-file`, and deleted afterwards, also on failure; a file left behind because the app was killed during the command is removed when the app next starts. It is never on a command line, and output lines containing it are masked.
+- A VM made with the Create form is created stopped and started only after its exit is set, so it never boots on another exit; if setting the exit fails, the VM stays stopped.
+- Text from VMs and the daemon API is shown as text and never interpreted as HTML.
+- Opening the app at login is a per-user `Run` registry value that the app writes on request and the uninstaller removes.
+
 The Linux guest uses a separate binary with only `agent`, `map`, and `skill`. It has no host lifecycle, route, mount, exit, or `security` commands. Every local guest user can use `map`; requests carry no VM name. The daemon derives the VM identity from that guest's virtio-serial channel and limits list, add, and remove operations to maps owned by that VM. These maps still create host loopback listeners into the current VM.
 
 Each VM also has a `pvm.stream` virtio-serial port for display and measurement streams. Only the host daemon opens streams on it, by naming a target from a fixed allowlist in the guest agent; the guest cannot open a stream, connect to host addresses, or reach the network through it, so the VM's egress path and kill-switch are unchanged. The daemon exposes these streams only through its own authenticated API.
@@ -25,6 +34,10 @@ Each VM also has a `pvm.stream` virtio-serial port for display and measurement s
 
 - The Xpra client sends the host clipboard even while none of its windows has focus, so pvm never lets Xpra carry host content into the VM. Host content goes in only through pvm's bridge, only when one of the VM's windows is in front, and never content marked `ExcludeClipboardContentFromMonitorProcessing` by password managers. The daemon refuses clipboard streams unless the VM's policy allows them.
 - With drops on, files dropped on a VM window upload into the VM and are never opened there; a file the VM sends to the host needs the user's confirmation in a host dialog. With drops off, the client refuses file transfer in both directions.
+
+The Secret Service keyring of the app display is a `login` keyring with an empty password that pvm unlocks when the server starts, since the display has no login to unlock it. Secrets that apps store there, such as Claude Desktop's sign-in, are kept unencrypted in `~/.local/share/keyrings`, protected only by the VM user's file permissions and the VM's disk. A keyring the user created with a password is not unlocked.
+
+`pvm app install` runs an install script as root inside the VM through the guest agent. The scripts are built into the pvm binary, one per app in the catalog that `pvm app catalog` lists; the daemon accepts only catalog ids and takes no script, path or URL from the caller. Every download happens inside the VM and leaves through the VM's route and exit, under the same kill-switch as its other traffic; the host daemon downloads nothing. Claude Code and Claude Desktop come from Anthropic's APT repositories, and the script refuses a signing key whose fingerprint differs from the pinned one. Codex has no signed repository: its installer is fetched from the vendor over HTTPS and run as the VM user, so that install rests on TLS and the installer's own checksum check.
 
 This reduced command surface is not an OS privilege sandbox. The guest agent service runs as root and accepts exec requests from the host, so the host retains full control of the guest. `pvm security` is a host command and is intentionally absent from the guest binary.
 

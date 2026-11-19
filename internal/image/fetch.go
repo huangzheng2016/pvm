@@ -32,6 +32,12 @@ type Ref struct {
 	TrustedKeyring string // explicit local publisher trust anchor; empty keeps HTTPS checksum verification
 }
 
+// Supported lists the image specs offered as choices, newest first per
+// distro; Resolve accepts more.
+func Supported() []string {
+	return []string{"ubuntu:26.04", "ubuntu:24.04", "debian:13", "debian:12"}
+}
+
 var ubuntuVersionRE = regexp.MustCompile(`^[0-9]{2}\.[0-9]{2}$`)
 
 func Resolve(spec string) (*Ref, error) {

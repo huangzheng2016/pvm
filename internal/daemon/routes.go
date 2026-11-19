@@ -226,8 +226,32 @@ func (s *Server) handleVMRoute(w http.ResponseWriter, r *http.Request) {
 			return s.Clusters.SetVMExit(fresh.ClusterID, fresh.Name, v)
 		},
 		push: func() error { return s.pushGatewayConfig(fresh.ClusterID) },
+		deferRegion: func() error {
+			fresh.RegionPending = true
+			if err := fresh.Save(s.P); err != nil {
+				fresh.RegionPending = false
+				return fmt.Errorf("save %s spec: %w", fresh.Name, err)
+			}
+			s.cacheSpec(fresh)
+			return nil
+		},
+		gatewayRunning: func() (bool, error) {
+			cl := s.Clusters.Get(fresh.ClusterID)
+			if cl == nil {
+				return false, nil
+			}
+			gw, err := s.getSpec(cl.Gateway)
+			if errors.Is(err, errVMNotFound) {
+				return false, nil
+			}
+			if err != nil {
+				return false, err
+			}
+			st, err := s.instance(gw).Running()
+			return st != nil, err
+		},
 	}
-	note, restarted, err := s.switchVMRoute(fresh, via, previousExit, ops)
+	res, err := s.switchVMRoute(fresh, via, previousExit, ops)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -235,7 +259,7 @@ func (s *Server) handleVMRoute(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.vms[name] = fresh
 	s.mu.Unlock()
-	writeJSON(w, 200, map[string]any{"vm": spec.Name, "via": via, "note": note, "restarted": restarted})
+	writeJSON(w, 200, map[string]any{"vm": spec.Name, "via": via, "note": res.note, "restarted": res.restarted, "pushed": res.pushed})
 }
 
 // vmRouteOps are the side-effecting steps of a VM route switch, injected
@@ -247,6 +271,17 @@ type vmRouteOps struct {
 	start   func() error
 	setExit func(via string) error
 	push    func() error
+	// gatewayRunning and deferRegion are used only for a stopped VM.
+	gatewayRunning func() (bool, error)
+	// deferRegion leaves the exit's timezone/locale to the next start.
+	deferRegion func() error
+}
+
+type vmRouteResult struct {
+	note      string
+	restarted bool
+	// pushed is false when the exit was only saved for the next start.
+	pushed bool
 }
 
 // switchVMRoute stops a running VM before switching its exit and restarts
@@ -254,14 +289,31 @@ type vmRouteOps struct {
 // across a reboot, so a live switch would leave it on the old exit. A
 // failed push rolls the route back to previousExit, and every failure
 // path names the next command. A failed rollback leaves the VM stopped.
-func (s *Server) switchVMRoute(spec *vm.Spec, via, previousExit string, ops vmRouteOps) (note string, restarted bool, err error) {
+//
+// A stopped VM without a running gateway only has its exit saved: there
+// is nothing to push to, and the VM's next start boots the gateway and
+// pushes the config before the VM itself boots. That lets a new VM get
+// its exit before its first boot.
+//
+// The exit's timezone/locale are set over ssh, so a stopped VM gets them
+// at its next start, which fails visibly when they cannot be set.
+func (s *Server) switchVMRoute(spec *vm.Spec, via, previousExit string, ops vmRouteOps) (vmRouteResult, error) {
+	var none vmRouteResult
 	wasRunning, err := ops.running()
 	if err != nil {
-		return "", false, err
+		return none, err
 	}
+	toExit := via != "" && via != "direct"
+	regionDeferred := !wasRunning && (toExit || spec.PrevTZ != "" || spec.PrevLocale != "")
 	if wasRunning {
 		if err := ops.stop(); err != nil {
-			return "", false, fmt.Errorf("cannot stop %s to switch its route: %w (route unchanged)", spec.Name, err)
+			return none, fmt.Errorf("cannot stop %s to switch its route: %w (route unchanged)", spec.Name, err)
+		}
+	} else if regionDeferred {
+		// Before the save: a rollback then only costs one more apply of
+		// the previous exit's profile.
+		if err := ops.deferRegion(); err != nil {
+			return none, fmt.Errorf("vm route unchanged: %w", err)
 		}
 	}
 	restore := func() error {
@@ -272,38 +324,60 @@ func (s *Server) switchVMRoute(spec *vm.Spec, via, previousExit string, ops vmRo
 	}
 	if err := ops.setExit(via); err != nil {
 		if rerr := restore(); rerr != nil {
-			return "", false, fmt.Errorf("%w (additionally failed to restart %s: %v; run `pvm start %s`)", err, spec.Name, rerr, spec.Name)
+			return none, fmt.Errorf("%w (additionally failed to restart %s: %v; run `pvm start %s`)", err, spec.Name, rerr, spec.Name)
 		}
-		return "", false, err
+		return none, err
 	}
-	if err := ops.push(); err != nil {
+	push := ops.push
+	pushed := true
+	if !wasRunning {
+		// asked after the save, so a gateway that starts meanwhile
+		// renders the new exit
+		up, err := ops.gatewayRunning()
+		if err != nil {
+			if rbErr := ops.setExit(previousExit); rbErr != nil {
+				return none, errors.Join(err, fmt.Errorf("route rollback save failed; inspect `pvm route ls` and retry `pvm route %s --via %s`: %w", spec.Name, routeExitLabel(via), rbErr))
+			}
+			return none, fmt.Errorf("vm route unchanged, cannot tell whether the gateway runs: %w", err)
+		}
+		if !up {
+			pushed = false
+			push = func() error { return nil }
+		}
+	}
+	if err := push(); err != nil {
 		next := fmt.Sprintf("fix the gateway and retry `pvm route %s --via %s`", spec.Name, routeExitLabel(via))
 		if rbErr := ops.setExit(previousExit); rbErr != nil {
-			return "", false, errors.Join(fmt.Errorf("gateway push failed: %w", err),
+			return none, errors.Join(fmt.Errorf("gateway push failed: %w", err),
 				fmt.Errorf("route rollback save failed; VM remains stopped; %s: %w", next, rbErr))
 		}
-		if rbErr := ops.push(); rbErr != nil {
-			return "", false, errors.Join(fmt.Errorf("gateway push failed: %w", err),
+		if rbErr := push(); rbErr != nil {
+			return none, errors.Join(fmt.Errorf("gateway push failed: %w", err),
 				fmt.Errorf("route state rolled back to %s, but rollback config push failed; VM remains stopped; %s: %w", routeExitLabel(previousExit), next, rbErr))
 		}
 		rollbackErr := fmt.Errorf("vm route rolled back to %s after gateway push failed; %s: %w", routeExitLabel(previousExit), next, err)
 		if rerr := restore(); rerr != nil {
-			return "", false, errors.Join(rollbackErr, fmt.Errorf("restarting %s failed; run `pvm start %s`: %w", spec.Name, spec.Name, rerr))
+			return none, errors.Join(rollbackErr, fmt.Errorf("restarting %s failed; run `pvm start %s`: %w", spec.Name, spec.Name, rerr))
 		}
-		return "", false, rollbackErr
+		return none, rollbackErr
 	}
-	if wasRunning {
-		if err := ops.start(); err != nil {
-			return "", false, fmt.Errorf("route switched to %s, but restarting %s failed: %w", routeExitLabel(via), spec.Name, err)
+	res := vmRouteResult{pushed: pushed}
+	if !wasRunning {
+		if regionDeferred {
+			res.note = fmt.Sprintf("timezone/locale are set for this route when %s next starts", spec.Name)
 		}
-		restarted = true
+		return res, nil
 	}
-	if via == "direct" || via == "" {
-		note = s.restoreRegion(spec)
+	if err := ops.start(); err != nil {
+		return none, fmt.Errorf("route switched to %s, but restarting %s failed: %w", routeExitLabel(via), spec.Name, err)
+	}
+	res.restarted = true
+	if toExit {
+		res.note = s.applyRegionProfile(spec, via)
 	} else {
-		note = s.applyRegionProfile(spec, via)
+		res.note = s.restoreRegion(spec)
 	}
-	return note, restarted, nil
+	return res, nil
 }
 
 // routeSwitchReadyTimeout bounds the post-restart ssh wait so a route

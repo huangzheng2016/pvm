@@ -1,0 +1,6 @@
+name: Codex CLI
+description: OpenAI's coding agent for the terminal
+homepage: https://github.com/openai/codex
+source: official
+window: false
+start: codex

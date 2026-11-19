@@ -24,7 +24,7 @@ var streamTargets = map[string]bool{"echo": true, "discard": true, "source": tru
 // clipboard targets.
 func validStreamTarget(target string) bool {
 	switch target {
-	case "clip:text", "clip:png":
+	case "clip:text", "clip:png", "clip:files", "clipout:files":
 		return true
 	}
 	if uid, ok := strings.CutPrefix(target, "xpra:"); ok {

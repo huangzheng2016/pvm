@@ -1,11 +1,15 @@
 .bin/
 /pvm
 /pvm.exe
+/pvm-desktop.exe
 /assetpack.exe
 /pvm_windows_amd64_setup.exe
 /pvm_windows_amd64_setup.msi
 internal/assets/packed/*.zst
 internal/assets/packed/gateway-*
 internal/assets/packed/agent-*
+internal/assets/packed/manifest.json
 .vps-test-env
 dist/
+node_modules/
+*.syso

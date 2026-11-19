@@ -141,6 +141,12 @@ func (s *Server) installAgentGeneration(ctx context.Context, spec *vm.Spec, bin 
 			return err
 		}
 	}
+	if spec.RegionPending {
+		s.stageIfCurrent(spec.Name, seq, "provision", "setting the timezone and locale of the VM's exit")
+		if err := s.withInstallVM(ctx, spec, seq, s.applyPendingRegion); err != nil {
+			return err
+		}
+	}
 	s.stageIfCurrent(spec.Name, seq, "ssh", "SSH and cloud-init ready")
 	phaseCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	err := s.withInstallVM(phaseCtx, spec, seq, func(fresh *vm.Spec) error {

@@ -94,7 +94,7 @@ func (in *Instance) Start() error {
 	} else {
 		fb, ok := in.Cfg.Accel.Fallback()
 		var ee errEarlyExit
-		if !ok || !errors.As(err, &ee) {
+		if !ok || !errors.As(err, &ee) || socketBindFailed(err) {
 			return err
 		}
 		log.Printf("qemu: accel %s failed, falling back to %s: %s%s", in.Cfg.Accel, fb, firstLine(err.Error()), FallbackHint(err))
@@ -234,4 +234,11 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// socketBindFailed reports a QEMU that could not listen on one of its
+// sockets. Another accelerator fails the same way, so it is no reason
+// to fall back.
+func socketBindFailed(err error) bool {
+	return strings.Contains(err.Error(), "Failed to bind socket")
 }

@@ -11,7 +11,8 @@ import (
 var GoldenPackages = []string{
 	"docker.io", "qemu-guest-agent",
 	"build-essential", "git", "curl", "jq", "python3-pip",
-	"htop", "vim", "unzip", "ca-certificates", "fonts-noto-cjk",
+	"htop", "vim", "unzip", "ca-certificates",
+	"fonts-noto-cjk", "fonts-noto-core", "fonts-noto-color-emoji",
 	"sshfs", "firefox",
 }
 

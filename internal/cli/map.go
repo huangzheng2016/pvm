@@ -6,8 +6,6 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
-
-	"github.com/huangzheng2016/pvm/internal/daemon"
 )
 
 type mapView struct {
@@ -20,7 +18,7 @@ type mapView struct {
 }
 
 func CmdMap(args []string) int {
-	const usage = "<vm> <hostPort>:<guestPort> [--udp] | ls | rm <port> [--udp]"
+	const usage = "[<vm>] <hostPort>:<guestPort> [--udp] | ls | rm <port> [--udp]"
 	fs := newFlagSet("map", usage)
 	udp := fs.Bool("udp", false, "map UDP instead of TCP")
 	var flags, positionals []string
@@ -38,6 +36,9 @@ func CmdMap(args []string) int {
 		return 1
 	}
 	args = fs.Args()
+	if len(args) == 1 && strings.Contains(args[0], ":") {
+		args = []string{"", args[0]} // the vm is filled in below
+	}
 	if len(args) == 0 || (args[0] == "ls" && (len(args) != 1 || *udp)) || (args[0] != "ls" && len(args) != 2) {
 		return fatalf("usage: pvm map %s", usage)
 	}
@@ -50,7 +51,7 @@ func CmdMap(args []string) int {
 		return fatalf("%v", err)
 	}
 	if args[0] == "ls" {
-		c, err := daemon.Ensure(p)
+		c, err := ensureDaemon(p)
 		if err != nil {
 			return fatalf("%v", err)
 		}
@@ -67,7 +68,7 @@ func CmdMap(args []string) int {
 		return 0
 	}
 	if args[0] == "rm" {
-		c, err := daemon.Ensure(p)
+		c, err := ensureDaemon(p)
 		if err != nil {
 			return fatalf("%v", err)
 		}
@@ -87,8 +88,11 @@ func CmdMap(args []string) int {
 	if err1 != nil || err2 != nil {
 		return fatalf("ports must be numbers: %q", args[1])
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
+		return fatalf("%v", err)
+	}
+	if vmName, _, _, err = resolveVM(c, p, vmName); err != nil {
 		return fatalf("%v", err)
 	}
 	body := map[string]any{"vm": vmName, "host_port": host, "guest_port": guest, "proto": proto}

@@ -5,8 +5,6 @@ import (
 	"os"
 	"sort"
 	"text/tabwriter"
-
-	"github.com/huangzheng2016/pvm/internal/daemon"
 )
 
 func CmdDNS(args []string) int {
@@ -18,7 +16,7 @@ func CmdDNS(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: pvm dns ls")
 		return 2
 	}
-	c, err := daemon.Ensure(p)
+	c, err := ensureDaemon(p)
 	if err != nil {
 		return fatalf("%v", err)
 	}

@@ -73,7 +73,10 @@ func (s *Server) stageIfCurrent(name string, seq uint64, stage, detail string) {
 }
 
 func (s *Server) vmReady(vmName string) bool {
-	events := s.stages(vmName)
+	return stagesReady(s.stages(vmName))
+}
+
+func stagesReady(events []StageEvent) bool {
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Stage {
 		case "ready":
