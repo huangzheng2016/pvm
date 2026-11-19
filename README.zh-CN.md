@@ -31,6 +31,8 @@
 - [x] golden 镜像自带各主要文字的字体和彩色 emoji（v1.2.1）
 - [x] `pvm app` 支持声音、剪贴板复制文件和 emoji 输入，GTK 应用约一秒打开（v1.2.2）
 - [x] CI 在 Windows runner 上跑单元测试（v1.2.2）
+- [x] PVM Desktop：原生 Windows 上管理虚拟机、出口和工作区的图形应用，随安装包发布（v1.3.0）
+- [x] 保存的默认虚拟机、`pvm ls` 显示就绪状态，以及用 `pvm app install` 安装内置应用（v1.3.0）
 
 计划中：
 
@@ -39,7 +41,7 @@
 - [ ] 输入法候选框跟随应用的文本光标
 - [ ] `pvm desktop` 像 `pvm app` 一样作为宿主机窗口打开，并在虚拟机文件管理器里打开工作区目录
 - [ ] Windows CI：其余包的测试，以及打 tag 时对安装包做冒烟测试
-- [ ] PVM Desktop：类似 Docker Desktop 的图形界面应用，用于创建虚拟机、管理出口、工作区和预装应用；已为原生 Windows 构建并随安装包发布，尚未在 Windows 上做端到端测试
+- [ ] PVM Desktop：在 Windows 上测试安装包、托盘图标，以及快照、端口映射和挂载的界面
 
 候选：
 

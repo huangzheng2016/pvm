@@ -1,6 +1,6 @@
 # PVM Desktop, a graphical app
 
-Status: M0 and M1 are implemented for Windows hosts with the native (WHPX) backend. The app has not been run on Windows yet: so far there are backend unit tests on Linux, a cross-build of `pvm-desktop.exe` and compile checks of both installers. The end-to-end list under [Testing](#testing) is still open.
+Status: M0 and M1 are implemented for Windows hosts with the native (WHPX) backend and released in v1.3.0. The app was run on a native WHPX host against a real daemon, not yet from an installed package; see [Testing](#testing).
 
 ## Motivation
 
@@ -263,7 +263,8 @@ These land in the CLI and daemon before the app. Each is its own commit, with te
   - The resolve order with `default_vm`, including a deleted default VM.
   - The app working directory.
   - Catalog parsing and the install stream.
-- **End to end on a native WHPX host**, not done yet:
+- **Run on a native WHPX host** against a real daemon, from a local build in WebView2: the VM list with start and its stages, the file manager, an app and a URL as host windows, the Activity panel, the Create, Exits, Workspaces and Settings screens with live data, the dark theme and the card view, and, before the redesign, creating a VM and deleting it. A VM's terminal opening in the home directory is covered by unit tests only.
+- **End to end from the installers**, not done yet:
   - Install with both installers and open the app from the Start menu.
   - Create a VM with Claude Code preinstalled, from an empty data folder (golden bake) and again with the golden present.
   - Start, stop and delete; a failed provision shows its hint.

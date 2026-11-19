@@ -31,6 +31,8 @@ Shipped:
 - [x] Fonts for all major scripts and color emoji in golden images (v1.2.1)
 - [x] Sound, copied files on the clipboard and emoji input for `pvm app`, and GTK apps that open in a second (v1.2.2)
 - [x] Unit tests on a Windows runner in CI (v1.2.2)
+- [x] PVM Desktop, a graphical app for VMs, exits and workspaces on native Windows, in the installers (v1.3.0)
+- [x] A stored default VM, readiness in `pvm ls`, and built-in apps with `pvm app install` (v1.3.0)
 
 Planned:
 
@@ -39,7 +41,7 @@ Planned:
 - [ ] Input method candidates that follow the app's text cursor
 - [ ] `pvm desktop` as a host window like `pvm app`, opening the workspace folder in the VM's file manager
 - [ ] Windows CI: the remaining packages' tests, and an installer smoke test on tags
-- [ ] PVM Desktop, a graphical app like Docker Desktop for creating VMs, exits, workspaces and app presets: built for native Windows and shipped in the installers, not yet tested end to end on Windows
+- [ ] PVM Desktop: an installer test on Windows, a tray icon, and screens for snapshots, port maps and mounts
 
 Candidates:
 
