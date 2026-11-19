@@ -954,7 +954,9 @@ func TestPvmRunner(t *testing.T) {
 	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "pvm")
-	body := "#!/bin/sh\nprintf '%s\\n' \"$@\"\npwd\necho oops >&2\nexit 3\n"
+	// pwd -P resolves links as EvalSymlinks does below: the macOS temporary
+	// folder is under /var, a link to /private/var.
+	body := "#!/bin/sh\nprintf '%s\\n' \"$@\"\npwd -P\necho oops >&2\nexit 3\n"
 	if err := os.WriteFile(script, []byte(body), 0o700); err != nil {
 		t.Fatal(err)
 	}
