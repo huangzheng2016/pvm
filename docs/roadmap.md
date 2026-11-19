@@ -1,6 +1,6 @@
 # Roadmap
 
-Planned work for the next release of this fork. Items move to the release notes once they ship; tick them in the Roadmap lists of README.md and README.zh-CN.md in the same release.
+Planned work for the next release. Items move to the release notes once they ship; tick them in the Roadmap lists of README.md and README.zh-CN.md in the same release.
 
 ## Planned
 

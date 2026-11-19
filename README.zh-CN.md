@@ -61,7 +61,7 @@ pvm 支持 arm64 的 macOS、amd64 的 Linux，以及 amd64 的 Windows。
 
 ### Windows
 
-1. 从 [Releases](../../releases) 下载 `pvm_windows_amd64_setup.exe` 或 `pvm_windows_amd64_setup.msi`。可先校验：`gh attestation verify pvm_windows_amd64_setup.exe --repo BitterOrange/pvm`。
+1. 从 [Releases](../../releases) 下载 `pvm_windows_amd64_setup.exe` 或 `pvm_windows_amd64_setup.msi`。可先校验：`gh attestation verify pvm_windows_amd64_setup.exe --repo huangzheng2016/pvm`。
 2. 运行它，不需要管理员权限。
 3. 打开新的终端让 `PATH` 变更生效，运行 `pvm doctor` 检查加速和后端。也可以从开始菜单打开 **PVM Desktop**，见 [PVM Desktop](#pvm-desktop)。
 
@@ -97,7 +97,7 @@ Windows 有两种后端，通过 `PVM_BACKEND` 或 `~/.pvm/config.yaml` 中的 `
 先安装 GitHub CLI（`gh`）和 Python 3，然后执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BitterOrange/pvm/master/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/huangzheng2016/pvm/master/scripts/install.sh | sh
 ```
 
 脚本把 `pvm` 装到 `~/.local/bin`（可用 `INSTALL_DIR` 修改），并安装自带的 QEMU 运行时（设置 `PVM_SKIP_QEMU=1` 则改用系统 QEMU）。替换任何文件之前，它会校验发布包的 checksum 和 GitHub 构建证明（attestation），并保留旧的二进制和运行时。该脚本在 Windows 的 Git Bash 中也能用，但 Windows 上推荐使用安装包。
