@@ -8,7 +8,9 @@ pvm_native_target
 cd "$SCRIPT_DIR/.."
 PVM_VERSION="${PVM_VERSION:-$(cat VERSION)}"
 
-# Remove stale raw/compressed guests from previous builds.
+# Remove stale raw/compressed guests from previous builds. The folder holds
+# only build output, so a fresh checkout does not have it.
+mkdir -p internal/assets/packed
 rm -f internal/assets/packed/gateway-linux-* internal/assets/packed/agent-linux-*
 
 echo "== guest binaries ($PVM_HOSTARCH)"
