@@ -33,6 +33,7 @@
 - [x] CI 在 Windows runner 上跑单元测试（v1.2.2）
 - [x] PVM Desktop：原生 Windows 上管理虚拟机、出口和工作区的图形应用，随安装包发布（v1.3.0）
 - [x] 保存的默认虚拟机、`pvm ls` 显示就绪状态，以及用 `pvm app install` 安装内置应用（v1.3.0）
+- [x] 合并上游：内核参数与端口映射加固、旧虚拟机上的 `pvm desktop`、macOS 的 uid 和更严格的停止错误处理（v1.3.1）
 
 计划中：
 

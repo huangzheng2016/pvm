@@ -33,6 +33,7 @@ Shipped:
 - [x] Unit tests on a Windows runner in CI (v1.2.2)
 - [x] PVM Desktop, a graphical app for VMs, exits and workspaces on native Windows, in the installers (v1.3.0)
 - [x] A stored default VM, readiness in `pvm ls`, and built-in apps with `pvm app install` (v1.3.0)
+- [x] Upstream merged: kernel-arg and port-map hardening, `pvm desktop` on older VMs, macOS uid and stricter stop errors (v1.3.1)
 
 Planned:
 
