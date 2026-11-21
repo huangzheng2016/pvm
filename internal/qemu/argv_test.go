@@ -175,6 +175,12 @@ func TestAccelArgsAndFallback(t *testing.T) {
 	if h := FallbackHint(errors.New("ret = HV_NO_DEVICE (0xfae94006)")); !strings.Contains(h, "reboot the host") {
 		t.Errorf("HV_NO_DEVICE hint: %q", h)
 	}
+	if !socketBindFailed(errors.New("qemu exited early: exit status 1\n-chardev socket,id=ser0,host=127.0.0.1,port=54659: Failed to bind socket: Input/output error")) {
+		t.Fatal("a socket bind failure would fall back to another accelerator")
+	}
+	if socketBindFailed(errors.New("WHPX: No accelerator found")) {
+		t.Fatal("an accelerator failure counted as a socket bind failure")
+	}
 	if h := FallbackHint(errors.New("some other error")); h != "" {
 		t.Errorf("unrelated error must have no hint: %q", h)
 	}

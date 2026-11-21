@@ -1,6 +1,7 @@
 package paths
 
 import (
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/native"
 )
 
@@ -104,12 +106,66 @@ func SocketEndpoint(sockPath string) string {
 	if runtime.GOOS != "windows" || strings.HasPrefix(sockPath, "tcp:") {
 		return sockPath
 	}
-	tcpFile := sockPath + ".tcp"
-	if b, err := os.ReadFile(tcpFile); err == nil {
-		if addr := strings.TrimSpace(string(b)); strings.HasPrefix(addr, "tcp:127.0.0.1:") {
-			return addr
+	if addr := storedEndpoint(sockPath); addr != "" {
+		return addr
+	}
+	return allocEndpoint(sockPath)
+}
+
+func storedEndpoint(sockPath string) string {
+	b, err := os.ReadFile(sockPath + ".tcp")
+	if err != nil {
+		return ""
+	}
+	if addr := strings.TrimSpace(string(b)); strings.HasPrefix(addr, "tcp:127.0.0.1:") {
+		return addr
+	}
+	return ""
+}
+
+// RefreshSocketEndpoint picks a new port for sockPath when the stored one
+// can no longer be bound, and reports whether it did. Windows reserves
+// port ranges anew at boot, which can cover a port stored earlier; QEMU
+// then fails to start. Call it only while nothing listens on the port,
+// that is before starting the QEMU that will.
+func RefreshSocketEndpoint(sockPath string) (bool, error) {
+	if runtime.GOOS != "windows" {
+		return false, nil
+	}
+	return refreshEndpoint(sockPath)
+}
+
+func refreshEndpoint(sockPath string) (bool, error) {
+	addr := storedEndpoint(sockPath)
+	if addr == "" {
+		return false, nil
+	}
+	if ln, err := net.Listen("tcp", strings.TrimPrefix(addr, "tcp:")); err == nil {
+		ln.Close()
+		return false, nil
+	}
+	if _, err := allocEndpointChecked(sockPath); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// RefreshVMSockets refreshes the endpoints QEMU listens on for a VM that
+// is not running, and reports whether any changed.
+func (p *Paths) RefreshVMSockets(name string) (bool, error) {
+	var changed bool
+	var errs []error
+	for _, s := range []string{"qmp.sock", "serial.sock", "agent.sock", "stream.sock"} {
+		ok, err := RefreshSocketEndpoint(filepath.Join(p.VMDir(name), s))
+		changed = changed || ok
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", s, err))
 		}
 	}
+	return changed, errors.Join(errs...)
+}
+
+func endpointAddress(sockPath string) string {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(filepath.Clean(sockPath)))
 	basePort := 40000 + int(h.Sum32()%15000)
@@ -128,11 +184,30 @@ func SocketEndpoint(sockPath string) string {
 			}
 		}
 	}
-	addr := fmt.Sprintf("tcp:127.0.0.1:%d", port)
+	return fmt.Sprintf("tcp:127.0.0.1:%d", port)
+}
+
+func allocEndpoint(sockPath string) string {
+	addr := endpointAddress(sockPath)
 	if fi, err := os.Stat(filepath.Dir(sockPath)); err == nil && fi.IsDir() {
-		_ = os.WriteFile(tcpFile, []byte(addr+"\n"), 0o600)
+		_ = os.WriteFile(sockPath+".tcp", []byte(addr+"\n"), 0o600)
 	}
 	return addr
+}
+
+func allocEndpointChecked(sockPath string) (string, error) {
+	addr := endpointAddress(sockPath)
+	fi, err := os.Stat(filepath.Dir(sockPath))
+	if err != nil {
+		return "", err
+	}
+	if !fi.IsDir() {
+		return "", fmt.Errorf("socket directory %s is not a directory", filepath.Dir(sockPath))
+	}
+	if err := fsutil.AtomicWrite(sockPath+".tcp", []byte(addr+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return addr, nil
 }
 
 func (p *Paths) AgentBin() string {

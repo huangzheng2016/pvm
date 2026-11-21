@@ -25,7 +25,7 @@ Small messages were never slow and there were no 200 ms Nagle stalls. The port m
 
 Every VM has a second virtio-serial port, `pvm.stream`, next to the agent's. It carries multiplexed binary streams with per-stream credit flow control (`internal/stream`).
 
-- Only the host opens streams, by naming a target. The guest agent connects only targets on its allowlist: `novnc` (the desktop's websockify), `xpra:<uid>` (that user's Xpra socket), `clip:<uid>:<kind>` (sets that user's clipboard) and three measurement targets. The guest cannot open a stream, reach host addresses or reach the network through it.
+- Only the host opens streams, by naming a target. The guest agent connects only targets on its allowlist: `novnc` (the desktop's websockify), `xpra:<uid>` (that user's Xpra socket), `clip:<uid>:<kind>` (sets that user's clipboard), `clipout:<uid>:files` (copies the files on that user's clipboard) and three measurement targets. The guest cannot open a stream, reach host addresses or reach the network through it.
 - The agent runs as root, so it connects a user socket only when the runtime directory and the socket belong to that uid, are not symlinks and are closed to other users.
 - The daemon keeps one session per VM, because QEMU's chardev socket accepts one host connection. A handshake skips bytes left on the port by an earlier host connection, so a daemon restart recovers while the VM runs.
 - RAM snapshots record whether the VM had the port. A VM restored from an older snapshot runs without it until its next cold boot.
@@ -78,14 +78,37 @@ Text a host input method commits, such as Chinese from Microsoft Pinyin, reaches
 
 Synthetic Unicode input (`SendInput` with `KEYEVENTF_UNICODE`, used by some on-screen keyboards and automation tools) still does not arrive: the Xpra Windows client turns it into an empty key before it sends it.
 
+Characters outside the Basic Multilingual Plane, such as emoji from the Windows emoji panel, reach GTK on Windows as two key events, one per UTF-16 surrogate. The Xpra 6.5.5 client then failed to encode the lone surrogate, dropped the connection and lost every window. The Windows installers add `xpra/client/gui/keyboard_helper.py` to the client (`script/windows/xpra-patch`), which Python loads before the compiled module of the same name; it runs the original and joins the two halves into one key event, which the server types like other committed text. Measured: an emoji from the emoji panel arrived in gedit as `U+1F924`, and the client stayed connected. Clients installed some other way still drop the connection.
+
+## Sound
+
+The server runs its own PulseAudio (`xpra-audio-server`) with `--speaker=on --microphone=on`. The guest session runs a PulseAudio of its own, with only a null sink, which apps would otherwise use; the server script puts `PULSE_SERVER` for the server's in the user manager's environment, which app units inherit, and starts the server without it, as its PulseAudio refuses to start while one is named. The client decides, from `pvm app config <vm> --audio`:
+
+- `out` (default): `--speaker=on --microphone=no`; VM sound plays on the host's default output device.
+- `both`: also `--microphone=on`; the host's default input device records into the VM's default source.
+- `off`: neither.
+
+Both directions use Opus. Measured on a Windows host: a 440 Hz tone played in the VM with `paplay` was recorded from the host's output device through WASAPI loopback at about 440 Hz, and a recording in the VM picked up the host's default microphone. Before `PULSE_SERVER` was set, apps played into the session's null sink and the host heard nothing.
+
+## Startup
+
+GTK programs started through D-Bus activation services that need the display, such as the desktop portal's GTK backend. The user manager had no `DISPLAY`, so the backend exited, the portal hung until its start timed out, and gedit and Thunar took 50 to 60 seconds to show a window. The server script now puts `DISPLAY` in the activation environment and clears the failed units; both open in about one second.
+
+The first app in a VM installs what came after the VM's Xpra: `gtk3-nocsd`, `xpra-audio-server` and the Noto fonts for all major scripts and color emoji (about 25 MB). Packages the release lacks do not block, and an install that fails leaves a warning. `pvm app` shows the install's output.
+
 ## Clipboard
 
 Measured: the Xpra Windows client sends the host clipboard to the server even while none of its windows has focus, so anything copied on the host, including passwords, would enter the VM. pvm therefore splits the directions:
 
 - Guest to host: Xpra's own clipboard, `--clipboard-direction=to-client` on both ends. Text and images.
-- Host to guest: pvm's bridge, `pvm app __clipboard`, started with the client. It sends the host clipboard only when one of the VM's windows comes to the front, and when the clipboard changes while it is there. It skips content the Xpra client put on the clipboard, which came from the guest, and content marked `ExcludeClipboardContentFromMonitorProcessing` by password managers. Text and images (PNG, or DIB converted to PNG) go to the `clip` target, which sets the guest clipboard with xclip. Windows hosts only so far.
+- Host to guest: pvm's bridge, `pvm app __clipboard`, started with the client. It sends the host clipboard only when one of the VM's windows comes to the front, and when the clipboard changes while it is there. It skips content the Xpra client or the bridge put on the clipboard, which came from the guest, and content marked `ExcludeClipboardContentFromMonitorProcessing` by password managers. Text and images (PNG, or DIB converted to PNG) go to the `clip` target, which sets the guest clipboard with xclip. Windows hosts only so far.
 
-`pvm app config <vm> --clipboard off|to-guest|to-host|both` sets the policy per VM; the default is `off`. The daemon refuses `clip` streams unless the policy allows host to guest.
+Files, which neither Xpra nor xclip carries, go through the same bridge on Windows hosts, as a tar of folders and regular files, up to 256 MB and 20000 entries; links and special files are left out.
+
+- Host to guest: files copied in Explorer (`CF_HDROP`) go to `clip:files`. The agent unpacks them as the VM user into a new folder under `~/.cache/pvm/clipboard`, removing the previous copy, and `clip_files.py` owns the clipboard with them as `x-special/gnome-copied-files` (Thunar, file dialogs), `text/uri-list` (browsers, Electron) and their paths as text. xclip offers one target only, and GTK's API for several is not available from Python.
+- Guest to host: when guest content reaches the host clipboard, and when focus leaves the VM's windows, the bridge opens `clipout:files`. The agent answers with a fingerprint of the files on the clipboard, by path, size and time; the bridge asks for them only when that changed, so a host copy made since is not overwritten by the same files. It unpacks them under `vms/<vm>/app/clipboard` in pvm's data, keeping only the latest copy, and puts them on the host clipboard as `CF_HDROP`, owned by a message-only window. Names Windows cannot hold, reserved device names and paths leaving the folder are skipped. Files that came from the host are not offered back.
+
+`pvm app config <vm> --clipboard off|to-guest|to-host|both` sets the policy per VM; the default is `off`. The daemon refuses `clip` streams unless the policy allows host to guest, and `clipout` streams unless it allows guest to host.
 
 ## Drops
 
@@ -105,14 +128,14 @@ pvm app dev1 --name notes --no-attach -- gedit notes.txt
 pvm app ls [dev1]
 pvm app attach dev1                        # reopen the windows after closing the client
 pvm app stop dev1 notes | --all
-pvm app config dev1 --clipboard both --drop on
+pvm app config dev1 --clipboard both --drop on --audio both
 ```
 
-Closing a host window closes that app in the guest. Quitting the client detaches without stopping apps. A VM restart ends its apps; `pvm app ls` reports them as exited once.
+Closing a host window closes that app in the guest. Quitting the client detaches without stopping apps. `pvm stop` and `pvm rm` stop the VM's Xpra server first, so the client hears it shut down and closes its windows; before, it kept reconnecting with the windows left on the host. A VM restart ends its apps; `pvm app ls` reports them as exited once.
 
 ## Not done
 
-- macOS and Linux hosts: the client starts, but the host-to-guest clipboard bridge is Windows only.
+- macOS and Linux hosts: the client starts, but the clipboard bridge, which carries host content into the VM and files either way, is Windows only.
 - WSL2 backend: not supported.
 - Drops into a specific application, and dragging out of the VM.
 - Firefox memory caps per web app.

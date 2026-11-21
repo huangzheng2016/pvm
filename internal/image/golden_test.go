@@ -91,7 +91,7 @@ func TestRenderProvision(t *testing.T) {
 		"tigervnc-standalone-server",
 		"novnc websockify",
 		"cloud-init clean",
-		"fonts-noto-cjk",
+		"fonts-noto-cjk fonts-noto-core fonts-noto-color-emoji",
 		"ibus-libpinyin",
 		"/etc/environment.d/ibus.conf",
 		"/etc/skel/.config/autostart/ibus.desktop",

@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -56,7 +57,7 @@ func TestAppScriptsParse(t *testing.T) {
 		t.Skip("no sh")
 	}
 	scripts := map[string]string{
-		"install": appInstallScript(),
+		"install": appInstallScript(true),
 		"server":  appServerScript(),
 		"cmd":     appLaunchScript(&appRecord{ID: "gedit", Kind: "cmd", Argv: []string{"gedit", "it's a file; rm -rf ~", "$(id)"}}),
 		"url":     appLaunchScript(&appRecord{ID: "mail", Kind: "url", URL: "https://example.com/?a=1&b='2'", Kiosk: true}),
@@ -69,6 +70,10 @@ func TestAppScriptsParse(t *testing.T) {
 	}
 	if !strings.Contains(scripts["cmd"], `'it'"'"'s a file; rm -rf ~'`) || !strings.Contains(scripts["cmd"], `'$(id)'`) {
 		t.Errorf("cmd arguments not quoted:\n%s", scripts["cmd"])
+	}
+	// GTK apps leave their title bar to the host when gtk3-nocsd is there
+	if !strings.Contains(scripts["cmd"], `$nocsd -- "$prog" $nogpu "$@"`) || !strings.Contains(scripts["cmd"], "v8_context_snapshot.bin") || !strings.Contains(scripts["install"], "install -y --no-install-recommends gtk3-nocsd") {
+		t.Errorf("gtk3-nocsd not installed or preloaded: %s | %s", scripts["install"], scripts["cmd"])
 	}
 	// every web app shares one profile; a running Firefox gets a new window
 	url := scripts["url"]
@@ -89,6 +94,56 @@ func TestAppScriptsParse(t *testing.T) {
 	}
 	if strings.Contains(appStopScript([]appRecord{{ID: "mail", Kind: "url", Window: "0x1"}}, true), "stop "+webappUnit) {
 		t.Error("the shared Firefox must keep running while other web apps use it")
+	}
+}
+
+// The launch script keeps every argument and adds --disable-gpu only to
+// programs that ship Chromium's V8 snapshot beside them.
+func TestAppLaunchDisablesGPUForChromium(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("needs a POSIX shell")
+	}
+	bin := t.TempDir()
+	write := func(path, body string) {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	argv := filepath.Join(bin, "argv")
+	write(filepath.Join(bin, "systemd-run"), `while [ "$1" != "--" ]; do shift; done; shift; printf '%s\n' "$@" > "`+argv+`"`)
+	write(filepath.Join(bin, "systemctl"), "exit 0")
+	write(filepath.Join(bin, "sleep"), "exit 0")
+	write(filepath.Join(bin, "plain"), "exit 0")
+	app := t.TempDir()
+	write(filepath.Join(app, "electron"), "exit 0")
+	if err := os.WriteFile(filepath.Join(app, "v8_context_snapshot.bin"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(app, "electron"), filepath.Join(bin, "electron")); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		prog string
+		want []string
+	}{
+		{"plain", []string{"plain", "a b", "$(id)"}},
+		{"electron", []string{"electron", "--disable-gpu", "a b", "$(id)"}},
+	} {
+		script := appLaunchScript(&appRecord{ID: "x", Kind: "cmd", Argv: []string{tc.prog, "a b", "$(id)"}})
+		c := exec.Command("sh", "-c", script)
+		c.Env = append(os.Environ(), "PATH="+bin+":/usr/bin:/bin")
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v: %s", tc.prog, err, out)
+		}
+		raw, err := os.ReadFile(argv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+		got[0] = filepath.Base(got[0])
+		if strings.Join(got, "|") != strings.Join(tc.want, "|") {
+			t.Errorf("%s: argv = %q, want %q", tc.prog, got, tc.want)
+		}
 	}
 }
 
@@ -123,6 +178,16 @@ func TestClipTargetFollowsPolicy(t *testing.T) {
 		got, _, err := s.clipTarget(spec, "clip:png")
 		if err != nil || got != "clip:1000:png" {
 			t.Errorf("policy %q: target %q, %v", mode, got, err)
+		}
+	}
+	// files from the guest clipboard need the other direction
+	for mode, allowed := range map[string]bool{"": false, "to-guest": false, "to-host": true, "both": true} {
+		if err := s.saveAppState("dev1", &appState{Clipboard: mode}); err != nil {
+			t.Fatal(err)
+		}
+		got, code, err := s.clipTarget(spec, "clipout:files")
+		if allowed != (err == nil) || (allowed && got != "clipout:1000:files") || (!allowed && code != 403) {
+			t.Errorf("policy %q: clipout target %q, code %d, %v", mode, got, code, err)
 		}
 	}
 	if _, code, _ := s.clipTarget(spec, "clip:../../x"); code != 400 {

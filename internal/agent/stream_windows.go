@@ -14,3 +14,7 @@ func dialUserSocket(string, int, string) (io.ReadWriteCloser, error) {
 func clipboardSink(int, string) (io.ReadWriteCloser, error) {
 	return nil, fmt.Errorf("the clipboard is only served in linux guests")
 }
+
+func clipFilesSource(int) (io.ReadWriteCloser, error) {
+	return nil, fmt.Errorf("the clipboard is only served in linux guests")
+}

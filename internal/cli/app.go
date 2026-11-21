@@ -25,7 +25,7 @@ const appUsage = `<vm> <url> [--name ID] [--kiosk] [--no-attach]
        pvm app ls [<vm>]
        pvm app stop <vm> [<id> | --all]
        pvm app attach <vm>
-       pvm app config <vm> [--clipboard off|to-guest|to-host|both] [--drop on|off]`
+       pvm app config <vm> [--clipboard off|to-guest|to-host|both] [--drop on|off] [--audio off|out|both]`
 
 type appView struct {
 	VM    string   `json:"vm"`
@@ -43,6 +43,7 @@ type appAttach struct {
 	Title        string `json:"title"`
 	Clipboard    string `json:"clipboard"`
 	Drop         bool   `json:"drop"`
+	Audio        string `json:"audio"`
 	Connected    bool   `json:"connected"`
 }
 
@@ -132,10 +133,11 @@ func CmdApp(args []string) int {
 		fmt.Printf("xpra client started for %s\n", args[1])
 		return 0
 	case "config":
-		const usage = "<vm> [--clipboard off|to-guest|to-host|both] [--drop on|off]"
+		const usage = "<vm> [--clipboard off|to-guest|to-host|both] [--drop on|off] [--audio off|out|both]"
 		fs := newFlagSet("app config", usage)
 		clip := fs.String("clipboard", "", "off, to-guest (host to vm), to-host (vm to host) or both")
 		drop := fs.String("drop", "", "on: files dropped on the vm's windows upload into ~/Downloads in the vm")
+		audio := fs.String("audio", "", "out (vm sound on the host speakers), both (also the host microphone into the vm) or off")
 		if err := fs.Parse(flagsFirst(fs, args[1:])); err != nil {
 			return 2
 		}
@@ -149,6 +151,9 @@ func CmdApp(args []string) int {
 		if *drop != "" {
 			body["drop"] = *drop == "on"
 		}
+		if *audio != "" {
+			body["audio"] = *audio
+		}
 		c, err := daemon.Ensure(p)
 		if err != nil {
 			return fatalf("%v", err)
@@ -156,6 +161,7 @@ func CmdApp(args []string) int {
 		var out struct {
 			Clipboard string `json:"clipboard"`
 			Drop      bool   `json:"drop"`
+			Audio     string `json:"audio"`
 		}
 		if err := c.Put("/v1/vms/"+fs.Arg(0)+"/apps/config", body, &out); err != nil {
 			return fatalf("%v", err)
@@ -164,9 +170,12 @@ func CmdApp(args []string) int {
 		if out.Drop {
 			dropS = "on"
 		}
-		fmt.Printf("%s: clipboard %s, drop %s\n", fs.Arg(0), out.Clipboard, dropS)
+		fmt.Printf("%s: clipboard %s, drop %s, audio %s\n", fs.Arg(0), out.Clipboard, dropS, out.Audio)
 		if out.Clipboard == "to-guest" || out.Clipboard == "both" {
 			fmt.Println("host clipboard content enters the vm when one of its windows comes to the front, and when you copy while it is there")
+		}
+		if out.Audio == "both" {
+			fmt.Println("the host's default microphone records into the vm while a client is attached")
 		}
 		if out.Drop {
 			fmt.Println("files dropped on its windows upload into ~/Downloads in the vm; files the vm sends need your confirmation")
@@ -361,12 +370,23 @@ func startXpraClient(vm string, att appAttach) error {
 	return startXpraClientAt(vm, client, att)
 }
 
+// xpraWindowMetadata is the Windows Xpra 6.5 client's own metadata list
+// minus "decorations": windows that ask for no frame through
+// _MOTIF_WM_HINTS, as Electron apps do, still get the host's title bar and
+// buttons.
+const xpraWindowMetadata = "title,icon-title,pid,iconic,size-constraints,class-instance,client-machine," +
+	"transient-for,window-type,fullscreen,maximized,skip-taskbar,skip-pager,has-alpha,override-redirect," +
+	"tray,modal,role,opacity,xid,group-leader,opaque-region,command,workspace,above,below,sticky," +
+	"set-initial-position,requested-position,content-type,content-types,parent,relative-position,actions"
+
 // startXpraClientAt starts the client detached; it outlives the CLI.
-// Xpra's own clipboard only carries guest content to the host; host
-// content goes in through the clipboard bridge, which sends it only while
-// one of the VM's windows is in front.
+// Xpra's own clipboard only carries guest text and images to the host;
+// host content goes in through the clipboard bridge, which sends it only
+// while one of the VM's windows is in front, and the bridge also carries
+// files the guest copies.
 func startXpraClientAt(vm, client string, att appAttach) error {
 	toGuest := att.Clipboard == "to-guest" || att.Clipboard == "both"
+	toHost := att.Clipboard == "to-host" || att.Clipboard == "both"
 	if toGuest && !clipboardBridgeSupported {
 		return fmt.Errorf("the host clipboard cannot enter the vm from this host yet; use `pvm app config %s --clipboard to-host`", vm)
 	}
@@ -387,11 +407,20 @@ func startXpraClientAt(vm, client string, att appAttach) error {
 	}
 	args = append(args, files,
 		"--open-files=no", "--open-url=no",
-		"--printing=no", "--speaker=off", "--microphone=off", "--webcam=no",
+		"--printing=no", "--webcam=no",
 		"--notifications=no", "--tray=no", "--splash=no", "--reconnect=yes",
 		// the client's defaults win over the server's: keep encoding fast
 		"--min-speed=80", "--min-quality=50",
 	)
+	// the host's default output and input devices
+	switch att.Audio {
+	case "both":
+		args = append(args, "--speaker=on", "--microphone=on")
+	case "out":
+		args = append(args, "--speaker=on", "--microphone=no")
+	default:
+		args = append(args, "--speaker=no", "--microphone=no")
+	}
 	if runtime.GOOS == "windows" {
 		// OpenGL painting on Windows slows the client's frame acks, and the
 		// server paces updates by them: a full-window animation ran at 22
@@ -399,6 +428,9 @@ func startXpraClientAt(vm, client string, att appAttach) error {
 		args = append(args, "--opengl=no")
 	}
 	c := exec.Command(client, args...)
+	if runtime.GOOS == "windows" {
+		c.Env = append(os.Environ(), "XPRA_METADATA_SUPPORTED="+xpraWindowMetadata)
+	}
 	logPath := filepath.Join(filepath.Dir(att.PasswordFile), "client.log")
 	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600); err == nil {
 		c.Stdout, c.Stderr = f, f
@@ -420,17 +452,25 @@ func startXpraClientAt(vm, client string, att appAttach) error {
 		return fmt.Errorf("xpra client exited right away (%v); see %s", err, logPath)
 	case <-time.After(3 * time.Second):
 	}
-	if toGuest {
+	if clipboardBridgeSupported && (toGuest || toHost) {
 		self, err := os.Executable()
 		if err != nil {
 			return err
 		}
-		b := exec.Command(self, "app", "__clipboard", vm, strconv.Itoa(c.Process.Pid), filepath.Dir(client))
+		b := exec.Command(self, "app", "__clipboard", vm, strconv.Itoa(c.Process.Pid), filepath.Dir(client), att.Clipboard)
+		if f, err := os.OpenFile(filepath.Join(filepath.Dir(att.PasswordFile), "clipboard.log"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600); err == nil {
+			b.Stdout, b.Stderr = f, f
+			defer f.Close()
+		}
 		detachClient(b)
 		if err := b.Start(); err != nil {
 			return fmt.Errorf("start clipboard bridge: %w", err)
 		}
 		b.Process.Release()
+	}
+	if att.Clipboard == "off" {
+		// otherwise copy and paste just do nothing, with no hint why
+		fmt.Fprintf(os.Stderr, "clipboard is off for %s; turn it on with `pvm app config %s --clipboard both` and reattach\n", vm, vm)
 	}
 	return nil
 }
@@ -438,8 +478,8 @@ func startXpraClientAt(vm, client string, att appAttach) error {
 // cmdAppClipboardBridge runs until the Xpra client exits; see
 // runClipboardBridge.
 func cmdAppClipboardBridge(p *paths.Paths, args []string) int {
-	if len(args) != 3 {
-		return fatalf("usage: pvm app __clipboard <vm> <client-pid> <client-dir>")
+	if len(args) != 4 {
+		return fatalf("usage: pvm app __clipboard <vm> <client-pid> <client-dir> <clipboard-mode>")
 	}
 	pid, err := strconv.Atoi(args[1])
 	if err != nil {
@@ -449,7 +489,17 @@ func cmdAppClipboardBridge(p *paths.Paths, args []string) int {
 	open := func(kind string) (io.ReadWriteCloser, error) {
 		return c.Upgrade("/v1/vms/" + args[0] + "/stream?target=clip:" + kind)
 	}
-	if err := runClipboardBridge(args[0], pid, args[2], func(cc clipContent) error { return sendClipboard(open, cc) }); err != nil {
+	mode := args[3]
+	b := clipBridge{
+		toGuest: mode == "to-guest" || mode == "both",
+		toHost:  mode == "to-host" || mode == "both",
+		send:    func(cc clipContent) error { return sendClipboard(open, cc) },
+		openFiles: func() (io.ReadWriteCloser, error) {
+			return c.Upgrade("/v1/vms/" + args[0] + "/stream?target=clipout:files")
+		},
+		stage: filepath.Join(p.VMDir(args[0]), "app", "clipboard"),
+	}
+	if err := runClipboardBridge(args[0], pid, args[2], b); err != nil {
 		return fatalf("%v", err)
 	}
 	return 0
@@ -477,7 +527,7 @@ func prepareApp(c *daemon.Client, vm string) error {
 		}
 		if f.Out != "" {
 			if !started {
-				fmt.Fprintf(os.Stderr, "installing xpra in %s (first use, a few minutes)...\n", vm)
+				fmt.Fprintf(os.Stderr, "installing app support in %s (xpra, sound, fonts; a few minutes)...\n", vm)
 				started = true
 			}
 			fmt.Fprintf(os.Stderr, "        | %s\n", f.Out)
@@ -487,7 +537,7 @@ func prepareApp(c *daemon.Client, vm string) error {
 				return fmt.Errorf("%s", f.Error)
 			}
 			if f.Installed {
-				fmt.Fprintf(os.Stderr, "xpra installed in %s\n", vm)
+				fmt.Fprintf(os.Stderr, "app support installed in %s\n", vm)
 			}
 			return nil
 		}

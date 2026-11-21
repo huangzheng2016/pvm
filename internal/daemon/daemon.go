@@ -200,6 +200,37 @@ func (s *Server) instance(spec *vm.Spec) *qemu.Instance {
 	}
 }
 
+// refreshSockets gives a VM that is about to start new ports for the
+// sockets QEMU listens on whose stored ports can no longer be bound,
+// which happens on Windows when a reboot reserves a range covering them.
+// A gateway also listens on its VMs' links; those whose port changes are
+// rebuilt by onGatewayStarted, and a running VM's NIC is repaired there.
+func (s *Server) refreshSockets(spec *vm.Spec) error {
+	// a running QEMU holds its own ports, which then fail to bind too
+	if st, err := s.instance(spec).Running(); err != nil || st != nil {
+		return nil
+	}
+	changed, err := s.P.RefreshVMSockets(spec.Name)
+	if err != nil {
+		return fmt.Errorf("refresh %s sockets: %w", spec.Name, err)
+	}
+	if changed {
+		log.Printf("vm %s: stored socket ports are no longer usable; picked new ones", spec.Name)
+	}
+	if cl := s.clustersByGatewayName(spec.Name); cl != nil {
+		for name := range cl.VMs {
+			ok, err := s.Clusters.RefreshLinkSock(cl.ID, name)
+			if err != nil {
+				return fmt.Errorf("refresh %s link: %w", name, err)
+			}
+			if ok {
+				log.Printf("vm %s: link port is no longer usable; picked a new one", name)
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Server) clustersByGatewayName(name string) *cluster.Cluster {
 	for _, cl := range s.Clusters.List() {
 		if cl.Gateway == name {
@@ -627,6 +658,9 @@ func (s *Server) prepareClusterStart(ctx context.Context, spec *vm.Spec) error {
 
 func (s *Server) startVM(ctx context.Context, spec *vm.Spec) (*qemu.Instance, *qemu.SnapshotManifest, error) {
 	if spec.Role == "gateway" {
+		if err := s.refreshSockets(spec); err != nil {
+			return nil, nil, err
+		}
 		inst := s.instance(spec)
 		if err := inst.Start(); err != nil {
 			return nil, nil, err
@@ -638,6 +672,9 @@ func (s *Server) startVM(ctx context.Context, spec *vm.Spec) (*qemu.Instance, *q
 		return inst, nil, nil
 	}
 	if err := s.prepareMountSlots(spec); err != nil {
+		return nil, nil, err
+	}
+	if err := s.refreshSockets(spec); err != nil {
 		return nil, nil, err
 	}
 	if err := s.prepareClusterStart(ctx, spec); err != nil {
@@ -872,6 +909,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
+	s.closeAppClients(spec)
 	if err := s.instance(spec).Stop(); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -903,6 +941,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
+	s.closeAppClients(spec)
 	if err := s.instance(spec).Stop(); err != nil {
 		writeErr(w, 500, fmt.Errorf("cannot stop %s safely (%v); not deleting", name, err))
 		return
@@ -970,6 +1009,7 @@ func (s *Server) StopAllVMs() {
 		lock := qemu.LockVM(spec.Name)
 		lock.Lock()
 		defer lock.Unlock()
+		s.closeAppClients(spec)
 		if err := s.instance(spec).Stop(); err != nil {
 			log.Printf("graceful stop %s: %v", spec.Name, err)
 		}
