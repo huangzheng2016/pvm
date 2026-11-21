@@ -209,7 +209,7 @@ func (s *Store) LinkSock(id int, vmName string) string {
 // RefreshLinkSock picks a new port for a VM's link when the stored one
 // can no longer be bound; see paths.RefreshSocketEndpoint. The gateway
 // listens on it, so call it only before the gateway starts.
-func (s *Store) RefreshLinkSock(id int, vmName string) bool {
+func (s *Store) RefreshLinkSock(id int, vmName string) (bool, error) {
 	return paths.RefreshSocketEndpoint(filepath.Join(s.LinksDir(id), vmName+".sock"))
 }
 

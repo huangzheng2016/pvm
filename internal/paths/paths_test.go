@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/huangzheng2016/pvm/internal/native"
@@ -79,20 +80,47 @@ func TestRefreshEndpoint(t *testing.T) {
 	if err := os.WriteFile(sock+".tcp", []byte(busy+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if !refreshEndpoint(sock) {
-		t.Fatal("unusable port kept")
+	changed, err := refreshEndpoint(sock)
+	if err != nil || !changed {
+		t.Fatalf("unusable port kept (changed=%v, err=%v)", changed, err)
 	}
 	fresh := storedEndpoint(sock)
 	if fresh == "" || fresh == busy {
 		t.Fatalf("new endpoint %q, was %q", fresh, busy)
 	}
-	if refreshEndpoint(sock) {
-		t.Fatal("usable port replaced")
+	changed, err = refreshEndpoint(sock)
+	if err != nil || changed {
+		t.Fatalf("usable port replaced (changed=%v, err=%v)", changed, err)
 	}
 	if got := storedEndpoint(sock); got != fresh {
 		t.Fatalf("endpoint changed to %q, want %q", got, fresh)
 	}
-	if refreshEndpoint(filepath.Join(t.TempDir(), "none.sock")) {
-		t.Fatal("refreshed an endpoint that was never stored")
+	changed, err = refreshEndpoint(filepath.Join(t.TempDir(), "none.sock"))
+	if err != nil || changed {
+		t.Fatalf("refreshed an endpoint that was never stored (changed=%v, err=%v)", changed, err)
+	}
+}
+
+func TestRefreshEndpointWriteFailure(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Getuid() == 0 {
+		t.Skip("requires Unix permission enforcement and a non-root user")
+	}
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "qmp.sock")
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if err := os.WriteFile(sock+".tcp", []byte("tcp:"+held.Addr().String()+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0o700)
+	changed, err := refreshEndpoint(sock)
+	if err == nil || changed {
+		t.Fatalf("write failure hidden (changed=%v, err=%v)", changed, err)
 	}
 }
