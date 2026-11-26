@@ -140,7 +140,7 @@ func (s *Server) restoreMaps(clusterID int, maps []*cluster.PortMap) {
 		return
 	}
 	for _, m := range maps {
-		_ = s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort)
+		_ = s.restoreMapRelay(m)
 	}
 }
 

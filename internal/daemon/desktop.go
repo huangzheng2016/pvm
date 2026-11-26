@@ -311,7 +311,7 @@ func (s *Server) removeDesktopMaps(ctx context.Context, spec *vm.Spec, push func
 	defer s.mapMu.Unlock()
 	for _, m := range s.Clusters.Get(spec.ClusterID).Maps {
 		if m.VM == spec.Name && m.GuestPort == desktopWebPort {
-			s.relays.Remove(m.Proto, m.HostPort)
+			s.removeMapRelay(m)
 			if _, err := s.Clusters.RemoveMap(spec.ClusterID, m.HostPort, m.Proto); err != nil {
 				return err
 			}

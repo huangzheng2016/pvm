@@ -149,8 +149,11 @@ func (s *Server) addMap(ctx context.Context, spec *vm.Spec, hostPort, guestPort 
 	if hostPort < 1024 || hostPort > 65535 {
 		return nil, 400, fmt.Errorf("host_port must be 1024-65535")
 	}
-	if err := validateGatewayMapCount(runtime.GOOS, len(s.Clusters.Get(spec.ClusterID).Maps)+1); err != nil {
-		return nil, 409, err
+	gwMaps := 0
+	for _, em := range s.Clusters.Get(spec.ClusterID).Maps {
+		if em.Transport != "stream" {
+			gwMaps++
+		}
 	}
 	// Ownership is global: a port persisted by another cluster without
 	// a live relay is still taken and must not be hijackable.
@@ -162,6 +165,29 @@ func (s *Server) addMap(ctx context.Context, spec *vm.Spec, hostPort, guestPort 
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, 500, err
+	}
+
+	// Prefer pvm.stream for TCP maps when the VM is running with the stream
+	// port: it consumes no gateway slirp socket (no Windows 32-map limit),
+	// avoids the gateway relay ceiling, and needs no gateway config push.
+	if proto == "tcp" && s.canStreamMap(ctx, spec) {
+		m, err := s.Clusters.AddStreamMap(spec.ClusterID, spec.Name, spec.IP, hostPort, guestPort)
+		if err != nil {
+			return nil, 409, err
+		}
+		f, err := s.startStreamForward(spec.Name, fmt.Sprintf("tcp:%d", guestPort), "127.0.0.1", hostPort)
+		if err != nil {
+			_, _ = s.Clusters.RemoveMap(spec.ClusterID, hostPort, proto)
+			return nil, 500, err
+		}
+		if s.mapForwards == nil {
+			s.mapForwards = map[string]*streamForward{}
+		}
+		s.mapForwards[relayKey(proto, hostPort)] = f
+		return m, 201, nil
+	}
+	if err := validateGatewayMapCount(runtime.GOOS, gwMaps+1); err != nil {
+		return nil, 409, err
 	}
 
 	m, err := s.Clusters.AddMap(spec.ClusterID, spec.Name, spec.IP, hostPort, guestPort, proto)
@@ -184,6 +210,49 @@ func (s *Server) addMap(ctx context.Context, spec *vm.Spec, hostPort, guestPort 
 		return nil, 500, fmt.Errorf("map rolled back after gateway config push failed: %w", err)
 	}
 	return m, 201, nil
+}
+
+func (s *Server) canStreamMap(ctx context.Context, spec *vm.Spec) bool {
+	if st, err := s.instance(spec).Running(); err != nil || st == nil {
+		return false
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	_, err := s.streamSession(probeCtx, spec.Name)
+	return err == nil
+}
+
+func (s *Server) removeMapRelay(m *cluster.PortMap) {
+	if m == nil {
+		return
+	}
+	if m.Transport == "stream" {
+		if f := s.mapForwards[relayKey(m.Proto, m.HostPort)]; f != nil {
+			f.Close()
+			delete(s.mapForwards, relayKey(m.Proto, m.HostPort))
+		}
+		return
+	}
+	s.relays.Remove(m.Proto, m.HostPort)
+}
+
+func (s *Server) restoreMapRelay(m *cluster.PortMap) error {
+	if m.Transport == "stream" {
+		key := relayKey(m.Proto, m.HostPort)
+		if s.mapForwards[key] != nil {
+			return nil
+		}
+		f, err := s.startStreamForward(m.VM, fmt.Sprintf("tcp:%d", m.GuestPort), "127.0.0.1", m.HostPort)
+		if err != nil {
+			return err
+		}
+		if s.mapForwards == nil {
+			s.mapForwards = map[string]*streamForward{}
+		}
+		s.mapForwards[key] = f
+		return nil
+	}
+	return s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort)
 }
 
 // mapPortInUse reports whether any cluster already persists hostPort
@@ -234,12 +303,18 @@ func (s *Server) handleMapRemove(w http.ResponseWriter, r *http.Request) {
 		for _, cl := range previous {
 			_ = s.Clusters.SetMaps(cl.ID, cl.Maps)
 			for _, m := range cl.Maps {
-				_ = s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort)
+				_ = s.restoreMapRelay(m)
 			}
 			_ = s.pushBounded(cl.ID)
 		}
 	}
-	s.relays.Remove(proto, port)
+	for _, cl := range previous {
+		for _, m := range cl.Maps {
+			if m.HostPort == port && m.Proto == proto {
+				s.removeMapRelay(m)
+			}
+		}
+	}
 	removed := false
 	for _, cl := range previous {
 		ok, err := s.Clusters.RemoveMap(cl.ID, port, proto)

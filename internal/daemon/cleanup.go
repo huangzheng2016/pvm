@@ -24,7 +24,7 @@ func (s *Server) removeVMMapsLocked(clusterID int, name string) error {
 	if cl != nil {
 		for _, m := range cl.Maps {
 			if m.VM == name {
-				s.relays.Remove(m.Proto, m.HostPort)
+				s.removeMapRelay(m)
 			}
 		}
 	}

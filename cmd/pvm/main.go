@@ -34,6 +34,8 @@ vm:
   audit         read-only health audit: pvm audit dev1 [--privacy] (vm, route, tcp/udp/icmp probes, dns, ipv6, timezone, locale)
   diag          export a redacted diagnostic zip: pvm diag [output.zip] [--offline]
   check         run active isolation & two-path egress checks: pvm check <vm> [--json]
+  ssh-config    print an OpenSSH config entry (print-only): pvm ssh-config <vm>
+  dashboard     open the read-only web status page: pvm dashboard [--open]
   job           inspect async operations: pvm job <id> [--wait [duration]] | pvm job ls [--vm NAME]
   capabilities  print the machine-readable agent contract (offline, --json)
   default       show or set the default vm: pvm default [<vm>|--clear]; pvm image default [<distro:version>|--clear]
@@ -216,6 +218,10 @@ func main() {
 		code = cli.CmdDiag(args)
 	case "check":
 		code = cli.CmdCheck(args)
+	case "ssh-config":
+		code = cli.CmdSSHConfig(args)
+	case "dashboard", "web":
+		code = cli.CmdDashboard(args)
 	case "job":
 		code = cli.CmdJob(args)
 	case "capabilities":

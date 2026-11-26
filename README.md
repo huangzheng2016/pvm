@@ -8,7 +8,9 @@ Personal QEMU dev VMs in a single binary: create an isolated Linux development m
 
 - **A ready dev box in one command.** Docker, common tools, Firefox and a desktop come preinstalled. After a one-time image bake, new VMs are ready in about 30 seconds. See [Quickstart](#quickstart).
 - **All traffic through your own exit, and none without it.** Route a VM through your VPS over WireGuard, or through Cloudflare WARP with nothing to deploy. If the tunnel drops, the VM goes offline instead of leaking your host's IP. See [Fail-closed exit routing](#fail-closed-exit-routing).
-- **Split routing by domain or network.** Send some domains direct or through another exit; rules apply at once, without a restart.
+- **Split routing by domain or network.** Send some domains direct or through another exit; rules apply at once, without a restart. Import Clash/Mihomo/Surge subscriptions or share links with `pvm exit import`, including multi-hop relay chains, running as an isolated Mihomo process inside the gateway VM.
+- **Active isolation and egress checks.** `pvm check dev1` samples the real public exit IP on both the guest and gateway paths and cross-checks negative probes against gateway nftables counters. Optional per-VM admission gates (`pvm route require-check`) keep a VM offline unless a 90-second lease is renewed, and exit drift policies (`pvm exit set --ip-mode`) fail closed when an exit changes IP or region.
+- **Built for agents and scripts.** Read-only commands support `--json`, `pvm capabilities` describes the offline contract, `pvm job` tracks async provisioning with structured error codes, and `pvm dashboard` serves a read-only local status page.
 - **VM programs as native windows.** `pvm app dev1 -- gedit` or a web page opens as its own window on your desktop, while cookies, fingerprint and egress stay in the VM. Type with your own input method. See [Apps as host windows](#apps-as-host-windows).
 - **The full desktop in a browser tab.** `pvm desktop` opens the VM's own desktop, the same machine you reach over SSH. See [Browser desktop](#browser-desktop).
 - **Your project folders in the VM.** Mount a folder, keep two synced copies, or upload once and download the result. See [Workspaces](#workspaces).
@@ -26,23 +28,11 @@ Shipped:
 - [x] The `pvm.stream` channel and a faster `pvm desktop` (v1.2.0)
 - [x] UDP and UDP exits on native Windows (v1.2.0)
 - [x] Xpra client in the Windows installers (v1.2.0)
-
-Planned:
-
-- [ ] `pvm exit-agent install|uninstall` as a systemd service
-- [ ] Host-to-guest clipboard for `pvm app` on macOS and Linux, `pvm app` on WSL2, and reliable input method text
-- [ ] Input method candidates that follow the app's text cursor
-
-Candidates:
-
-- [ ] `pvm ssh-config` for VS Code Remote-SSH, rsync and similar tools
-- [ ] An egress probe in `pvm exit test`
-- [ ] A default image and a default VM
-- [ ] Port maps over `pvm.stream` instead of the gateway VM
-- [ ] Offer to start a stopped VM
-- [ ] Fix the gateway rule drift false positive
-
-Details are in [docs/roadmap.md](docs/roadmap.md).
+- [x] `pvm diag` redacted diagnostic bundles, bounded log rotation, mount credential guards and host-LAN isolation on direct routes
+- [x] `--json` output, `pvm capabilities`, `pvm job`, persisted readiness with auto-restore on daemon restart/reboot, and `pvm dashboard`
+- [x] `pvm check`, exit drift baselines, optional 90s admission leases, DoH failover, physical-NIC binding, and Mihomo subscription/chain exits
+- [x] `pvm exit-agent install|uninstall`, default image/VM (`pvm default`, `pvm image default`), offer to start stopped VMs, `pvm ssh-config`, and TCP port maps over `pvm.stream`
+- [x] Host-to-guest clipboard for `pvm app` on macOS and Linux, more reliable input-method typing, QMP dynamic memory balloon, resumable golden bakes, and relocatable `PVM_HOME` backing paths
 
 ## Installation
 
@@ -148,7 +138,7 @@ pvm app attach dev1
 pvm app stop dev1 --all
 ```
 
-Clipboard and drops are off until you enable them per VM. With `--clipboard to-guest` or `both`, host content enters the VM only when one of its windows comes to the front or you copy while it is there, and content that password managers mark as excluded is never sent. Text, images and, on Windows hosts, files and folders copy both ways. Text typed with a host input method, such as Chinese with Microsoft Pinyin or emoji from the emoji panel, reaches the app as well. Sound plays on the host's speakers; `--audio both` also lends the VM the host's microphone. See [docs/design/app.md](docs/design/app.md).
+Clipboard and drops are off until you enable them per VM. With `--clipboard to-guest` or `both`, host content enters the VM only when one of its windows comes to the front or you copy while it is there, and content that password managers mark as excluded is never sent. Text, images and, on Windows hosts, files and folders copy both ways. Text typed with a host input method, such as Chinese with Microsoft Pinyin or emoji from the emoji panel, reaches the app as well. Sound plays on the host's speakers; `--audio both` also lends the VM the host's microphone.
 
 ### Browser desktop
 
@@ -171,7 +161,7 @@ pvm workspace clone web ~/src/web-result
 pvm workspace rm web
 ```
 
-Uploads skip `.gitignore` matches and `node_modules`; a `.pvmignore` file adds or re-includes paths. pvm refuses to upload or mount the home directory, a file system root, its own data directory, or a tree with credentials such as `.ssh` or `.aws`, and `pvm workspace rm` never deletes host files. See [docs/design/workspace.md](docs/design/workspace.md).
+Uploads skip `.gitignore` matches and `node_modules`; a `.pvmignore` file adds or re-includes paths. pvm refuses to upload or mount (including `pvm mount`, unless `--allow-sensitive` is passed) the home directory, a file system root, its own data directory, or a tree with credentials such as `.ssh`, `.aws`, `.gitconfig`, `.npmrc` or `.env`, and `pvm workspace rm` never deletes host files. Direct-routed VMs are also kept off the host LAN and link-local addresses unless an explicit `internal` rule or `direct --cidr` rule allows them. Run `pvm diag [output.zip]` to export a redacted diagnostic bundle for troubleshooting.
 
 ### Windows installers
 

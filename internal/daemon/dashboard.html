@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>pvm dashboard (read-only)</title>
+<style>
+:root{color-scheme:light dark;font-family:ui-sans-serif,system-ui,-apple-system,sans-serif}
+body{margin:0;padding:24px;max-width:1100px;margin-inline:auto;line-height:1.45}
+h1{font-size:20px;margin:0 0 4px}p.sub{margin:0 0 20px;opacity:.7;font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.card{border:1px solid rgba(128,128,128,.3);border-radius:10px;padding:14px}
+.row{display:flex;justify-content:space-between;gap:8px;align-items:center}
+.badge{font-size:12px;padding:2px 8px;border-radius:999px;background:rgba(128,128,128,.2)}
+.ok{background:rgba(34,160,90,.2)}.warn{background:rgba(210,150,20,.25)}.err{background:rgba(210,60,60,.25)}
+pre{white-space:pre-wrap;word-break:break-all;font-size:12px;background:rgba(128,128,128,.1);padding:8px;border-radius:6px;margin:8px 0 0}
+h2{font-size:15px;margin:24px 0 10px}table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{text-align:left;padding:6px 8px;border-bottom:1px solid rgba(128,128,128,.2)}
+</style>
+</head>
+<body>
+<h1>pvm dashboard <span class="badge">read-only</span></h1>
+<p class="sub" id="meta">connecting...</p>
+<div class="grid" id="clusters"></div>
+<h2>Virtual machines</h2>
+<div class="grid" id="vms"></div>
+<h2>Port maps</h2>
+<table><thead><tr><th>VM</th><th>Proto</th><th>Host</th><th>Guest</th><th>Transport</th></tr></thead><tbody id="maps"></tbody></table>
+<h2>Routes</h2>
+<pre id="routes">-</pre>
+<script>
+const hash = new URLSearchParams(location.hash.slice(1));
+const token = hash.get('token') || '';
+history.replaceState(null, '', location.pathname);
+function esc(s){return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+async function refresh(){
+  try {
+    const r = await fetch('/api/snapshot', {headers: {'Authorization': 'Bearer ' + token}, cache: 'no-store'});
+    if(!r.ok){ document.getElementById('meta').textContent = 'unauthorized (' + r.status + ') - reopen via `pvm dashboard`'; return; }
+    const d = await r.json();
+    document.getElementById('meta').textContent = 'updated ' + new Date().toLocaleTimeString();
+    document.getElementById('clusters').innerHTML = (d.clusters || []).map(c => `
+      <div class="card"><div class="row"><strong>cluster ${esc(c.id)} (${esc(c.gateway)})</strong>
+      <span class="badge ${c.ready ? 'ok' : 'err'}">${c.ready ? 'ready' : 'not ready'}</span></div>
+      <pre>gateway_running=${esc(c.gateway_running)}  agent_ready=${esc(c.gateway_agent_ready)}\n${esc(c.last_error || 'no errors')}</pre></div>`).join('');
+    document.getElementById('vms').innerHTML = (d.vms || []).map(v => {
+      const st = v.running ? (v.ready ? 'ready' : 'provisioning') : 'stopped';
+      const cls = !v.running ? 'warn' : (v.ready ? 'ok' : 'warn');
+      const s = v.spec || {};
+      return `<div class="card"><div class="row"><strong>${esc(s.name)}</strong><span class="badge ${cls}">${st}</span></div>
+        <pre>image=${esc(s.image)}  role=${esc(s.role)}  user=${esc(s.user)}\nip=${esc(s.ip || '-')}  cpus=${esc(s.cpus)}  mem=${esc(s.mem_mb)}MiB  uptime=${esc(v.uptime || '-')}${v.last_error ? '\nerror: ' + esc(v.last_error) : ''}</pre></div>`;
+    }).join('');
+    const maps = (d.routes && d.routes.maps) || [];
+    document.getElementById('maps').innerHTML = maps.map(m => `<tr><td>${esc(m.vm)}</td><td>${esc(m.proto)}</td><td>127.0.0.1:${esc(m.host_port)}</td><td>${esc(m.vm_ip)}:${esc(m.guest_port)}</td><td>${esc(m.transport || 'gateway')}</td></tr>`).join('') || '<tr><td colspan="5">no port maps</td></tr>';
+    const rt = Object.assign({}, d.routes || {}); delete rt.maps;
+    document.getElementById('routes').textContent = JSON.stringify(rt, null, 2);
+  } catch(e) { document.getElementById('meta').textContent = 'daemon unreachable'; }
+}
+refresh(); setInterval(refresh, 2000);
+</script>
+</body>
+</html>

@@ -73,6 +73,15 @@ func streamTarget(target string) (io.ReadWriteCloser, error) {
 		}
 		return dialUserSocket("/", n, xpraSocket)
 	}
+	if portStr, ok := strings.CutPrefix(target, "tcp:"); ok {
+		// Host port maps over pvm.stream: only guest loopback is reachable,
+		// so the VM's egress route and kill-switch are unchanged.
+		n, err := strconv.Atoi(portStr)
+		if err != nil || n < 1 || n > 65535 || strconv.Itoa(n) != portStr {
+			return nil, fmt.Errorf("bad tcp target %q", target)
+		}
+		return net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", portStr), 5*time.Second)
+	}
 	switch target {
 	case "novnc":
 		// pvm desktop's websockify, which serves noVNC and proxies RFB

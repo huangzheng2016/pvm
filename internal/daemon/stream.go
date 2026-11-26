@@ -31,6 +31,10 @@ func validStreamTarget(target string) bool {
 		n, err := strconv.Atoi(uid)
 		return err == nil && n > 0 && strconv.Itoa(n) == uid
 	}
+	if portStr, ok := strings.CutPrefix(target, "tcp:"); ok {
+		n, err := strconv.Atoi(portStr)
+		return err == nil && n > 0 && n <= 65535 && strconv.Itoa(n) == portStr
+	}
 	return streamTargets[target]
 }
 

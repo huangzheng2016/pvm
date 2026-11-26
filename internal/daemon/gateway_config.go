@@ -70,6 +70,9 @@ func gatewayConfigFromCluster(s *Server, cl *cluster.Cluster) []byte {
 		doc.VMs = append(doc.VMs, vmEntry{Name: v.Name, MAC: v.MAC, IP: v.IP})
 	}
 	for _, m := range cl.Maps {
+		if m.Transport == "stream" {
+			continue
+		}
 		doc.Maps = append(doc.Maps, mapEntry{HostPort: m.PoolPort, VMIP: m.VMIP, GuestPort: m.GuestPort, Proto: m.Proto})
 	}
 	// Push only referenced exits so unrelated credentials stay off the gateway.

@@ -37,6 +37,8 @@ type PortMap struct {
 	PoolPort  int    `json:"pool_port"` // gateway slirp hostfwd + DNAT
 	GuestPort int    `json:"guest_port"`
 	Proto     string `json:"proto"`
+	// Transport is "stream" when carried over pvm.stream (no gateway PoolPort).
+	Transport string `json:"transport,omitempty"`
 }
 
 type Cluster struct {
@@ -322,6 +324,27 @@ func (s *Store) AddMap(id int, vmName, vmIP string, hostPort, guestPort int, pro
 		return nil, fmt.Errorf("cluster %d port pool exhausted", id)
 	}
 	m := &PortMap{VM: vmName, VMIP: vmIP, HostPort: hostPort, PoolPort: pool, GuestPort: guestPort, Proto: proto}
+	c.Maps = append(c.Maps, m)
+	out := *m
+	return &out, s.saveCluster(id, previous)
+}
+
+// AddStreamMap records a TCP port map carried over pvm.stream, which uses no
+// gateway PoolPort or slirp socket.
+func (s *Store) AddStreamMap(id int, vmName, vmIP string, hostPort, guestPort int) (*PortMap, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.data.Clusters[id]
+	if c == nil {
+		return nil, fmt.Errorf("cluster %d does not exist", id)
+	}
+	previous := c.deepCopy()
+	for _, m := range c.Maps {
+		if m.HostPort == hostPort && m.Proto == "tcp" {
+			return nil, fmt.Errorf("host port %d/tcp already mapped", hostPort)
+		}
+	}
+	m := &PortMap{VM: vmName, VMIP: vmIP, HostPort: hostPort, GuestPort: guestPort, Proto: "tcp", Transport: "stream"}
 	c.Maps = append(c.Maps, m)
 	out := *m
 	return &out, s.saveCluster(id, previous)

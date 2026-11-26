@@ -67,7 +67,8 @@ type Server struct {
 	// changes and the store stay consistent against concurrent callers.
 	// The gate is context-aware: a cancelled waiter gives up its slot
 	// instead of blocking past its deadline.
-	mapMu mapGate
+	mapMu       mapGate
+	mapForwards map[string]*streamForward // key: proto/hostPort for pvm.stream maps
 
 	routeMu sync.Mutex // serializes route transactions
 	deskMu  sync.Mutex // serializes desktop start/stop per daemon
@@ -103,6 +104,7 @@ type Server struct {
 
 	keepAwakeOnce sync.Once
 	keepAwake     *keepawake.Manager
+	dashboard     dashboardServer
 }
 
 type vmInfo struct {
@@ -320,6 +322,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/vms/{name}/mounts", s.handleMountRemove)
 	mux.HandleFunc("GET /v1/clusters", s.handleClusters)
 	mux.HandleFunc("POST /v1/clusters/{id}/push", s.handleClusterPush)
+	mux.HandleFunc("POST /v1/dashboard", s.handleDashboardOpen)
 	mux.HandleFunc("GET /v1/maps", s.handleMapList)
 	mux.HandleFunc("POST /v1/maps", s.handleMapAdd)
 	mux.HandleFunc("DELETE /v1/maps/{port}/{proto}", s.handleMapRemove)
@@ -1249,7 +1252,7 @@ func (s *Server) recoverRelays() error {
 	var errs []error
 	for _, cl := range s.Clusters.List() {
 		for _, m := range cl.Maps {
-			if err := s.relays.Ensure(m.Proto, m.HostPort, m.PoolPort); err != nil {
+			if err := s.restoreMapRelay(m); err != nil {
 				errs = append(errs, fmt.Errorf("restore relay %s/%d: %w", m.Proto, m.HostPort, err))
 			}
 		}

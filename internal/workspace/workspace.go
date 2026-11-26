@@ -1,5 +1,5 @@
 // Package workspace manages directories shared between one host folder and
-// one VM. See docs/design/workspace.md.
+// one VM.
 package workspace
 
 import (

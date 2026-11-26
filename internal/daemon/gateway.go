@@ -689,16 +689,21 @@ func (s *Server) syncGatewayForwards(clusterID int) error {
 // syncGatewayForwardsQMP adds and removes one forward per pool port and
 // protocol over QMP. QEMU starts the gateway with only its ssh forward.
 func (s *Server) syncGatewayForwardsQMP(cl *cluster.Cluster) error {
-	if err := validateGatewayMapCount(runtime.GOOS, len(cl.Maps)); err != nil {
+	gwMaps := 0
+	want := map[qemu.HostForward]bool{}
+	for _, m := range cl.Maps {
+		if m.Transport == "stream" {
+			continue
+		}
+		gwMaps++
+		want[qemu.HostForward{Proto: m.Proto, Port: m.PoolPort}] = true
+	}
+	if err := validateGatewayMapCount(runtime.GOOS, gwMaps); err != nil {
 		return err
 	}
 	gw, err := s.getSpec(cl.Gateway)
 	if err != nil {
 		return err
-	}
-	want := map[qemu.HostForward]bool{}
-	for _, m := range cl.Maps {
-		want[qemu.HostForward{Proto: m.Proto, Port: m.PoolPort}] = true
 	}
 	q, err := qemu.DialQMP(s.P.QMPSock(gw.Name))
 	if err != nil {

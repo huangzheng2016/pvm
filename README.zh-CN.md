@@ -8,7 +8,9 @@
 
 - **一条命令，一台开箱即用的开发机。** 预装 Docker、常用工具、Firefox 和桌面。镜像只需烘焙一次，之后新建虚拟机约 30 秒就绪。见[快速开始](#快速开始)。
 - **流量全走你自己的出口，出口断了就断网。** 经 WireGuard 走你的 VPS，或用无需部署的 Cloudflare WARP。隧道一断，虚拟机直接断网，绝不漏出宿主机 IP。见[失败即断网的出口路由](#失败即断网的出口路由)。
-- **按域名或网段分流。** 让部分域名直连或走另一个出口，规则即时生效，无需重启。
+- **按域名或网段分流。** 让部分域名直连或走另一个出口，规则即时生效，无需重启。支持用 `pvm exit import` 导入 Clash/Mihomo/Surge 订阅或分享链接（含多跳中转链），Mihomo 作为独立进程隔离运行在 gateway 虚拟机内。
+- **主动隔离与出口检测。** `pvm check dev1` 在客机与网关两条路径采样真实公网出口 IP，并用网关 nftables 计数器交叉验证负向探针。可选准入门禁（`pvm route require-check`）要求 90 秒租约续期才放行外网；出口漂移策略（`pvm exit set --ip-mode`）在出口 IP 或地区漂移时立即断网。
+- **为 Agent 与脚本而生。** 只读命令支持 `--json`，`pvm capabilities` 离线输出接口契约，`pvm job` 跟踪异步就绪任务并提供结构化错误码，`pvm dashboard` 提供本地只读状态面板。
 - **虚拟机里的程序变成宿主机原生窗口。** `pvm app dev1 -- gedit` 或一个网页在你的桌面上开成独立窗口，Cookie、指纹和出口都留在虚拟机里，还能直接用宿主机输入法打字。见[虚拟机应用作为宿主机窗口](#虚拟机应用作为宿主机窗口)。
 - **浏览器标签页里的完整桌面。** `pvm desktop` 打开虚拟机自己的桌面，和 SSH 登录的是同一台机器。见[浏览器桌面](#浏览器桌面)。
 - **项目文件夹直接在虚拟机里用。** 挂载一个目录、保持两份同步副本，或上传一次再把结果下载回来。见[工作区](#工作区)。
@@ -26,23 +28,11 @@
 - [x] `pvm.stream` 通道，以及更快的 `pvm desktop`（v1.2.0）
 - [x] 原生 Windows 上的 UDP 和 UDP 出口（v1.2.0）
 - [x] Windows 安装包自带 Xpra 客户端（v1.2.0）
-
-计划中：
-
-- [ ] `pvm exit-agent install|uninstall`，注册为 systemd 服务
-- [ ] `pvm app` 在 macOS 和 Linux 上支持宿主机到虚拟机的剪贴板，支持 WSL2，并让输入法输入稳定可靠
-- [ ] 输入法候选框跟随应用的文本光标
-
-候选：
-
-- [ ] `pvm ssh-config`，供 VS Code Remote-SSH、rsync 等工具使用
-- [ ] `pvm exit test` 增加出网探测
-- [ ] 默认镜像和默认虚拟机
-- [ ] 端口映射改走 `pvm.stream`，不再经过 gateway 虚拟机
-- [ ] 提示启动已停止的虚拟机
-- [ ] 修复 gateway 规则漂移误报
-
-详见 [docs/roadmap.md](docs/roadmap.md)。
+- [x] `pvm diag` 脱敏诊断包、日志有界轮转、挂载凭据守卫与 direct 路由宿主机局域网隔离
+- [x] `--json` 输出、`pvm capabilities`、`pvm job`、就绪状态持久化（daemon 重启/宿主重启自动恢复）与 `pvm dashboard` 只读面板
+- [x] `pvm check` 主动检测、出口漂移基线、可选 90 秒准入租约、DoH 主备、物理网卡绑定、Mihomo 订阅与链式代理出口
+- [x] `pvm exit-agent install|uninstall`、默认镜像/默认虚拟机、已停止虚拟机询问启动、`pvm ssh-config`、端口映射走 `pvm.stream`
+- [x] `pvm app` 在 macOS 和 Linux 上的宿主机到虚拟机剪贴板、更稳定的输入法输入、QMP 动态内存 balloon、golden 烘焙断点续做与可迁移 `PVM_HOME`
 
 ## 安装
 
@@ -148,7 +138,7 @@ pvm app attach dev1
 pvm app stop dev1 --all
 ```
 
-剪贴板和拖放默认关闭，需按虚拟机单独开启。使用 `--clipboard to-guest` 或 `both` 时，宿主机内容只在该虚拟机的窗口切到前台、或窗口在前台时复制，才会进入虚拟机；被密码管理器标记为排除的内容永远不会发送。文本、图片，以及在 Windows 宿主机上的文件和文件夹，都可以双向复制粘贴。用宿主机输入法（比如微软拼音）输入的中文，或表情面板里的 emoji，也能正常输入到应用里。声音从宿主机扬声器播放；`--audio both` 还会把宿主机的麦克风借给虚拟机。详见 [docs/design/app.md](docs/design/app.md)。
+剪贴板和拖放默认关闭，需按虚拟机单独开启。使用 `--clipboard to-guest` 或 `both` 时，宿主机内容只在该虚拟机的窗口切到前台、或窗口在前台时复制，才会进入虚拟机；被密码管理器标记为排除的内容永远不会发送。文本、图片，以及在 Windows 宿主机上的文件和文件夹，都可以双向复制粘贴。用宿主机输入法（比如微软拼音）输入的中文，或表情面板里的 emoji，也能正常输入到应用里。声音从宿主机扬声器播放；`--audio both` 还会把宿主机的麦克风借给虚拟机。
 
 ### 浏览器桌面
 
@@ -171,7 +161,7 @@ pvm workspace clone web ~/src/web-result
 pvm workspace rm web
 ```
 
-上传会跳过 `.gitignore` 匹配的路径和 `node_modules`；`.pvmignore` 文件可以追加规则或重新包含路径。pvm 拒绝上传或挂载主目录、文件系统根目录、它自己的数据目录，以及包含 `.ssh`、`.aws` 等凭据的目录树；`pvm workspace rm` 从不删除宿主机文件。详见 [docs/design/workspace.md](docs/design/workspace.md)。
+上传会跳过 `.gitignore` 匹配的路径和 `node_modules`；`.pvmignore` 文件可以追加规则或重新包含路径。pvm 拒绝上传或挂载（包括 `pvm mount`，除非显式传入 `--allow-sensitive`）主目录、文件系统根目录、它自己的数据目录，以及包含 `.ssh`、`.aws`、`.gitconfig`、`.npmrc`、`.env` 等凭据的目录树；`pvm workspace rm` 从不删除宿主机文件。走 direct 路由的虚拟机默认也无法访问宿主机局域网和链路本地地址，除非配置了显式的 `internal` 规则或 `direct --cidr` 规则。排查问题时可以运行 `pvm diag [output.zip]` 导出脱敏诊断包。
 
 ### Windows 安装包
 
