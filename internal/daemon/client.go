@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/huangzheng2016/pvm/internal/diaglog"
 	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/paths"
 )
@@ -160,9 +161,7 @@ func Ensure(p *paths.Paths) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if fi, err := os.Stat(p.DaemonLog()); err == nil && fi.Size() > 1<<20 {
-		os.Rename(p.DaemonLog(), p.DaemonLog()+".1")
-	}
+	_ = diaglog.RotateFile(p.DaemonLog(), diaglog.DefaultDaemonMaxBytes, 2)
 	logf, err := os.OpenFile(p.DaemonLog(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return nil, err
@@ -353,11 +352,13 @@ func decodeResp(resp *http.Response, out any) error {
 		return err
 	}
 	if resp.StatusCode >= 400 {
-		var e struct {
-			Error string `json:"error"`
-		}
-		if json.Unmarshal(data, &e) == nil && e.Error != "" {
-			return fmt.Errorf("%s", e.Error)
+		var e APIError
+		if json.Unmarshal(data, &e) == nil && e.Message != "" {
+			e.HTTPStatus = resp.StatusCode
+			if e.Code == "" {
+				e.Code = "daemon_error"
+			}
+			return &e
 		}
 		return fmt.Errorf("daemon http %d: %s", resp.StatusCode, data)
 	}

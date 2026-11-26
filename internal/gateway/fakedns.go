@@ -49,7 +49,7 @@ type fakeDNS struct {
 	closed bool
 }
 
-func newFakeDNS(upstream string, onDirectIP func(domain string, ips []string)) (*fakeDNS, error) {
+func newFakeDNS(upstream string, onDirectIP func(domain string, ips []string, allowPrivate bool)) (*fakeDNS, error) {
 	pool, err := gwdns.NewPool("198.18.0.0/16", 0)
 	if err != nil {
 		return nil, err
@@ -79,8 +79,14 @@ func newFakeDNS(upstream string, onDirectIP func(domain string, ips []string)) (
 					ips = append(ips, a.A.String())
 				}
 			}
+			allowPrivate := false
+			if eng := engPtr.Load(); eng != nil {
+				if d, ok := eng.Match(name, nil); ok && !d.Internal && d.Action == rules.Internal {
+					allowPrivate = true
+				}
+			}
 			if len(ips) > 0 {
-				onDirectIP(name, ips)
+				onDirectIP(name, ips, allowPrivate)
 			}
 		}
 	}
@@ -289,7 +295,7 @@ var _ = log.Printf // keep log import if unused in future edits
 type bypassRecorder struct {
 	inner  gwdns.Upstream
 	engine *atomic.Pointer[rules.Engine]
-	cb     func(domain string, ips []string)
+	cb     func(domain string, ips []string, allowPrivate bool)
 }
 
 func (b *bypassRecorder) Exchange(ctx context.Context, req *mdns.Msg) (*mdns.Msg, error) {
@@ -308,7 +314,7 @@ func (b *bypassRecorder) Exchange(ctx context.Context, req *mdns.Msg) (*mdns.Msg
 		}
 	}
 	if len(ips) > 0 {
-		b.cb(domain, ips)
+		b.cb(domain, ips, false)
 	}
 	return resp, err
 }

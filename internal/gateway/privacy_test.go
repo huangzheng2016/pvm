@@ -13,7 +13,7 @@ import (
 
 func TestSlirpOnlyPermitsMappedReplies(t *testing.T) {
 	cfg := &Config{CIDR: "192.0.2.0/24", GwIP: "192.0.2.1", DefaultExit: "my-exit", Maps: []MapEntry{{HostPort: 8080, VMIP: "192.0.2.10", GuestPort: 80}}}
-	out := RenderNFT(cfg, "eth0", "br0", []string{"10.0.2.0/24"})
+	out := RenderNFT(cfg, "eth0", "br0", []string{"10.0.2.0/24"}, nil)
 	reply := strings.Index(out, "ip daddr 10.0.2.0/24 ct direction reply ct status dnat accept")
 	drop := strings.Index(out, "ip daddr 10.0.2.0/24 drop")
 	bypass := strings.Index(out, "ip daddr @bypass4 accept")

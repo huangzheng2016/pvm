@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"runtime"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"github.com/huangzheng2016/pvm/internal/cluster"
 	"github.com/huangzheng2016/pvm/internal/config"
 	"github.com/huangzheng2016/pvm/internal/daemon"
+	"github.com/huangzheng2016/pvm/internal/diaglog"
 	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 )
@@ -154,6 +156,10 @@ func CmdDaemon(args []string) int {
 }
 
 func daemonRun(p *paths.Paths) int {
+	if lw, err := diaglog.NewRotateWriter(p.DaemonLog(), diaglog.DefaultDaemonMaxBytes, 2, 0o600); err == nil {
+		defer lw.Close()
+		log.SetOutput(diaglog.NewRedactWriter(lw, diaglog.RedactorForPaths(p)))
+	}
 	cfg, err := config.Load(p.ConfigFile())
 	if err != nil {
 		return fatalf("config: %v", err)

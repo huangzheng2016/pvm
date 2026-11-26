@@ -93,7 +93,7 @@ func TestRenderNFT(t *testing.T) {
 			{HostPort: 30053, VMIP: "192.168.1.11", GuestPort: 53, Proto: "udp"},
 		},
 	}
-	out := RenderNFT(cfg, "enp0s1", "br0", nil)
+	out := RenderNFT(cfg, "enp0s1", "br0", nil, nil)
 	for _, want := range []string{
 		"destroy table inet pvm",
 		`oifname "enp0s1" masquerade`,
@@ -127,7 +127,7 @@ func TestRenderNFTTunnelMSS(t *testing.T) {
 			"exit-c": {Transport: "udp", MTU: 1400},
 		},
 	}
-	out := RenderNFT(cfg, "enp0s1", "br0", nil)
+	out := RenderNFT(cfg, "enp0s1", "br0", nil, nil)
 	for _, want := range []string{
 		`oifname "pvmwg0" tcp flags syn tcp option maxseg size set 1380`,
 		`iifname "pvmwg0" tcp flags syn tcp option maxseg size set 1380`,
@@ -153,7 +153,7 @@ func TestRenderNFTBypassBeforeDrop(t *testing.T) {
 		VMs:     []VMEntry{{Name: "dev1", MAC: "52:54:00:00:00:10", IP: "192.168.1.10"}},
 		VMExits: map[string]string{"dev1": "my-exit"},
 	}
-	out := RenderNFT(cfg, "enp0s1", "br0", []string{"10.0.0.0/8", "104.20.23.154/32"})
+	out := RenderNFT(cfg, "enp0s1", "br0", []string{"10.0.0.0/8", "104.20.23.154/32"}, nil)
 	for _, want := range []string{
 		"set bypass4 {",
 		"elements = { 10.0.0.0/8, 104.20.23.154/32 }",
@@ -195,7 +195,7 @@ func TestRenderNFTDirectVMRegisteredPair(t *testing.T) {
 		},
 		VMExits: map[string]string{"dev2": "my-exit"},
 	}
-	out := RenderNFT(cfg, "enp0s1", "br0", nil)
+	out := RenderNFT(cfg, "enp0s1", "br0", nil, nil)
 	if !strings.Contains(out, `iifname "br0" ether saddr 52:54:00:00:00:10 ip saddr 192.168.1.10 oifname "enp0s1" accept`) {
 		t.Errorf("direct VM missing registered-pair accept\n%s", out)
 	}
@@ -225,7 +225,7 @@ func TestRenderNFTClusterDefaultDoesNotAllowDirect(t *testing.T) {
 		},
 		VMExits: map[string]string{"dev2": "direct"},
 	}
-	out := RenderNFT(cfg, "enp0s1", "br0", nil)
+	out := RenderNFT(cfg, "enp0s1", "br0", nil, nil)
 	if strings.Contains(out, "52:54:00:00:00:10") {
 		t.Fatalf("default-exit VM must not get an uplink accept\n%s", out)
 	}
@@ -238,7 +238,7 @@ func TestRenderNFTClusterDefaultDoesNotAllowDirect(t *testing.T) {
 // plain DNS (:53) to the same IPs is still hijacked onto the gateway.
 func TestRenderNFTDoHBlock(t *testing.T) {
 	cfg := &Config{CIDR: "192.168.1.0/24", GwIP: "192.168.1.1"}
-	out := RenderNFT(cfg, "enp0s1", "br0", nil)
+	out := RenderNFT(cfg, "enp0s1", "br0", nil, nil)
 	for _, ip := range []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"} {
 		if !strings.Contains(out, ip) {
 			t.Errorf("resolver %s missing from DoH block set\n%s", ip, out)
@@ -255,8 +255,8 @@ func TestRenderNFTDoHBlock(t *testing.T) {
 // IPv6 never reaches the uplink (the cluster and kill-switch are v4).
 func TestRenderNFTIPv6Drop(t *testing.T) {
 	cfg := &Config{CIDR: "192.168.1.0/24", GwIP: "192.168.1.1"}
-	out := RenderNFT(cfg, "enp0s1", "br0", nil)
-	if !strings.Contains(out, `iifname "br0" oifname "enp0s1" meta nfproto ipv6 drop`) {
+	out := RenderNFT(cfg, "enp0s1", "br0", nil, nil)
+	if !strings.Contains(out, `iifname "br0" oifname "enp0s1" meta nfproto ipv6 counter name pvm_drop_v6 drop`) {
 		t.Errorf("ipv6 uplink drop missing\n%s", out)
 	}
 }

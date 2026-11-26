@@ -93,7 +93,7 @@ func TestRuleDriftAddsMissingRules(t *testing.T) {
 	})
 	m.reconcileActualRulesLocked()
 	for _, want := range [][]string{
-		{"add", "to", "203.0.113.5/32", "iif", "lo", "fwmark", "0", "lookup", "main", "pref", "40"},
+		{"add", "to", "203.0.113.5/32", "iif", "lo", "fwmark", "0/0xffffffff", "lookup", "main", "pref", "40"},
 		{"add", "to", "192.168.1.0/24", "lookup", "main", "pref", "45"},
 		{"add", "to", "10.0.2.0/24", "lookup", "main", "pref", "50"},
 		{"add", "to", "203.0.113.0/24", "lookup", "100", "pref", "60"},
@@ -303,6 +303,36 @@ func TestRuleDriftReplacesNonLookupRule(t *testing.T) {
 	}
 	if !hasCall(log, "del", "from", "192.168.1.0/24", "pref", "103") {
 		t.Fatalf("non-lookup rule was not removed by exact selector+pref: %v", ruleCalls(log))
+	}
+}
+
+// Legacy bare "fwmark 0" rules lacked FRA_FWMARK entirely: they matched
+// marked relays and never matched the drift check. They must be replaced once
+// by the exact 0/0xffffffff selector, which then produces zero mutations.
+func TestRuleDriftMigratesUnscopedEndpointRule(t *testing.T) {
+	log := stubIPRule(t)
+	m := ruleDriftManager()
+	actual := actualRulesFor(m)
+	for i := range actual {
+		if actual[i].Priority == rulePrefEndpoint {
+			actual[i].Fwmark = ""
+		}
+	}
+	stubIPRuleList(t, func() ([]ipRuleShowEntry, error) { return actual, nil })
+	m.reconcileActualRulesLocked()
+	if !hasCall(log, "del", "to", "203.0.113.5/32", "iif", "lo", "fwmark", "0/0", "lookup", "main", "pref", "40") {
+		t.Fatalf("unscoped endpoint rule not removed: %v", ruleCalls(log))
+	}
+	if !hasCall(log, "add", "to", "203.0.113.5/32", "iif", "lo", "fwmark", "0/0xffffffff", "lookup", "main", "pref", "40") {
+		t.Fatalf("scoped zero-fwmark rule not installed: %v", ruleCalls(log))
+	}
+
+	log2 := stubIPRule(t)
+	fixed := actualRulesFor(m)
+	stubIPRuleList(t, func() ([]ipRuleShowEntry, error) { return fixed, nil })
+	m.reconcileActualRulesLocked()
+	if len(ruleCalls(log2)) != 0 {
+		t.Fatalf("scoped fwmark 0x0 still read as drift: %v", ruleCalls(log2))
 	}
 }
 

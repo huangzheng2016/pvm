@@ -58,16 +58,16 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	fstab := []string{
-		fmt.Sprintf("pvmshare /share 9p %s,rw,_netdev,nofail 0 0", shareOptions),
-	}
-	runcmd := []string{
-		"mkdir -p /share",
-		fmt.Sprintf("mountpoint -q /share || mount -t 9p -o %s pvmshare /share", shareOptions),
-	}
-	if spec.ShareMode == ShareNone || spec.Role == "gateway" {
-		fstab = nil
-		runcmd = nil
+	var fstab []string
+	var runcmd []string
+	if spec.ShareMode != ShareNone && spec.Role != "gateway" {
+		fstab = []string{
+			fmt.Sprintf("pvmshare /share 9p %s,rw,_netdev,nofail 0 0", shareOptions),
+		}
+		runcmd = []string{
+			"mkdir -p /share",
+			fmt.Sprintf("mountpoint -q /share || mount -t 9p -o %s pvmshare /share", shareOptions),
+		}
 	}
 	for _, m := range mounts {
 		options, err := GuestMountOptions(m.Profile)
@@ -117,9 +117,8 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 	if spec.Golden > 0 {
 		runcmd = append(runcmd, "systemctl enable --now docker")
 	}
-	if len(runcmd) > 0 {
-		doc["runcmd"] = runcmd
-	}
+	runcmd = append(runcmd, reloadSSHDCmd)
+	doc["runcmd"] = runcmd
 	groups := []string{"sudo"}
 	if spec.Golden > 0 {
 		groups = append(groups, "docker")
@@ -138,7 +137,7 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 		"path":    "/etc/fstab",
 		"append":  true,
 		"content": strings.Join(fstab, "\n") + "\n",
-	}}
+	}, sshdMaxStartupsFile()}
 	// Git identity is written only when explicitly requested at create
 	// time; the host's ~/.gitconfig is never consulted or propagated
 	// (it leaks into Claude Code's gitStatus session context). Written as
@@ -170,6 +169,16 @@ func userData(spec *Spec, sshPub string, mounts []GuestMount) ([]byte, error) {
 
 func metaData(spec *Spec) []byte {
 	return []byte(fmt.Sprintf("instance-id: pvm-%s\nlocal-hostname: %s\n", spec.Name, spec.Name))
+}
+
+const reloadSSHDCmd = "systemctl reload ssh.service || systemctl reload sshd.service || true"
+
+func sshdMaxStartupsFile() map[string]any {
+	return map[string]any{
+		"path":        "/etc/ssh/sshd_config.d/10-pvm-max-startups.conf",
+		"permissions": "0644",
+		"content":     "MaxStartups 64:30:128\n",
+	}
 }
 
 // grubKernelArgsFile is the grub drop-in carrying spec.KernelArgs; nil
@@ -212,6 +221,7 @@ WantedBy=multi-user.target
 			"sysctl --system",
 			"systemctl daemon-reload",
 			"systemctl enable pvm-gateway.service",
+			reloadSSHDCmd,
 		},
 		"users": []map[string]any{{
 			"name":                spec.User,
@@ -226,7 +236,7 @@ WantedBy=multi-user.target
 			"path":        "/etc/systemd/system/pvm-gateway.service",
 			"content":     unit,
 			"permissions": "0644",
-		}},
+		}, sshdMaxStartupsFile()},
 	}
 	if runtime.GOOS == "windows" {
 		doc["write_files"] = append(doc["write_files"].([]map[string]any), map[string]any{

@@ -101,3 +101,21 @@ func (e *Engine) DecideFlow(domain string, dstIP net.IP, vmID string) Decision {
 	}
 	return Decision{Route: Direct}
 }
+
+// AllowsPrivateDirect reports whether an explicit intranet-domain rule or an
+// explicit direct/internal CIDR rule permits direct egress to a private or
+// reserved address. Built-in cluster-internal suffixes never allow it.
+func (e *Engine) AllowsPrivateDirect(domain string, ip net.IP) bool {
+	if e == nil || e.rules == nil {
+		return false
+	}
+	if d, ok := e.rules.Match(domain, nil); ok && !d.Internal && d.Action == rules.Internal {
+		return true
+	}
+	if ip != nil {
+		if d, ok := e.rules.Match("", ip); ok && (d.Action == rules.Direct || d.Action == rules.Internal) {
+			return true
+		}
+	}
+	return false
+}

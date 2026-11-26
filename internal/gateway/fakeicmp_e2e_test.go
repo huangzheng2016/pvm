@@ -303,7 +303,7 @@ func fakeICMPNetnsGateway(t *testing.T) {
 		t.Fatalf("%s is not set", fakeICMPE2EIfEnv)
 	}
 	cfg := &Config{CIDR: fakeICMPE2EClusterCIDR, GwIP: "10.23.0.1"}
-	if err := ApplyNFT(RenderNFT(cfg, fakeICMPE2ENoUplink, iface, nil)); err != nil {
+	if err := ApplyNFT(RenderNFT(cfg, fakeICMPE2ENoUplink, iface, nil, nil)); err != nil {
 		t.Fatalf("ApplyNFT: %v", err)
 	}
 	eng, pool := newFakeUDPTestPolicy(t)

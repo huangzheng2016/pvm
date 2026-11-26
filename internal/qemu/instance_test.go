@@ -1,10 +1,13 @@
 package qemu
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/huangzheng2016/pvm/internal/diaglog"
 )
 
 func TestRunningDistinguishesCorruptState(t *testing.T) {
@@ -31,6 +34,40 @@ func TestRunningDistinguishesCorruptState(t *testing.T) {
 	}
 	if _, statErr := os.Stat(in.StatePath); statErr != nil {
 		t.Fatalf("state file must be preserved for diagnosis: %v", statErr)
+	}
+}
+
+func TestStartRotatesOversizedLogs(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "fake-qemu")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nsleep 2\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	console := filepath.Join(dir, "console.log")
+	if err := os.WriteFile(console, bytes.Repeat([]byte("x"), diaglog.DefaultConsoleMaxBytes+16), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(console+".qemu", bytes.Repeat([]byte("y"), diaglog.DefaultQEMULogMaxBytes+16), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	in := &Instance{
+		Cfg: VMConfig{
+			CPUs: 1, MemMB: 128, DiskPath: filepath.Join(dir, "d.qcow2"), SeedPath: filepath.Join(dir, "seed.iso"),
+			VarsPath: filepath.Join(dir, "vars.fd"),
+			QMPSock:  filepath.Join(dir, "q.sock"), SerialSock: filepath.Join(dir, "s.sock"),
+			ConsoleLog: console, Accel: AccelTCG, Network: Network{Mode: NetSlirp},
+		},
+		StatePath: filepath.Join(dir, "run.json"),
+		Toolchain: &Toolchain{System: fake, FirmwareDir: dir},
+	}
+	if err := in.Start(); err != nil {
+		t.Logf("fake qemu start returned: %v", err)
+	}
+	if _, err := os.Stat(console + ".1"); err != nil {
+		t.Fatalf("oversized console.log was not rotated before start: %v", err)
+	}
+	if _, err := os.Stat(console + ".qemu.1"); err != nil {
+		t.Fatalf("oversized console.log.qemu was not rotated before start: %v", err)
 	}
 }
 

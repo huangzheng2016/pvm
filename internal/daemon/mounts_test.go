@@ -76,6 +76,60 @@ func TestMountAPIRequiresRunningVM(t *testing.T) {
 	}
 }
 
+func TestMountAPIGuardsSensitiveHostPaths(t *testing.T) {
+	s, spec, _ := newMountTestServer(t)
+	withEnv := t.TempDir()
+	if err := os.WriteFile(filepath.Join(withEnv, ".env"), []byte("SECRET=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withSSH := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(withSSH, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, host := range []string{home, s.P.Home, withEnv, withSSH} {
+		body, err := json.Marshal(map[string]any{"host": host, "guest": "/mnt/data"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest("POST", "/v1/vms/dev1/mounts", bytes.NewReader(body))
+		rr := httptest.NewRecorder()
+		s.handler().ServeHTTP(rr, req)
+		if rr.Code != 400 || !strings.Contains(rr.Body.String(), "--allow-sensitive") {
+			t.Errorf("host %s: status = %d, body = %s", host, rr.Code, rr.Body.String())
+		}
+	}
+	loaded, err := vm.Load(s.P, spec.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Mounts) != 0 {
+		t.Fatalf("sensitive mounts were saved: %+v", loaded.Mounts)
+	}
+
+	body, err := json.Marshal(map[string]any{"host": withEnv, "guest": "/mnt/data", "read_only": true, "allow_sensitive": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("POST", "/v1/vms/dev1/mounts", bytes.NewReader(body))
+	rr := httptest.NewRecorder()
+	s.handler().ServeHTTP(rr, req)
+	if rr.Code != 201 {
+		t.Fatalf("allow-sensitive read-only mount status = %d: %s", rr.Code, rr.Body.String())
+	}
+	loaded, err = vm.Load(s.P, spec.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Mounts) != 1 || loaded.Mounts[0].Host != withEnv || !loaded.Mounts[0].ReadOnly {
+		t.Fatalf("allow-sensitive mount not saved: %+v", loaded.Mounts)
+	}
+}
+
 func TestPrepareMountSlots(t *testing.T) {
 	s, spec, host := newMountTestServer(t)
 	spec.Mounts = []vm.GuestMount{{Tag: "pvm0", Host: host, Guest: "/home/dev/proj"}}

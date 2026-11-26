@@ -20,7 +20,7 @@ vm:
   rm            stop and delete a vm (asks for confirmation; -y|--force to skip)
   resize        grow a stopped vm's disk (grow-only): pvm resize dev1 40
   compact       reclaim unused host disk space (vm must be stopped): pvm compact dev1
-  mount         dynamic host mounts: pvm mount dev1 [--profile coherent|readahead] [--read-only] /host:/guest | ls dev1 | rm dev1 /guest
+  mount         dynamic host mounts: pvm mount dev1 [--profile coherent|readahead] [--read-only] [--allow-sensitive] /host:/guest | ls dev1 | rm dev1 /guest
   ssh           ssh into a vm: pvm ssh [-t|-T] dev1 [cmd...]
   snapshot      ram snapshots: create <name> | ls [name] | rm <name>
                 (create needs a running vm; rm needs the vm stopped)
@@ -32,6 +32,7 @@ vm:
                 pvm app config dev1 [--clipboard off|to-guest|to-host|both] [--drop on|off] [--audio off|out|both]
   doctor        diagnose local state consistency and permissions (read-only, redacted)
   audit         read-only health audit: pvm audit dev1 [--privacy] (vm, route, tcp/udp/icmp probes, dns, ipv6, timezone, locale)
+  diag          export a redacted diagnostic zip: pvm diag [output.zip] [--offline]
 
 workspace:
   workspace create  bind a host folder to a vm at /workspace/<id>:
@@ -135,7 +136,7 @@ func main() {
 		os.Exit(cli.DelegateToWSL(os.Args[1:]))
 	}
 	switch os.Args[1] {
-	case "audit", "doctor", "route", "upgrade", "version", "--version", "-v", "skill", "security", "exit-agent", "agent", "gateway", "__snapshot-pipe-out", "__snapshot-pipe-in", "__probe-rtt":
+	case "audit", "diag", "doctor", "route", "upgrade", "version", "--version", "-v", "skill", "security", "exit-agent", "agent", "gateway", "__snapshot-pipe-out", "__snapshot-pipe-in", "__probe-rtt":
 	default:
 		cli.MaybeNotifyUpgrade()
 	}
@@ -207,6 +208,8 @@ func main() {
 		code = cli.CmdAudit(args)
 	case "doctor":
 		code = cli.CmdDoctor(args)
+	case "diag":
+		code = cli.CmdDiag(args)
 	case "gateway":
 		fmt.Println("gateway is managed automatically by the pvm daemon; no manual action is required")
 	default:

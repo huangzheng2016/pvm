@@ -321,6 +321,7 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("GET /v1/vms/{name}/console", s.handleConsole)
 	mux.HandleFunc("GET /v1/vms/{name}/stream", s.handleStream)
 	mux.HandleFunc("GET /v1/vms/{name}/audit", s.handleVMAudit)
+	mux.HandleFunc("GET /v1/diag/gateway/{id}", s.handleGatewayDiag)
 	mux.HandleFunc("GET /v1/dns", s.handleDNSList)
 	mux.HandleFunc("GET /v1/workspaces/{id}/mount", s.handleWorkspaceMountGet)
 	mux.HandleFunc("POST /v1/workspaces/{id}/mount", s.handleWorkspaceMountStart)
@@ -619,7 +620,12 @@ func (s *Server) rollbackFailedCreate(spec *vm.Spec, cl *cluster.Cluster) error 
 	if err := s.closeVMResources(spec.Name, cl); err != nil {
 		return fmt.Errorf("cleanup incomplete: %w; run `pvm rm %s`", err, spec.Name)
 	}
-	cleanupErr := errors.Join(s.removeLink(cl, spec.Name), s.pushBounded(cl.ID))
+	var cleanupErr error
+	// When start failed before the cluster's gateway existed, there is no
+	// gateway to unlink from or push config to.
+	if _, err := s.getSpec(cl.Gateway); err == nil {
+		cleanupErr = errors.Join(s.removeLink(cl, spec.Name), s.pushBounded(cl.ID))
+	}
 	if err := vm.Delete(s.P, spec.Name); err != nil {
 		return fmt.Errorf("remove VM files: %w; run `pvm rm %s`", err, spec.Name)
 	}

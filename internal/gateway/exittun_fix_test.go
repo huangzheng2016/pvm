@@ -61,7 +61,7 @@ func TestLearnedBypassSurvivesSync(t *testing.T) {
 	log := stubIPRule(t)
 	m := newExitManager()
 
-	m.AddBypassIP("example.com", "203.0.113.9")
+	m.AddBypassIP("example.com", "203.0.113.9", false)
 	if !log.has("add", "to 203.0.113.9/32", "main") {
 		t.Fatalf("learn rule not installed: %v", log.calls)
 	}
@@ -90,7 +90,7 @@ func TestLearnedBypassCap(t *testing.T) {
 	for i := 0; i < learnedBypassCap; i++ {
 		m.learned["pad"][strconv.Itoa(i)+".x"] = time.Now()
 	}
-	m.AddBypassIP("victim.com", "203.0.113.250")
+	m.AddBypassIP("victim.com", "203.0.113.250", false)
 	if m.bypass["203.0.113.250/32"] {
 		t.Fatal("add beyond cap must be dropped")
 	}
@@ -111,7 +111,7 @@ func TestReconcileLearnedEvictsFlippedRule(t *testing.T) {
 	if err := eng.Add(rules.Rule{Type: rules.DomainSuffix, Pattern: "example.com", Action: rules.Direct}); err != nil {
 		t.Fatal(err)
 	}
-	m.AddBypassIP("www.example.com", "203.0.113.9")
+	m.AddBypassIP("www.example.com", "203.0.113.9", false)
 	if !m.bypass["203.0.113.9/32"] {
 		t.Fatal("learned ip missing")
 	}
@@ -150,10 +150,10 @@ func TestSweepLearnedTTL(t *testing.T) {
 	var evicted []string
 	m.onEvict = func(cidr string) { evicted = append(evicted, cidr) }
 
-	m.AddBypassIP("example.com", "203.0.113.9")
+	m.AddBypassIP("example.com", "203.0.113.9", false)
 	// pretend learned 2h ago while another is fresh
 	m.learned["example.com"]["203.0.113.9/32"] = time.Now().Add(-2 * time.Hour)
-	m.AddBypassIP("fresh.com", "203.0.113.10")
+	m.AddBypassIP("fresh.com", "203.0.113.10", false)
 
 	m.SweepLearned(time.Now())
 	if m.bypass["203.0.113.9/32"] {
@@ -175,9 +175,9 @@ func TestAddBypassIPRefreshesTTL(t *testing.T) {
 	stubIPRule(t)
 	m := newExitManager()
 	m.learnedTTL = time.Hour
-	m.AddBypassIP("example.com", "203.0.113.9")
+	m.AddBypassIP("example.com", "203.0.113.9", false)
 	m.learned["example.com"]["203.0.113.9/32"] = time.Now().Add(-90 * time.Minute)
-	m.AddBypassIP("example.com", "203.0.113.9")
+	m.AddBypassIP("example.com", "203.0.113.9", false)
 	m.SweepLearned(time.Now())
 	if !m.bypass["203.0.113.9/32"] {
 		t.Fatal("refreshed entry expired")
@@ -307,7 +307,7 @@ func TestReconcileLearnedKeepsInternalResolverRules(t *testing.T) {
 	if err := eng.Add(rules.Rule{Type: rules.DomainSuffix, Pattern: "example.com", Action: rules.Internal, DNS: "203.0.113.53"}); err != nil {
 		t.Fatal(err)
 	}
-	m.AddBypassIP("example.com", "203.0.113.7")
+	m.AddBypassIP("example.com", "203.0.113.7", false)
 	m.ReconcileLearned(eng)
 	if !m.bypass["203.0.113.7/32"] {
 		t.Fatal("internal resolver answer lost its direct bypass")
@@ -322,7 +322,7 @@ func TestLearnedBypassCapDoesNotAllocateEmptyDomains(t *testing.T) {
 		entries[fmt.Sprintf("203.0.113.%d/32", i)] = time.Now()
 	}
 	m.learned["example.com"] = entries
-	m.AddBypassIP("new.example.com", "203.0.113.7")
+	m.AddBypassIP("new.example.com", "203.0.113.7", false)
 	if len(m.learned) != 1 {
 		t.Fatal("full bypass table retained an empty domain")
 	}

@@ -223,6 +223,11 @@ polkit.addRule(function(action, subject) {
 });
 EOF
 
+echo "[provision] configuring sshd admission limits..."
+install -d -m 0755 /etc/ssh/sshd_config.d
+printf 'MaxStartups 64:30:128\n' > /etc/ssh/sshd_config.d/10-pvm-max-startups.conf
+chmod 0644 /etc/ssh/sshd_config.d/10-pvm-max-startups.conf
+
 echo "[provision] cleaning up and preparing image for cloning..."
 # scrub machine-specific state so clones re-run cloud-init cleanly
 apt-get clean

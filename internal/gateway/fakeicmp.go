@@ -334,6 +334,9 @@ func (p *fakeICMP) dial(domain string, dstIP net.IP, vmName string) (net.Conn, g
 		if err != nil {
 			return nil, dec.Route, dec.Exit, err
 		}
+		if err := checkDirectTarget(pol, domain, ip); err != nil {
+			return nil, dec.Route, dec.Exit, err
+		}
 		up, err := p.dialRaw(ctx, ip.String(), -1)
 		return up, dec.Route, dec.Exit, err
 	}

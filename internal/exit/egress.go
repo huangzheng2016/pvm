@@ -1,33 +1,21 @@
 package exit
 
-import "net"
+import (
+	"net"
 
-// Keep every data plane on the same destination policy, including IP literals.
-var blockedEgressCIDRs = []string{
-	"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
-	"169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "198.18.0.0/15", "224.0.0.0/3",
-}
+	"github.com/huangzheng2016/pvm/internal/netutil"
+)
 
-var blockedEgressNetworks = func() []*net.IPNet {
-	var out []*net.IPNet
-	for _, cidr := range blockedEgressCIDRs {
-		_, n, _ := net.ParseCIDR(cidr)
-		out = append(out, n)
-	}
-	return out
-}()
+var blockedEgressCIDRs = netutil.BlockedEgressCIDRs()
 
-func blockedEgressIP(ip net.IP) bool {
-	if ip.To4() == nil {
-		return true
-	}
-	for _, n := range blockedEgressNetworks {
-		if n.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
+func blockedEgressIP(ip net.IP) bool { return netutil.IsBlockedEgressIP(ip) }
+
+// IsBlockedEgressIP reports whether ip is not a public unicast IPv4 target:
+// private, loopback, link-local, CGNAT, benchmark, multicast or reserved.
+func IsBlockedEgressIP(ip net.IP) bool { return netutil.IsBlockedEgressIP(ip) }
+
+// BlockedEgressCIDRs returns the non-public IPv4 ranges blocked by default.
+func BlockedEgressCIDRs() []string { return netutil.BlockedEgressCIDRs() }
 
 func egressAllowed(ip net.IP, allow []*net.IPNet, localIPs ...net.IP) bool {
 	if ip.To4() == nil {

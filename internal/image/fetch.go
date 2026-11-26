@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -146,6 +147,10 @@ func (s *stallReadCloser) watch() {
 	}
 }
 
+const fetchMaxAttempts = 3
+
+var fetchRetrySleep = func(attempt int) { time.Sleep(time.Duration(attempt) * time.Second) }
+
 // Fetch downloads the image into dir with resume, progress and checksum
 // verification. Returns the final path. A verified cached file is reused
 // unless force is set.
@@ -164,9 +169,17 @@ func Fetch(r *Ref, dir string, progress io.Writer, force ...bool) (string, error
 func fetch(r *Ref, dir string, progress io.Writer, retry bool, force ...bool) (string, error) {
 	final := filepath.Join(dir, r.FileName())
 	part := final + ".part"
-
+	checkCached := false
 	if fi, err := os.Stat(final); err == nil && fi.Size() > 0 && (len(force) == 0 || !force[0]) {
-		if err := verifyChecksum(r, final); err == nil {
+		checkCached = true
+	}
+
+	want, err := expectedSum(r, dir, checkCached)
+	if err != nil {
+		return "", err
+	}
+	if checkCached {
+		if err := verifyFileSum(r, final, want); err == nil {
 			if progress != nil {
 				fmt.Fprintf(progress, "cached: %s (checksum verified)\n", final)
 			}
@@ -178,6 +191,43 @@ func fetch(r *Ref, dir string, progress io.Writer, retry bool, force ...bool) (s
 		}
 	}
 
+	attempts := 1
+	if retry {
+		attempts = fetchMaxAttempts
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		if attempt > 0 {
+			if progress != nil {
+				fmt.Fprintf(progress, "\n  %s: retrying (%d/%d): %v\n", r.FileName(), attempt+1, attempts, lastErr)
+			}
+			fetchRetrySleep(attempt)
+		}
+		done, err := downloadPart(r, part, want, progress)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if done {
+			return final, os.Rename(part, final)
+		}
+	}
+	return "", fmt.Errorf("download %s failed after %d attempt(s); partial file kept, rerun to resume: %w", r.URL, attempts, lastErr)
+}
+
+// downloadPart advances part toward want in one HTTP transfer. A false done
+// with nil error asks the caller to restart from offset zero immediately.
+func downloadPart(r *Ref, part, want string, progress io.Writer) (bool, error) {
+	sumMarker := part + ".sum"
+	if data, err := os.ReadFile(sumMarker); err == nil && strings.TrimSpace(string(data)) != want {
+		// The upstream release moved on: splicing the new tail onto the old
+		// prefix would download the whole file just to fail the checksum.
+		os.Remove(part)
+	}
+	if err := fsutil.AtomicWrite(sumMarker, []byte(want+"\n"), 0o644); err != nil {
+		return false, err
+	}
+
 	var have int64
 	if fi, err := os.Stat(part); err == nil {
 		have = fi.Size()
@@ -187,10 +237,11 @@ func fetch(r *Ref, dir string, progress io.Writer, retry bool, force ...bool) (s
 		// range request (some servers return 416 for an exact-size range).
 		if resp, err := httpClient.Head(r.URL); err == nil && resp.ContentLength == have {
 			resp.Body.Close()
-			if err := verifyChecksum(r, part); err == nil {
-				return final, os.Rename(part, final)
+			if err := verifyFileSum(r, part, want); err == nil {
+				os.Remove(sumMarker)
+				return true, nil
 			} else if !isChecksumMismatch(err) {
-				return "", err
+				return false, err
 			}
 			os.Remove(part)
 			have = 0
@@ -200,40 +251,64 @@ func fetch(r *Ref, dir string, progress io.Writer, retry bool, force ...bool) (s
 	}
 	req, err := http.NewRequest("GET", r.URL, nil)
 	if err != nil {
-		return "", err
+		return false, err
 	}
 	if have > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", have))
 	}
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return false, err
 	}
 	defer resp.Body.Close()
-	if have > 0 && resp.StatusCode != http.StatusPartialContent {
-		have = 0 // server ignored the range; start over
+	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable && have > 0 {
+		if err := verifyFileSum(r, part, want); err == nil {
+			os.Remove(sumMarker)
+			return true, nil
+		}
+		os.Remove(part)
+		return false, nil
 	}
 	if resp.StatusCode >= 400 {
-		return "", fmt.Errorf("download %s: %s", r.URL, resp.Status)
+		return false, fmt.Errorf("download %s: %s", r.URL, resp.Status)
+	}
+	var total int64 = -1
+	if have > 0 {
+		if resp.StatusCode == http.StatusPartialContent {
+			start, end, size, err := parseContentRange(resp.Header.Get("Content-Range"))
+			if err != nil || start != have {
+				os.Remove(part)
+				return false, fmt.Errorf("invalid Content-Range %q for offset %d; partial file reset", resp.Header.Get("Content-Range"), have)
+			}
+			if size > 0 && end >= size {
+				os.Remove(part)
+				return false, fmt.Errorf("invalid Content-Range %q end %d >= total %d; partial file reset", resp.Header.Get("Content-Range"), end, size)
+			}
+			total = size
+		} else {
+			have = 0 // server ignored the range; start over
+		}
+	}
+	if total < 0 && resp.ContentLength >= 0 {
+		total = resp.ContentLength + have
 	}
 
 	f, err := os.OpenFile(part, os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
-		return "", err
+		return false, err
 	}
 	if have > 0 {
 		if _, err := f.Seek(have, io.SeekStart); err != nil {
 			f.Close()
-			return "", err
+			return false, err
 		}
 	} else {
 		if err := f.Truncate(0); err != nil {
 			f.Close()
-			return "", err
+			return false, err
 		}
 	}
 
-	total := resp.ContentLength + have
 	buf := make([]byte, 1<<20)
 	last := time.Now()
 	body := withStallTimeout(resp.Body, 60*time.Second)
@@ -241,9 +316,14 @@ func fetch(r *Ref, dir string, progress io.Writer, retry bool, force ...bool) (s
 	for {
 		n, err := body.Read(buf)
 		if n > 0 {
+			if total > 0 && have+int64(n) > total {
+				f.Close()
+				os.Remove(part)
+				return false, fmt.Errorf("server sent more than declared size %d; partial file reset", total)
+			}
 			if _, werr := f.Write(buf[:n]); werr != nil {
 				f.Close()
-				return "", werr
+				return false, werr
 			}
 			have += int64(n)
 			if progress != nil && total > 0 && time.Since(last) > 500*time.Millisecond {
@@ -255,27 +335,55 @@ func fetch(r *Ref, dir string, progress io.Writer, retry bool, force ...bool) (s
 			break
 		}
 		if err != nil {
+			_ = f.Sync()
 			f.Close()
-			return "", fmt.Errorf("download interrupted at %d/%d MB (%v); partial file kept, rerun to resume", have>>20, total>>20, err)
+			return false, fmt.Errorf("download interrupted at %d/%d MB: %w", have>>20, total>>20, err)
 		}
 	}
 	if err := f.Close(); err != nil {
-		return "", err
+		return false, err
 	}
 	if progress != nil {
 		fmt.Fprintf(progress, "\n")
 	}
 
-	if err := verifyChecksum(r, part); err != nil {
+	if err := verifyFileSum(r, part, want); err != nil {
 		if isChecksumMismatch(err) {
 			os.Remove(part)
-			if retry {
-				return fetch(r, dir, progress, false, true)
-			}
 		}
-		return "", err
+		return false, err
 	}
-	return final, os.Rename(part, final)
+	os.Remove(sumMarker)
+	return true, nil
+}
+
+func parseContentRange(v string) (start, end, total int64, err error) {
+	unit, rest, ok := strings.Cut(strings.TrimSpace(v), " ")
+	if !ok || !strings.EqualFold(unit, "bytes") {
+		return 0, 0, 0, fmt.Errorf("malformed Content-Range %q", v)
+	}
+	rangePart, totalPart, ok := strings.Cut(rest, "/")
+	if !ok {
+		return 0, 0, 0, fmt.Errorf("malformed Content-Range %q", v)
+	}
+	startPart, endPart, ok := strings.Cut(rangePart, "-")
+	if !ok {
+		return 0, 0, 0, fmt.Errorf("malformed Content-Range %q", v)
+	}
+	start, err1 := strconv.ParseInt(startPart, 10, 64)
+	end, err2 := strconv.ParseInt(endPart, 10, 64)
+	if err1 != nil || err2 != nil || start < 0 || end < start {
+		return 0, 0, 0, fmt.Errorf("malformed Content-Range %q", v)
+	}
+	if totalPart == "*" {
+		total = -1
+	} else {
+		total, err = strconv.ParseInt(totalPart, 10, 64)
+		if err != nil || total <= 0 {
+			return 0, 0, 0, fmt.Errorf("malformed Content-Range %q", v)
+		}
+	}
+	return start, end, total, nil
 }
 
 type checksumMismatchError struct {
@@ -292,40 +400,76 @@ func isChecksumMismatch(err error) bool {
 	return errors.As(err, &target)
 }
 
-func verifyChecksum(r *Ref, file string) error {
+func fetchSums(r *Ref) ([]byte, error) {
 	resp, err := httpClient.Get(r.SumsURL)
 	if err != nil {
-		return fmt.Errorf("fetch sums: %w", err)
+		return nil, fmt.Errorf("fetch sums: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("fetch sums %s: %s", r.SumsURL, resp.Status)
+		return nil, fmt.Errorf("fetch sums %s: %s", r.SumsURL, resp.Status)
 	}
 	body := withStallTimeout(resp.Body, 60*time.Second)
 	defer body.Close()
 	const maxSumsBytes = 8 << 20
 	sums, err := io.ReadAll(io.LimitReader(body, maxSumsBytes+1))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(sums) > maxSumsBytes {
-		return fmt.Errorf("checksum list exceeds %d bytes", maxSumsBytes)
+		return nil, fmt.Errorf("checksum list exceeds %d bytes", maxSumsBytes)
 	}
 	if err := verifyChecksumSignature(r, sums); err != nil {
-		return err
+		return nil, err
 	}
-	var want string
+	return sums, nil
+}
+
+// expectedSum resolves the pinned digest from the signed/HTTPS checksum list,
+// caching the verified list so an already verified base image can be reused
+// when the checksum endpoint is temporarily unreachable. Explicit keyring
+// verification never falls back to an unverified cached signature.
+func expectedSum(r *Ref, dir string, allowCached bool) (string, error) {
+	sums, err := fetchSums(r)
+	if err == nil {
+		if werr := fsutil.AtomicWrite(filepath.Join(dir, r.FileName()+".sums"), sums, 0o644); werr != nil {
+			return "", werr
+		}
+		return parseSumEntry(r, sums)
+	}
+	if allowCached && r.TrustedKeyring == "" {
+		if cached, cerr := os.ReadFile(filepath.Join(dir, r.FileName()+".sums")); cerr == nil {
+			if want, perr := parseSumEntry(r, cached); perr == nil {
+				return want, nil
+			}
+		}
+	}
+	return "", err
+}
+
+func parseSumEntry(r *Ref, sums []byte) (string, error) {
 	for line := range strings.Lines(string(sums)) {
 		fields := strings.Fields(line)
 		if len(fields) == 2 && strings.TrimPrefix(fields[1], "*") == r.SumFile {
-			want = fields[0]
-			break
+			return fields[0], nil
 		}
 	}
-	if want == "" {
-		return fmt.Errorf("no checksum entry for %s in %s", r.SumFile, r.SumsURL)
-	}
+	return "", fmt.Errorf("no checksum entry for %s in %s", r.SumFile, r.SumsURL)
+}
 
+func verifyChecksum(r *Ref, file string) error {
+	sums, err := fetchSums(r)
+	if err != nil {
+		return err
+	}
+	want, err := parseSumEntry(r, sums)
+	if err != nil {
+		return err
+	}
+	return verifyFileSum(r, file, want)
+}
+
+func verifyFileSum(r *Ref, file, want string) error {
 	f, err := os.Open(file)
 	if err != nil {
 		return err

@@ -12,12 +12,17 @@ import (
 
 var credentialNames = map[string]bool{
 	".ssh": true, ".gnupg": true, ".aws": true, ".kube": true, ".docker": true,
-	".netrc": true, ".git-credentials": true,
+	".netrc": true, ".git-credentials": true, ".gitconfig": true,
+	".npmrc": true, ".pypirc": true, ".azure": true, ".gcloud": true,
+	".s3cfg": true, ".boto": true, ".vault-token": true, ".terraform.d": true,
+	"id_rsa": true, "id_dsa": true, "id_ecdsa": true, "id_ed25519": true,
 }
 
-// CheckUploadSource refuses host folders whose upload would send the
-// user's personal files or pvm's own state into a VM. A nil m means every
-// file is shared, as in a mount.
+var envTemplateSuffixes = []string{".example", ".sample", ".template", ".dist"}
+
+// CheckUploadSource refuses host folders whose upload or mount would send the
+// user's personal files, credentials or pvm's own state into a VM. A nil m
+// means every file is shared, as in a mount.
 func CheckUploadSource(root string, homes []string, pvmHome string, m Matcher) error {
 	abs, err := filepath.Abs(root)
 	if err != nil {
@@ -28,7 +33,7 @@ func CheckUploadSource(root string, homes []string, pvmHome string, m Matcher) e
 		return err
 	}
 	refuse := func(why string) error {
-		return fmt.Errorf("refusing to upload %s: %s; choose a project folder instead", dir, why)
+		return fmt.Errorf("refusing to share %s: %s; choose a project folder instead", dir, why)
 	}
 	if filepath.Dir(dir) == dir || inWSL() && wslDriveRoot.MatchString(dir) {
 		return refuse("it is a file system root")
@@ -101,7 +106,23 @@ func isCredentialName(name string, fold bool) bool {
 	if fold {
 		name = strings.ToLower(name)
 	}
-	return credentialNames[name]
+	if credentialNames[name] {
+		return true
+	}
+	if name == ".env" || strings.HasPrefix(name, ".env.") {
+		for _, suffix := range envTemplateSuffixes {
+			if strings.HasSuffix(name, suffix) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, suffix := range []string{".pem", ".p12", ".pfx"} {
+		if strings.HasSuffix(name, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func caseInsensitiveFS() bool { return runtime.GOOS == "windows" || runtime.GOOS == "darwin" }

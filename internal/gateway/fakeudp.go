@@ -308,6 +308,9 @@ func (p *fakeUDP) dial(domain string, dst *net.UDPAddr, vmName string) (*net.UDP
 		if err != nil {
 			return nil, dec.Route, dec.Exit, err
 		}
+		if err := checkDirectTarget(pol, domain, ip); err != nil {
+			return nil, dec.Route, dec.Exit, err
+		}
 		up, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: ip, Port: dst.Port})
 		return up, dec.Route, dec.Exit, err
 	}

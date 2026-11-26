@@ -170,6 +170,16 @@ func TestUserDataWithoutSharesOmitsEmptyRuncmd(t *testing.T) {
 	if !strings.Contains(string(ud), "systemctl enable --now docker") {
 		t.Fatalf("golden initialization was removed with empty shares:\n%s", ud)
 	}
+	if !strings.Contains(string(ud), "/etc/ssh/sshd_config.d/10-pvm-max-startups.conf") || !strings.Contains(string(ud), "MaxStartups 64:30:128") || !strings.Contains(string(ud), reloadSSHDCmd) {
+		t.Fatalf("user cloud-init missing sshd MaxStartups hardening:\n%s", ud)
+	}
+	gw, err := gatewayUserData(&Spec{Name: "pvm-gw1", User: "pvmgw", Role: "gateway", GuestUID: 501}, "ssh-ed25519 AAAA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(gw), "MaxStartups 64:30:128") || !strings.Contains(string(gw), reloadSSHDCmd) {
+		t.Fatalf("gateway cloud-init missing sshd MaxStartups hardening:\n%s", gw)
+	}
 }
 
 func TestUserDataKernelArgsGrubDropIn(t *testing.T) {

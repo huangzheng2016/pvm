@@ -27,6 +27,9 @@ func newFakeUDPTestPolicy(t *testing.T) (*gwpolicy.Engine, *dns.Pool) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := eng.Add(rules.Rule{Type: rules.CIDR, Pattern: "127.0.0.0/8", Action: rules.Direct}); err != nil {
+		t.Fatal(err)
+	}
 	pool, err := dns.NewPool("198.18.0.0/16", 0)
 	if err != nil {
 		t.Fatal(err)
@@ -462,7 +465,7 @@ func fakeUDPTransparentReceiver(t *testing.T) {
 		t.Fatalf("%s is not set", fakeUDPE2EIfEnv)
 	}
 	cfg := &Config{CIDR: "10.23.0.0/24", GwIP: "10.23.0.1"}
-	if err := ApplyNFT(RenderNFT(cfg, fakeUDPE2ENoUplink, iface, nil)); err != nil {
+	if err := ApplyNFT(RenderNFT(cfg, fakeUDPE2ENoUplink, iface, nil, nil)); err != nil {
 		t.Fatalf("ApplyNFT: %v", err)
 	}
 	echo := udpEcho(t)

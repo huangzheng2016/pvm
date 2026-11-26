@@ -16,13 +16,15 @@ import (
 	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/qemu"
 	"github.com/huangzheng2016/pvm/internal/vm"
+	"github.com/huangzheng2016/pvm/internal/workspace"
 )
 
 type mountRequest struct {
-	Host     string `json:"host"`
-	Guest    string `json:"guest"`
-	Profile  string `json:"profile"`
-	ReadOnly bool   `json:"read_only"`
+	Host           string `json:"host"`
+	Guest          string `json:"guest"`
+	Profile        string `json:"profile"`
+	ReadOnly       bool   `json:"read_only"`
+	AllowSensitive bool   `json:"allow_sensitive"`
 }
 
 func (s *Server) handleMountList(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +67,19 @@ func (s *Server) handleMountAdd(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, 500, err)
 		return
+	}
+	if !req.AllowSensitive {
+		var homes []string
+		if h, err := os.UserHomeDir(); err == nil {
+			homes = append(homes, h)
+		}
+		if h := os.Getenv("PVM_WINDOWS_HOME"); h != "" {
+			homes = append(homes, h)
+		}
+		if err := workspace.CheckUploadSource(req.Host, homes, s.P.Home, nil); err != nil {
+			writeErr(w, 400, fmt.Errorf("%w; pass --allow-sensitive to override", err))
+			return
+		}
 	}
 	m, err := newGuestMount(spec, req.Host, req.Guest, req.Profile)
 	if err != nil {

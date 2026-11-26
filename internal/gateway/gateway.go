@@ -45,7 +45,9 @@ type Config struct {
 	DefaultExit string `json:"default_exit,omitempty"`
 	// Exits carries the connection defs for every exit referenced by
 	// Rules or VMExits (keyed by exit name).
-	Exits map[string]ExitDef `json:"exits,omitempty"`
+	Exits        map[string]ExitDef `json:"exits,omitempty"`
+	Paused       map[string]bool    `json:"paused,omitempty"`
+	RequireCheck map[string]bool    `json:"require_check,omitempty"`
 }
 
 func routingConfigEqual(a, b *Config) bool {
@@ -183,9 +185,9 @@ func (a *Agent) Run() error {
 				dhcpSrv.UpdateMap(a.macIPMap())
 			}
 			if fdns == nil && c.DNSUpstream != "" {
-				f, err := newFakeDNS(c.DNSUpstream, func(domain string, ips []string) {
+				f, err := newFakeDNS(c.DNSUpstream, func(domain string, ips []string, allowPrivate bool) {
 					for _, ip := range ips {
-						a.exits.AddBypassIP(domain, ip)
+						a.exits.AddBypassIP(domain, ip, allowPrivate)
 					}
 				})
 				if err != nil {

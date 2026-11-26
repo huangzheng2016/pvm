@@ -51,7 +51,7 @@ func TestCheckNFT(t *testing.T) {
 		CIDR: "192.168.1.0/24", GwIP: "192.168.1.1",
 		Exits: map[string]ExitDef{"my-exit": {Server: "127.0.0.1:1"}},
 	}
-	expected := RenderNFT(cfg, "enp0s1", "br0", nil)
+	expected := RenderNFT(cfg, "enp0s1", "br0", nil, nil)
 	orig := nftListTable
 	t.Cleanup(func() { nftListTable = orig })
 	stubIPRule(t)
@@ -71,6 +71,14 @@ func TestCheckNFT(t *testing.T) {
 	}
 	if err := a.checkNFT(cfg); err != nil {
 		t.Fatalf("normalized nft output read as drift: %v", err)
+	}
+	// nft quotes named counter identifiers in `nft list` output; that must
+	// not read as drift and reset packet counters every 10s.
+	nftListTable = func() (string, error) {
+		return strings.ReplaceAll(expected, `counter name pvm_drop_private`, `counter name "pvm_drop_private"`), nil
+	}
+	if err := a.checkNFT(cfg); err != nil {
+		t.Fatalf("quoted named counter read as drift: %v", err)
 	}
 	nftListTable = func() (string, error) {
 		return strings.Replace(expected, "tproxy ip to 192.168.1.1:7894", "tproxy ip to 192.168.1.1:9999", 1), nil
@@ -112,7 +120,7 @@ func TestCheckNFTMultipleExits(t *testing.T) {
 			"exit-b": {Server: "127.0.0.1:2"},
 		},
 	}
-	expected := RenderNFT(cfg, "enp0s1", "br0", nil)
+	expected := RenderNFT(cfg, "enp0s1", "br0", nil, nil)
 	orig := nftListTable
 	t.Cleanup(func() { nftListTable = orig })
 	stubIPRule(t)
@@ -132,7 +140,7 @@ func TestCheckNFTMultipleExits(t *testing.T) {
 
 func TestMarkedRelayCannotFallBackToUplink(t *testing.T) {
 	cfg := &Config{CIDR: "203.0.113.0/24", GwIP: "203.0.113.1"}
-	rendered := RenderNFT(cfg, "enp0s1", "br0", nil)
+	rendered := RenderNFT(cfg, "enp0s1", "br0", nil, nil)
 	want := `oifname "enp0s1" meta mark >= 0x99 drop`
 	if !strings.Contains(rendered, want) {
 		t.Fatal("missing marked-output kill-switch with no configured exits")

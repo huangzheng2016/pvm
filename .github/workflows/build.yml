@@ -332,6 +332,13 @@ jobs:
         run: |
           brew install qemu
           brew info --json=v2 --installed > qemu-installed.json
+      - name: Check release readiness
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+        run: python3 script/ci/check_release_readiness.py
       - name: Import signing certificate
         if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
         env:

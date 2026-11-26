@@ -40,7 +40,10 @@ if [ "$name" = "$PVM_TEST_INSTALL_PHASE" ]; then
  exec /bin/sleep 60
 fi
 for arg do
- case "$arg" in *systemctl*) printf installed > "$PVM_TEST_INSTALL_MUTATED";; esac
+ case "$arg" in
+  *systemctl*) printf installed > "$PVM_TEST_INSTALL_MUTATED";;
+  *"cloud-init status"*) printf 'done\n0\n\n';;
+ esac
 done
 `
 				for _, name := range []string{"ssh", "scp"} {

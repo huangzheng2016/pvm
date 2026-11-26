@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/huangzheng2016/pvm/internal/diaglog"
 	"github.com/huangzheng2016/pvm/internal/fsutil"
 )
 
@@ -110,6 +111,9 @@ func (in *Instance) startWithAccel(accel Accel) error {
 	if err != nil {
 		return err
 	}
+	// Rotate before QEMU opens the logs: Windows cannot rename an open file.
+	_ = diaglog.RotateFile(cfg.ConsoleLog, diaglog.DefaultConsoleMaxBytes, 1)
+	_ = diaglog.RotateFile(cfg.ConsoleLog+".qemu", diaglog.DefaultQEMULogMaxBytes, 1)
 	logFile, err := os.OpenFile(cfg.ConsoleLog+".qemu", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err

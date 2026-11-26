@@ -44,7 +44,7 @@ func (a *Agent) applyNetwork(c *Config) error {
 	if err := ensureFakeIPRoute(); err != nil {
 		return err
 	}
-	if err := ApplyNFT(RenderNFT(c, upl, a.br, a.exits.BypassList())); err != nil {
+	if err := ApplyNFT(RenderNFT(c, upl, a.br, a.exits.BypassList(), a.exits.PrivateBypassList())); err != nil {
 		_ = run("sysctl", "-w", "net.ipv4.ip_forward=0")
 		return err
 	}
@@ -91,6 +91,11 @@ func (a *Agent) checkNFT(c *Config) error {
 			echoReplyDrop + fmt.Sprintf(" meta mark != 0x%08x drop", fakeICMPReplyMark),
 		},
 		{`iifname "br0" ip daddr 198.18.0.0/16 tcp dport != 53 redirect to :7893`},
+		{`iifname "br0" oifname "` + upl + `" ip daddr @private_bypass4 accept`},
+		{
+			`iifname "br0" oifname "` + upl + `" ip daddr @blocked_direct4 counter name pvm_drop_private drop`,
+			`iifname "br0" oifname "` + upl + `" ip daddr @blocked_direct4 counter name "pvm_drop_private" drop`,
+		},
 		{`iifname "br0" oifname "` + upl + `" drop`},
 	}
 	if len(c.Exits) > 0 {

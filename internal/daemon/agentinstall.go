@@ -33,6 +33,24 @@ type agentInstallTask struct {
 	seq    uint64
 }
 
+var (
+	agentInstallMaxWait   = 60 * time.Minute
+	cloudInitIdleTimeout  = 5 * time.Minute
+	cloudInitSSHTimeout   = 2 * time.Minute
+	cloudInitPollInterval = 3 * time.Second
+)
+
+// cloudInitError marks a provisioning failure that persists across guest
+// reboots: cloud-init does not rerun a failed runcmd on `stop && start`.
+type cloudInitError struct {
+	Status string
+	Detail string
+}
+
+func (e *cloudInitError) Error() string {
+	return fmt.Sprintf("cloud-init status %q:\n%s", e.Status, e.Detail)
+}
+
 func (s *Server) beginAgentInstall(name string) *agentInstallTask {
 	s.progMu.Lock()
 	defer s.progMu.Unlock()
@@ -46,7 +64,7 @@ func (s *Server) beginAgentInstall(name string) *agentInstallTask {
 		s.progSeq = make(map[string]uint64)
 	}
 	s.progSeq[name]++
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), agentInstallMaxWait)
 	task := &agentInstallTask{ctx: ctx, cancel: cancel, seq: s.progSeq[name]}
 	s.installTasks[name] = task
 	return task
@@ -120,7 +138,12 @@ func (s *Server) ensureAgentAsync(spec *vm.Spec) {
 			if errors.Is(task.ctx.Err(), context.Canceled) {
 				return
 			}
-			s.stageIfCurrent(spec.Name, task.seq, "failed", fmt.Sprintf("agent installation failed: %v; run `pvm stop %s && pvm start %s`", err, spec.Name, spec.Name))
+			var ciErr *cloudInitError
+			if errors.As(err, &ciErr) {
+				s.stageIfCurrent(spec.Name, task.seq, "failed", fmt.Sprintf("agent installation failed: %v\nrebooting will not rerun failed cloud-init steps; inspect with `pvm ssh %s` (see /var/log/cloud-init-output.log) or recreate the VM", err, spec.Name))
+			} else {
+				s.stageIfCurrent(spec.Name, task.seq, "failed", fmt.Sprintf("agent installation failed: %v; run `pvm stop %s && pvm start %s`", err, spec.Name, spec.Name))
+			}
 			log.Printf("agent: install into %s failed: %v", spec.Name, err)
 			return
 		}
@@ -130,10 +153,10 @@ func (s *Server) ensureAgentAsync(spec *vm.Spec) {
 
 func (s *Server) installAgentGeneration(ctx context.Context, spec *vm.Spec, bin string, seq uint64) error {
 	s.stageIfCurrent(spec.Name, seq, "provision", "waiting for ssh (cloud-init running)")
-	if err := s.waitSSHCtx(ctx, spec, 6*time.Minute); err != nil {
+	if err := s.waitSSHCtx(ctx, spec, 10*time.Minute); err != nil {
 		return err
 	}
-	if err := s.waitGuestProvisionedCtx(ctx, spec, 6*time.Minute); err != nil {
+	if err := s.waitGuestProvisionedCtx(ctx, spec, seq); err != nil {
 		return err
 	}
 	if spec.KernelArgsPending {
@@ -296,30 +319,132 @@ func (s *Server) waitSSHCtx(parent context.Context, spec *vm.Spec, d time.Durati
 			lastErr = err
 		}
 		if err := waitInstallRetry(ctx, 3*time.Second); err != nil {
-			return fmt.Errorf("ssh not reachable: %w (last error: %v)", err, lastErr)
+			return s.sshUnreachableError(spec, err, lastErr)
 		}
 	}
-	return fmt.Errorf("ssh not reachable: %w (last error: %v)", ctx.Err(), lastErr)
+	return s.sshUnreachableError(spec, ctx.Err(), lastErr)
 }
 
-func (s *Server) waitGuestProvisionedCtx(parent context.Context, spec *vm.Spec, d time.Duration) error {
-	ctx, cancel := context.WithTimeout(parent, d)
-	defer cancel()
+func (s *Server) sshUnreachableError(spec *vm.Spec, cause, lastErr error) error {
+	if lines, _, err := tailLines(s.P.VMDir(spec.Name)+"/console.log", 15); err == nil && len(lines) > 0 {
+		return fmt.Errorf("ssh not reachable: %w (last error: %v)\nconsole tail:\n  %s", cause, lastErr, strings.Join(lines, "\n  "))
+	}
+	return fmt.Errorf("ssh not reachable: %w (last error: %v)", cause, lastErr)
+}
+
+// cloudInitProbeScript prints three lines: cloud-init status value, the
+// output log's byte size and its last line. Polling reconnects naturally
+// across sshd restarts, unlike a long-lived `cloud-init status --wait` call.
+const cloudInitProbeScript = `if ! command -v cloud-init >/dev/null 2>&1; then printf 'absent\n0\n\n'; exit 0; fi
+sudo cloud-init status 2>/dev/null | sed -n 's/^status: //p' | head -n 1
+sudo wc -c < /var/log/cloud-init-output.log 2>/dev/null || echo 0
+sudo tail -n 1 /var/log/cloud-init-output.log 2>/dev/null | tr -d '\r' || true`
+
+const cloudInitDiagScript = `sudo cloud-init status --long 2>&1 || true
+echo '--- /var/log/cloud-init-output.log (tail) ---'
+sudo tail -n 25 /var/log/cloud-init-output.log 2>&1 || true
+echo '--- failed systemd units ---'
+sudo systemctl --failed --no-pager --no-legend 2>&1 || true`
+
+func (s *Server) waitGuestProvisionedCtx(ctx context.Context, spec *vm.Spec, seq uint64) error {
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if _, err := s.sshRunCtx(ctx, spec, "command -v sudo >/dev/null 2>&1"); err == nil {
+		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		_, err := s.sshRunCtx(probeCtx, spec, "command -v sudo >/dev/null 2>&1")
+		cancel()
+		if err == nil {
 			break
 		}
-		if err := waitInstallRetry(ctx, 3*time.Second); err != nil {
+		if err := waitInstallRetry(ctx, cloudInitPollInterval); err != nil {
 			return fmt.Errorf("sudo not available: %w", err)
 		}
 	}
-	if _, err := s.sshRunCtx(ctx, spec, "if command -v cloud-init >/dev/null; then sudo cloud-init status --wait >/dev/null; fi"); err != nil {
-		return fmt.Errorf("wait cloud-init: %w", err)
+
+	lastProgress := time.Now()
+	lastSSHOK := time.Now()
+	lastSize := ""
+	lastLine := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("wait cloud-init: %w", err)
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		out, err := s.sshRunCtx(probeCtx, spec, cloudInitProbeScript)
+		cancel()
+		if err != nil {
+			// sshd may briefly drop connections while provisioning; tolerate
+			// short outages instead of failing an otherwise healthy boot.
+			if time.Since(lastSSHOK) < cloudInitSSHTimeout {
+				if rerr := waitInstallRetry(ctx, cloudInitPollInterval); rerr == nil {
+					continue
+				}
+			}
+			return fmt.Errorf("probe cloud-init: %w", err)
+		}
+		now := time.Now()
+		lastSSHOK = now
+		lines := strings.SplitN(strings.ReplaceAll(out, "\r\n", "\n"), "\n", 3)
+		status := strings.TrimSpace(lines[0])
+		size, last := "0", ""
+		if len(lines) > 1 {
+			size = strings.TrimSpace(lines[1])
+		}
+		if len(lines) > 2 {
+			last = sanitizeGuestLine(strings.SplitN(lines[2], "\n", 2)[0])
+		}
+		if size != lastSize {
+			lastSize = size
+			lastProgress = now
+		}
+		if last != "" && last != lastLine {
+			lastLine = last
+		}
+		switch status {
+		case "absent", "not run", "disabled", "done":
+			return nil
+		case "degraded done":
+			log.Printf("vm %s: cloud-init finished in degraded state: %s", spec.Name, last)
+			return nil
+		case "error":
+			return &cloudInitError{Status: status, Detail: s.cloudInitDiagnostics(ctx, spec)}
+		}
+		s.stageIfCurrent(spec.Name, seq, "provision", fmt.Sprintf("waiting for cloud-init (status: %s) %s", status, last))
+		if now.Sub(lastProgress) >= cloudInitIdleTimeout {
+			return &cloudInitError{Status: fmt.Sprintf("stalled (no cloud-init log progress for %s, last status %q)", cloudInitIdleTimeout, status), Detail: s.cloudInitDiagnostics(ctx, spec)}
+		}
+		if err := waitInstallRetry(ctx, cloudInitPollInterval); err != nil {
+			return fmt.Errorf("wait cloud-init: %w", err)
+		}
 	}
-	return nil
+}
+
+func (s *Server) cloudInitDiagnostics(ctx context.Context, spec *vm.Spec) string {
+	diagCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	out, err := s.sshRunCtx(diagCtx, spec, cloudInitDiagScript)
+	text := strings.TrimSpace(out)
+	if err != nil {
+		if text != "" {
+			text += "\n"
+		}
+		text += fmt.Sprintf("collect diagnostics: %v", err)
+	}
+	const maxDiag = 4096
+	if len(text) > maxDiag {
+		text = "...\n" + text[len(text)-maxDiag:]
+	}
+	return text
+}
+
+func sanitizeGuestLine(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, strings.TrimSpace(s))
 }
 
 func shellQuote(s string) string {

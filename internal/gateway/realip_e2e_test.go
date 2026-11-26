@@ -333,7 +333,7 @@ func realipE2EGateway(t *testing.T) {
 		DefaultExit: "my-exit",
 		Exits:       map[string]ExitDef{"my-exit": {Transport: "udp", MTU: 1420}},
 	}
-	if err := ApplyNFT(RenderNFT(cfg, realipE2ENoUplink, iface, nil)); err != nil {
+	if err := ApplyNFT(RenderNFT(cfg, realipE2ENoUplink, iface, nil, nil)); err != nil {
 		t.Fatalf("ApplyNFT: %v", err)
 	}
 	a := &Agent{upl: realipE2ENoUplink}

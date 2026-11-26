@@ -761,6 +761,9 @@ func TestFakeICMPRealEchoLinux(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := eng.Add(rules.Rule{Type: rules.CIDR, Pattern: "127.0.0.0/8", Action: rules.Direct}); err != nil {
+		t.Fatal(err)
+	}
 	pool, err := dns.NewPool("127.0.0.0/8", 0)
 	if err != nil {
 		t.Fatal(err)

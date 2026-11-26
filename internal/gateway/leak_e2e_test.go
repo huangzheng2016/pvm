@@ -133,7 +133,7 @@ func TestKillSwitchUplinkE2ELinux(t *testing.T) {
 		}
 	}
 	cfg := &Config{CIDR: "10.23.0.0/24", GwIP: "10.23.0.1", DefaultExit: "my-exit", Exits: map[string]ExitDef{"my-exit": {Transport: "udp", MTU: 1420}}}
-	rules := RenderNFT(cfg, "upl0", "br0", nil)
+	rules := RenderNFT(cfg, "upl0", "br0", nil, nil)
 	nft(gw, rules)
 	probes := []string{"tcp4", "udp4", "icmp4", "dns_udp", "dns_tcp", "ipv6", "slirp"}
 	capture := func() {
@@ -231,7 +231,7 @@ func TestKillSwitchUplinkE2ELinux(t *testing.T) {
 	// Check the actual conntrack reply semantics, not just rendered text.
 	// The client is the simulated slirp host and the server is an exit VM.
 	cfg.Maps = []MapEntry{{HostPort: 18090, GuestPort: 18090, VMIP: "10.23.0.2", Proto: "tcp"}}
-	mappedRules := RenderNFT(cfg, "upl0", "br0", nil)
+	mappedRules := RenderNFT(cfg, "upl0", "br0", nil, nil)
 	nft(gw, mappedRules)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

@@ -9,37 +9,28 @@ set -euo pipefail
 
 DEST_ARG="${1:-$HOME/.pvm/runtime/qemu/x86_64}"
 INSTALLER_ARG="${2:-${QEMU_WINDOWS_INSTALLER:-}}"
-QEMU_WINDOWS_BASE_URL="${QEMU_WINDOWS_BASE_URL:-https://qemu.weilnetz.de/w64}"
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+QEMU_WINDOWS_PIN="${QEMU_WINDOWS_PIN:-$SCRIPT_DIR/windows-qemu.json}"
 
 sevenz=$(command -v 7zz || command -v 7z || command -v 7za || true)
 [ -n "$sevenz" ] || { echo "error: 7z/7zz/7za is required to extract Windows QEMU installer" >&2; exit 1; }
 
-resolve_windows_qemu_url() {
+# Remote installers are pinned in windows-qemu.json and verified by SHA-512
+# before extraction; CI never scrapes "latest" from an upstream directory.
+resolve_windows_qemu_pin() {
   if [ -n "${QEMU_WINDOWS_URL:-}" ]; then
-    echo "$QEMU_WINDOWS_URL"
+    [ -n "${QEMU_WINDOWS_SHA512:-}" ] || { echo "error: QEMU_WINDOWS_URL requires QEMU_WINDOWS_SHA512" >&2; exit 1; }
+    printf '%s %s\n' "$QEMU_WINDOWS_URL" "$QEMU_WINDOWS_SHA512"
     return 0
   fi
-  python3 - "$QEMU_WINDOWS_BASE_URL" <<'PY'
-import datetime, re, sys, urllib.request
-base = sys.argv[1].rstrip("/")
-years = [datetime.date.today().year, datetime.date.today().year - 1, 2026, 2025]
-seen = set()
-for year in years:
-    if year in seen:
-        continue
-    seen.add(year)
-    url = f"{base}/{year}/"
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "pvm-ci/1.0"})
-        with urllib.request.urlopen(req, timeout=20) as r:
-            html = r.read().decode("utf-8", "ignore")
-    except Exception:
-        continue
-    names = sorted(set(re.findall(r"qemu-w64-setup-\d+\.exe", html)))
-    if names:
-        print(f"{url}{names[-1]}")
-        sys.exit(0)
-sys.exit(1)
+  python3 - "$QEMU_WINDOWS_PIN" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    pin = json.load(f)
+url, sha = pin.get("url", ""), pin.get("sha512", "")
+if not url.startswith("https://") or len(sha) != 128:
+    sys.exit("error: invalid Windows QEMU pin in " + sys.argv[1])
+print(url, sha)
 PY
 }
 
@@ -48,6 +39,14 @@ sha256_of() {
     shasum -a 256 "$1" | awk '{print $1}'
   else
     sha256sum "$1" | awk '{print $1}'
+  fi
+}
+
+sha512_of() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 512 "$1" | awk '{print $1}'
+  else
+    sha512sum "$1" | awk '{print $1}'
   fi
 }
 
@@ -66,14 +65,23 @@ trap 'rm -rf "$WORK" "$DEST"' EXIT
 
 ARCHIVE="$INSTALLER_ARG"
 SOURCE_URL=""
+EXPECTED_SHA512="${QEMU_WINDOWS_SHA512:-}"
 if [ -z "$ARCHIVE" ]; then
-  SOURCE_URL=$(resolve_windows_qemu_url) || { echo "error: failed to resolve Windows QEMU installer URL" >&2; exit 1; }
+  read -r SOURCE_URL EXPECTED_SHA512 < <(resolve_windows_qemu_pin) || { echo "error: failed to resolve pinned Windows QEMU installer" >&2; exit 1; }
   ARCHIVE="$WORK/$(basename "$SOURCE_URL")"
   echo "downloading Windows QEMU from $SOURCE_URL..."
   curl --fail --show-error --location --proto '=https' --proto-redir '=https' --connect-timeout 20 --retry 3 \
-    "$SOURCE_URL" -o "$ARCHIVE"
+    -A "pvm-ci/1.0" "$SOURCE_URL" -o "$ARCHIVE"
 fi
 [ -f "$ARCHIVE" ] || { echo "error: installer not found: $ARCHIVE" >&2; exit 1; }
+if [ -n "$EXPECTED_SHA512" ]; then
+  ACTUAL_SHA512=$(sha512_of "$ARCHIVE")
+  if [ "$ACTUAL_SHA512" != "$EXPECTED_SHA512" ]; then
+    echo "error: Windows QEMU installer SHA512 mismatch: got $ACTUAL_SHA512, want $EXPECTED_SHA512" >&2
+    exit 1
+  fi
+  echo "verified Windows QEMU installer SHA512"
+fi
 
 VERSION=$(basename "$ARCHIVE" | sed -E 's/^qemu-w64-setup-([0-9]+)\.exe$/\1/')
 [ -n "$VERSION" ] || VERSION="w64"

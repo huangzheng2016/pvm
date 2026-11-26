@@ -79,6 +79,9 @@ func TestCheckUploadSourceCredentials(t *testing.T) {
 	for cred, credPath := range map[string]string{
 		"a/.ssh/id": "a/.ssh", ".gnupg/k": ".gnupg", ".aws/config": ".aws", ".kube/config": ".kube",
 		".docker/config.json": ".docker", "b/.netrc": "b/.netrc", ".git-credentials": ".git-credentials",
+		".gitconfig": ".gitconfig", ".npmrc": ".npmrc", ".pypirc": ".pypirc", ".azure/tok": ".azure",
+		".env": ".env", "config/.env.production": "config/.env.production",
+		"certs/server.pem": "certs/server.pem", "keys/id_ed25519": "keys/id_ed25519", "store.p12": "store.p12",
 	} {
 		project := t.TempDir()
 		write(t, project, "main.go", "x")
@@ -103,5 +106,13 @@ func TestCheckUploadSourceCredentials(t *testing.T) {
 		if err := CheckUploadSource(project, []string{home}, filepath.Join(home, ".pvm"), nil); err == nil || !strings.Contains(err.Error(), "mount shares every file") {
 			t.Errorf("%s in a mount: err = %v", cred, err)
 		}
+	}
+
+	project := t.TempDir()
+	for _, safe := range []string{"main.go", ".env.example", ".env.sample", ".env.template", ".env.dist", ".env.local.example", "certs/public.crt"} {
+		write(t, project, safe, "placeholder")
+	}
+	if err := CheckUploadSource(project, []string{home}, filepath.Join(home, ".pvm"), nil); err != nil {
+		t.Fatalf("env templates and source files must be shareable: %v", err)
 	}
 }

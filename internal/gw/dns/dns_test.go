@@ -64,6 +64,24 @@ func newTestServer(t *testing.T) (*Server, *stubUpstream, *rules.Engine) {
 	return NewServer(up, eng, pool), up, eng
 }
 
+func TestDirectRuleSuppressesAAAA(t *testing.T) {
+	srv, up, eng := newTestServer(t)
+	if err := eng.Add(rules.Rule{Type: rules.DomainSuffix, Pattern: "example.com", Action: rules.Direct}); err != nil {
+		t.Fatal(err)
+	}
+	resp := query(t, srv, "www.example.com", mdns.TypeAAAA)
+	if resp.Rcode != mdns.RcodeSuccess || len(resp.Answer) != 0 {
+		t.Fatalf("direct AAAA = rcode %d answers %v, want NODATA", resp.Rcode, resp.Answer)
+	}
+	if up.queried("www.example.com.") {
+		t.Fatal("direct AAAA must not be forwarded upstream in the v4-only cluster")
+	}
+	resp = query(t, srv, "www.example.com", mdns.TypeA)
+	if len(resp.Answer) != 1 || !up.queried("www.example.com.") {
+		t.Fatalf("direct A query must still reach upstream: %v", resp.Answer)
+	}
+}
+
 func query(t *testing.T, srv *Server, name string, qtype uint16) *mdns.Msg {
 	t.Helper()
 	req := mdns.Msg{}

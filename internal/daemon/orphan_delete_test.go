@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/huangzheng2016/pvm/internal/cluster"
+	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
 func deleteVM(s *Server, name string) *httptest.ResponseRecorder {
@@ -26,6 +29,33 @@ func orphanDev1(t *testing.T, s *Server) {
 	s.mu.Lock()
 	delete(s.vms, "dev1")
 	s.mu.Unlock()
+}
+
+func TestRollbackFailedCreateWithoutGateway(t *testing.T) {
+	s, spec, _ := newMountTestServer(t)
+	store, err := cluster.LoadStore(filepath.Join(s.P.Home, "clusters"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Clusters = store
+	cl, err := s.Clusters.Ensure(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Clusters.AddVM(1, spec.Name); err != nil {
+		t.Fatal(err)
+	}
+	spec.ClusterID = 1
+	if err := spec.Save(s.P); err != nil {
+		t.Fatal(err)
+	}
+	s.cacheSpec(spec)
+	if err := s.rollbackFailedCreate(spec, cl); err != nil {
+		t.Fatalf("missing gateway must not fail create rollback: %v", err)
+	}
+	if _, err := vm.Load(s.P, spec.Name); err == nil {
+		t.Fatal("rolled-back VM files still exist")
+	}
 }
 
 func TestDeleteOrphanMemberDropsClusterState(t *testing.T) {

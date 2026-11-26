@@ -284,6 +284,10 @@ func (p *fakeProxy) dialDirect(src *net.TCPConn, domain string, port int, vmName
 		log.Printf("fakeproxy: resolve %s: %v", domain, err)
 		return
 	}
+	if err := checkDirectTarget(p.curPolicy(), domain, ips[0]); err != nil {
+		log.Printf("fakeproxy: %v", err)
+		return
+	}
 	up, err := net.DialTimeout("tcp4", net.JoinHostPort(ips[0].String(), fmt.Sprint(port)), 10*time.Second)
 	if err != nil {
 		log.Printf("fakeproxy: dial %s (%s:%d): %v", domain, ips[0], port, err)

@@ -14,7 +14,7 @@ import (
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
-const mountUsage = "usage: pvm mount <vm> [--profile coherent|readahead] [--read-only] <host-path>:<guest-path> | ls <vm> | rm <vm> <guest-path>"
+const mountUsage = "usage: pvm mount <vm> [--profile coherent|readahead] [--read-only] [--allow-sensitive] <host-path>:<guest-path> | ls <vm> | rm <vm> <guest-path>"
 
 type mountView struct {
 	Tag      string `json:"tag"`
@@ -25,11 +25,12 @@ type mountView struct {
 }
 
 type mountAddOptions struct {
-	vmName   string
-	host     string
-	guest    string
-	profile  string
-	readOnly bool
+	vmName         string
+	host           string
+	guest          string
+	profile        string
+	readOnly       bool
+	allowSensitive bool
 }
 
 func parseMountAddArgs(args []string) (mountAddOptions, error) {
@@ -40,6 +41,7 @@ func parseMountAddArgs(args []string) (mountAddOptions, error) {
 	flags.SetOutput(io.Discard)
 	readOnly := flags.Bool("read-only", false, "enforce read-only access (VM must be stopped)")
 	profile := flags.String("profile", "", "coherent or readahead")
+	allowSensitive := flags.Bool("allow-sensitive", false, "allow sharing a home or credential directory")
 	if err := flags.Parse(args[1:]); err != nil {
 		return mountAddOptions{}, err
 	}
@@ -54,7 +56,7 @@ func parseMountAddArgs(args []string) (mountAddOptions, error) {
 	if err != nil {
 		return mountAddOptions{}, err
 	}
-	return mountAddOptions{vmName: args[0], host: host, guest: guest, profile: normalized, readOnly: *readOnly}, nil
+	return mountAddOptions{vmName: args[0], host: host, guest: guest, profile: normalized, readOnly: *readOnly, allowSensitive: *allowSensitive}, nil
 }
 
 // splitMountSpec splits "<host-path>:<guest-path>" while preserving a leading
@@ -160,9 +162,16 @@ func CmdMount(args []string) int {
 			return fatalf("%v", err)
 		}
 		var m mountView
-		body := map[string]any{"host": host, "guest": add.guest, "profile": add.profile, "read_only": add.readOnly}
+		body := map[string]any{"host": host, "guest": add.guest, "profile": add.profile, "read_only": add.readOnly, "allow_sensitive": add.allowSensitive}
 		if err := c.Post("/v1/vms/"+add.vmName+"/mounts", body, &m); err != nil {
 			return fatalf("mount: %v", err)
+		}
+		if add.allowSensitive {
+			access := "read and change"
+			if add.readOnly {
+				access = "read"
+			}
+			fmt.Fprintf(os.Stderr, "warning: --allow-sensitive lets %s %s credentials and personal files in %s\n", add.vmName, access, m.Host)
 		}
 		fmt.Printf("mounted %s -> %s:%s\n", m.Host, add.vmName, m.Guest)
 		return 0

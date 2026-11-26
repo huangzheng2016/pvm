@@ -380,6 +380,11 @@ func atoi(s string) (int, error) {
 }
 
 func (s *Server) forward(req, resp *mdns.Msg) {
+	if len(req.Question) > 0 && req.Question[0].Qtype == mdns.TypeAAAA {
+		// The cluster is IPv4-only: direct answers suppress AAAA just like
+		// fake-ip answers so dual-stack clients fall back to A immediately.
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	up, err := s.upstream.Exchange(ctx, req)
@@ -396,6 +401,9 @@ func (s *Server) forward(req, resp *mdns.Msg) {
 func (s *Server) forwardInternal(req, resp *mdns.Msg, addr string) {
 	if addr == "" {
 		resp.Rcode = mdns.RcodeServerFailure
+		return
+	}
+	if len(req.Question) > 0 && req.Question[0].Qtype == mdns.TypeAAAA {
 		return
 	}
 	if _, _, err := net.SplitHostPort(addr); err != nil {
