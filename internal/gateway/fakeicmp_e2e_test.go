@@ -17,6 +17,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/huangzheng2016/pvm/internal/gw/dns"
+	gwpolicy "github.com/huangzheng2016/pvm/internal/gw/policy"
+	"github.com/huangzheng2016/pvm/internal/gw/rules"
 )
 
 const (
@@ -306,9 +310,19 @@ func fakeICMPNetnsGateway(t *testing.T) {
 	if err := ApplyNFT(RenderNFT(cfg, fakeICMPE2ENoUplink, iface, nil, nil)); err != nil {
 		t.Fatalf("ApplyNFT: %v", err)
 	}
-	eng, pool := newFakeUDPTestPolicy(t)
+	eng, err := rules.NewEngine("", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eng.Add(rules.Rule{Type: rules.CIDR, Pattern: "10.23.1.0/24", Action: rules.Direct}); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := dns.NewPool("198.18.0.0/16", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
 	fake := pool.Allocate("example.com")
-	p := newFakeICMP(eng, "10.23.0.1", func(net.IP) string { return "dev1" })
+	p := newFakeICMP(gwpolicy.New(eng, pool), "10.23.0.1", func(net.IP) string { return "dev1" })
 	p.lookupDirect = func(context.Context, string) (net.IP, error) {
 		return net.ParseIP(fakeICMPE2ETargetIP), nil
 	}
