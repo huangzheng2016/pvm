@@ -24,23 +24,26 @@ import (
 	"github.com/huangzheng2016/pvm/internal/exit"
 	"github.com/huangzheng2016/pvm/internal/fsutil"
 	"github.com/huangzheng2016/pvm/internal/gw/rules"
+	"github.com/huangzheng2016/pvm/internal/netcheck"
 	"github.com/huangzheng2016/pvm/internal/tunnel"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 )
 
 type ExitDef struct {
-	Provider     string `json:"provider,omitempty"`
-	Server       string `json:"server"`
-	Token        string `json:"token"`
-	Transport    string `json:"transport"`
-	Fingerprint  string `json:"fingerprint"`
-	WGPrivateKey string `json:"wg_private_key,omitempty"`
-	ServerPubKey string `json:"server_pubkey,omitempty"`
-	TunnelIP     string `json:"tunnel_ip,omitempty"`
-	MTU          int    `json:"mtu,omitempty"`
-	Endpoint     string `json:"endpoint,omitempty"`
-	DNS          string `json:"dns,omitempty"`
+	Provider     string               `json:"provider,omitempty"`
+	Server       string               `json:"server"`
+	Token        string               `json:"token"`
+	Transport    string               `json:"transport"`
+	Fingerprint  string               `json:"fingerprint"`
+	WGPrivateKey string               `json:"wg_private_key,omitempty"`
+	ServerPubKey string               `json:"server_pubkey,omitempty"`
+	TunnelIP     string               `json:"tunnel_ip,omitempty"`
+	MTU          int                  `json:"mtu,omitempty"`
+	Endpoint     string               `json:"endpoint,omitempty"`
+	DNS          string               `json:"dns,omitempty"`
+	MihomoPort   int                  `json:"mihomo_port,omitempty"`
+	Policy       *netcheck.ExitPolicy `json:"policy,omitempty"`
 }
 
 const (
@@ -134,6 +137,9 @@ type exitTunnel struct {
 	// response (domain-connect/speed target); it cannot be derived from
 	// tunIP because the tunnel subnet is a /16.
 	serverTunIP string
+
+	policyBlocked   bool
+	lastPolicyCheck time.Time
 }
 
 // lastHandshake reports the newest peer handshake time (unix seconds).
@@ -168,6 +174,8 @@ type exitManager struct {
 	clusterLocal  string          // cluster cidr pinned to main (replies, vm-to-vm)
 	bypass        map[string]bool // direct cidrs/ips -> lookup main
 	privateBypass map[string]bool // explicit private cidrs/ips allowed past blocked_direct4
+	mihomoPorts   map[string]int
+	mihomoUp      map[string]bool
 	// learned holds runtime-learned bypass /32s indexed by the domain
 	// that produced them (domain -> ip -> last seen). Entries survive
 	// config syncs so cached direct flows are never rerouted mid-TTL,
@@ -197,6 +205,8 @@ func newExitManager() *exitManager {
 		cidrRules:     map[string]int{},
 		bypass:        map[string]bool{},
 		privateBypass: map[string]bool{},
+		mihomoPorts:   map[string]int{},
+		mihomoUp:      map[string]bool{},
 		learned:       map[string]map[string]time.Time{},
 		learnedTTL:    defaultLearnedTTL,
 	}
@@ -214,14 +224,29 @@ func (m *exitManager) Sync(exits map[string]ExitDef, vmExits map[string]string, 
 		names = append(names, n)
 	}
 
+	wantMihomo := map[string]int{}
+	for name, def := range exits {
+		if def.Provider == "mihomo" && def.MihomoPort > 0 {
+			wantMihomo[name] = def.MihomoPort
+		}
+	}
+	m.mihomoPorts = wantMihomo
+	for name := range m.mihomoUp {
+		if wantMihomo[name] == 0 {
+			delete(m.mihomoUp, name)
+		}
+	}
 	// tear down tunnels no longer referenced
 	for name, t := range m.tuns {
-		if _, ok := exits[name]; !ok {
+		if def, ok := exits[name]; !ok || def.Provider == "mihomo" {
 			m.teardownLocked(t, true)
 		}
 	}
 	// ensure tunnels
 	for name, def := range exits {
+		if def.Provider == "mihomo" {
+			continue
+		}
 		if idx := exitIndex(names, name); idx >= 0 {
 			m.ensureLocked(name, def, idx)
 		}
@@ -909,16 +934,71 @@ func (m *exitManager) CloseAll() {
 func (m *exitManager) MarkForExit(name string) int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if port := m.mihomoPorts[name]; port > 0 {
+		if m.mihomoUp[name] {
+			return 0 // loopback dial to gateway-local Mihomo; no tunnel mark
+		}
+		return -1
+	}
 	t, ok := m.tuns[name]
 	if !ok {
 		return -1
 	}
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	if t.dev == nil {
+	if t.dev == nil || t.policyBlocked {
 		return -1
 	}
 	return fwMarkBase + t.idx
+}
+
+var probeExitFunc = ProbeExit
+
+// checkExitPolicies samples exits that carry a drift baseline at most once
+// per minute. A violation fails the exit closed via MarkForExit and reports
+// changed=true so the agent resets live relay connections immediately.
+func (m *exitManager) checkExitPolicies(c *Config) bool {
+	m.mu.Lock()
+	var check []*exitTunnel
+	now := time.Now()
+	for _, t := range m.tuns {
+		t.mu.RLock()
+		if t.dev != nil && t.def.Policy != nil && now.Sub(t.lastPolicyCheck) >= time.Minute {
+			t.mu.RUnlock()
+			t.mu.Lock()
+			t.lastPolicyCheck = now
+			t.mu.Unlock()
+			check = append(check, t)
+		} else {
+			t.mu.RUnlock()
+		}
+	}
+	m.mu.Unlock()
+	changed := false
+	for _, t := range check {
+		t.mu.RLock()
+		pol := t.def.Policy
+		name := t.name
+		was := t.policyBlocked
+		t.mu.RUnlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		res, err := probeExitFunc(ctx, c, name, true)
+		if err == nil {
+			err = pol.Evaluate(res.IP, res.Geo)
+		}
+		cancel()
+		blocked := err != nil
+		if blocked {
+			log.Printf("exit %s: policy violation, failing closed: %v", name, err)
+		}
+		t.mu.Lock()
+		t.policyBlocked = blocked
+		t.mu.Unlock()
+		if was != blocked {
+			changed = true
+		}
+	}
+	return changed
 }
 
 // DomainConnectAddr returns the in-tunnel domain-connect address for an

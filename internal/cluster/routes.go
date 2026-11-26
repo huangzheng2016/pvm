@@ -101,6 +101,28 @@ func (s *Store) SetPaused(id int, vmName string, paused bool) error {
 	return s.saveCluster(id, previous)
 }
 
+func (s *Store) SetRequireCheck(id int, vmName string, required bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.data.Clusters[id]
+	if c == nil {
+		return fmt.Errorf("cluster %d does not exist", id)
+	}
+	if c.VMs[vmName] == nil {
+		return fmt.Errorf("vm %q is not in cluster %d", vmName, id)
+	}
+	previous := c.deepCopy()
+	if c.RequireCheck == nil {
+		c.RequireCheck = map[string]bool{}
+	}
+	if required {
+		c.RequireCheck[vmName] = true
+	} else {
+		delete(c.RequireCheck, vmName)
+	}
+	return s.saveCluster(id, previous)
+}
+
 // SetDefaultExit sets the cluster-wide fallback route; "" or "direct"
 // restores direct egress for unmatched traffic.
 func (s *Store) SetDefaultExit(id int, exit string) error {

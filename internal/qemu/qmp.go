@@ -97,6 +97,18 @@ func (q *QMP) Execute(cmd string, args map[string]any) (json.RawMessage, error) 
 	return q.execute(cmd, args)
 }
 
+func (q *QMP) ExecuteDeadline(cmd string, args map[string]any, d time.Duration) (json.RawMessage, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.executeUntil(cmd, args, time.Now().Add(d))
+}
+
+// SetBalloonTarget asks the virtio-balloon driver to target bytes of guest RAM.
+func (q *QMP) SetBalloonTarget(bytes uint64) error {
+	_, err := q.ExecuteDeadline("balloon", map[string]any{"value": bytes}, 3*time.Second)
+	return err
+}
+
 func (q *QMP) execute(cmd string, args map[string]any) (json.RawMessage, error) {
 	return q.executeUntil(cmd, args, time.Now().Add(60*time.Second))
 }

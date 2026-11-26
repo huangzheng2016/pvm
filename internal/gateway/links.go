@@ -44,7 +44,7 @@ func (a *Agent) applyNetwork(c *Config) error {
 	if err := ensureFakeIPRoute(); err != nil {
 		return err
 	}
-	if err := ApplyNFT(RenderNFT(c, upl, a.br, a.exits.BypassList(), a.exits.PrivateBypassList())); err != nil {
+	if err := ApplyNFT(RenderNFT(c, upl, a.br, a.exits.BypassList(), a.exits.PrivateBypassList(), a.admission.sets(c))); err != nil {
 		_ = run("sysctl", "-w", "net.ipv4.ip_forward=0")
 		return err
 	}

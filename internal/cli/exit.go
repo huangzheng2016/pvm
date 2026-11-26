@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -13,7 +14,10 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/huangzheng2016/pvm/internal/daemon"
 	"github.com/huangzheng2016/pvm/internal/exit"
+	"github.com/huangzheng2016/pvm/internal/netcheck"
+	"github.com/huangzheng2016/pvm/internal/paths"
 	"github.com/huangzheng2016/pvm/internal/tunnel"
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
@@ -96,6 +100,10 @@ func CmdExit(args []string) int {
 		return 2
 	}
 	switch args[0] {
+	case "import":
+		return exitImport(args[1:])
+	case "nodes":
+		return exitNodes(args[1:])
 	case "add":
 		return exitAdd(args[1:])
 	case "add-warp":
@@ -287,9 +295,12 @@ func exitAdd(args []string) int {
 }
 
 func exitSet(args []string) int {
-	fs := newFlagSet("exit set", "<name> [--tz TZ] [--locale L]")
+	fs := newFlagSet("exit set", "<name> [--tz TZ] [--locale L] [--ip-mode static|dynamic|off] [--ip-scope city|region|country|any] [--rebind]")
 	tz := fs.String("tz", "", "IANA timezone of this exit's region")
 	locale := fs.String("locale", "", "locale matching this exit's region")
+	ipMode := fs.String("ip-mode", "", "exit drift protection: static | dynamic | off")
+	ipScope := fs.String("ip-scope", "", "dynamic scope: city | region | country | any")
+	rebind := fs.Bool("rebind", false, "explicitly re-anchor an existing exit baseline")
 	name := ""
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		name = args[0]
@@ -335,10 +346,66 @@ func exitSet(args []string) int {
 	if *locale != "" {
 		e.Locale = *locale
 	}
+	needPush := false
+	if *ipMode != "" {
+		switch *ipMode {
+		case "off":
+			e.Policy = nil
+		case "static", "dynamic":
+			pol := &netcheck.ExitPolicy{Mode: *ipMode, Scope: *ipScope}
+			if pol.Scope == "" {
+				pol.Scope = "country"
+			}
+			if *ipMode == "dynamic" {
+				switch pol.Scope {
+				case "city", "region", "country", "any":
+				default:
+					return fatalf("invalid --ip-scope %q (want city, region, country, or any)", pol.Scope)
+				}
+			}
+			if e.Policy != nil && !*rebind {
+				pol.AnchorIP, pol.Country, pol.Region, pol.City = e.Policy.AnchorIP, e.Policy.Country, e.Policy.Region, e.Policy.City
+			}
+			if pol.AnchorIP == "" && pol.Country == "" {
+				p, err := mustPaths()
+				if err != nil {
+					return fatalf("%v", err)
+				}
+				c, err := daemon.Ensure(p)
+				if err != nil {
+					return fatalf("%v", err)
+				}
+				var res struct {
+					IP  string            `json:"ip"`
+					Geo *netcheck.GeoInfo `json:"geo"`
+				}
+				if err := c.Post("/v1/exits/"+url.PathEscape(name)+"/probe", nil, &res); err != nil {
+					return fatalf("cannot anchor exit baseline: %v", err)
+				}
+				pol.AnchorIP, pol.Country = res.IP, res.Geo.CountryCode
+				pol.Region, pol.City = res.Geo.Region, res.Geo.City
+			}
+			e.Policy = pol
+		default:
+			return fatalf("invalid --ip-mode %q (want static, dynamic, or off)", *ipMode)
+		}
+		needPush = true
+	}
 	if err := exit.SaveEntry(dir, e); err != nil {
 		return fatalf("save entry: %v", err)
 	}
-	fmt.Printf("exit %q updated: tz=%s locale=%s (applies on next `pvm route <vm> --via %s`)\n", name, e.TZ, e.Locale, name)
+	if needPush {
+		if p, err := paths.Default(); err == nil {
+			c := daemon.NewClient(p)
+			if c.Healthy() {
+				_ = c.Post("/v1/clusters/1/push", nil, nil)
+			}
+		}
+	}
+	if e.Policy != nil {
+		fmt.Printf("exit %q policy: mode=%s scope=%s anchor_ip=%s country=%s region=%s city=%s\n", name, e.Policy.Mode, e.Policy.Scope, e.Policy.AnchorIP, e.Policy.Country, e.Policy.Region, e.Policy.City)
+	}
+	fmt.Printf("exit %q updated: tz=%s locale=%s (region applies on next `pvm route <vm> --via %s`)\n", name, e.TZ, e.Locale, name)
 	return 0
 }
 
@@ -350,6 +417,30 @@ func exitLs() int {
 	entries, err := exit.ListEntries(dir)
 	if err != nil {
 		return fatalf("%v", err)
+	}
+	if jsonOutput {
+		type exitSafeView struct {
+			Name      string `json:"name"`
+			Provider  string `json:"provider"`
+			Server    string `json:"server"`
+			Transport string `json:"transport"`
+			TunnelIP  string `json:"tunnel_ip"`
+			Endpoint  string `json:"endpoint"`
+			TZ        string `json:"tz"`
+		}
+		views := []exitSafeView{}
+		for _, e := range entries {
+			provider := e.Provider
+			if provider == "" {
+				provider = "agent"
+			}
+			tz := e.TZ
+			if tz == "" {
+				tz = e.AutoTZ
+			}
+			views = append(views, exitSafeView{Name: e.Name, Provider: provider, Server: e.Server, Transport: e.Transport, TunnelIP: e.TunnelIP, Endpoint: e.Endpoint, TZ: tz})
+		}
+		return failErr(writeJSONOut(map[string]any{"status": "completed", "data": views}))
 	}
 	if len(entries) == 0 {
 		fmt.Println("no exit nodes")
@@ -390,6 +481,12 @@ func exitRm(args []string) int {
 	if e.IsWARP() {
 		if err := deleteWARPRegistration(e); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: delete Cloudflare device failed (continuing): %v\n", err)
+		}
+	} else if e.IsMihomo() {
+		if p, err := paths.Default(); err == nil {
+			if err := removeMihomoExitIfNeeded(daemon.NewClient(p), e); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: gateway mihomo cleanup incomplete (continuing): %v\n", err)
+			}
 		}
 	} else {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -443,6 +540,31 @@ func exitTest(args []string) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	probePublicEgress := func() {
+		p, err := paths.Default()
+		if err != nil {
+			return
+		}
+		c := daemon.NewClient(p)
+		if !c.Healthy() {
+			fmt.Println("egress probe: skipped (daemon not running; start a cluster gateway for real internet egress verification)")
+			return
+		}
+		var res struct {
+			IP      string            `json:"ip"`
+			Service string            `json:"service"`
+			Geo     *netcheck.GeoInfo `json:"geo"`
+		}
+		if err := c.Post("/v1/exits/"+url.PathEscape(name)+"/probe", nil, &res); err != nil {
+			fmt.Printf("egress=fail: real internet egress through %s failed: %v (check VPS firewall forwarding, e.g. ufw route allow)\n", name, err)
+			return
+		}
+		loc := ""
+		if res.Geo != nil {
+			loc = fmt.Sprintf(" country=%s tz=%s", res.Geo.CountryCode, res.Geo.Timezone)
+		}
+		fmt.Printf("egress=ok: public exit ip=%s via %s%s\n", res.IP, res.Service, loc)
+	}
 	dial := func() (*exit.Tunnel, error) {
 		t, err := exit.DialEntry(e)
 		if err != nil {
@@ -477,7 +599,8 @@ func exitTest(args []string) int {
 	serverIP := e.ServerIP
 	fmt.Println("wireguard handshake: ok")
 	if e.IsWARP() {
-		fmt.Println("own-agent probes: skipped (WARP exits are handshake-only; there is no pvm exit-agent to probe)")
+		fmt.Println("own-agent probes: skipped (WARP exits have no pvm exit-agent to probe)")
+		probePublicEgress()
 		return 0
 	}
 	sip := netip.MustParseAddr(serverIP)
@@ -508,6 +631,7 @@ func exitTest(args []string) int {
 		}
 		fmt.Printf("avg: %.1f MB/s, rtt %s\n", mbps, rtt.Round(time.Millisecond))
 	}
+	probePublicEgress()
 	return 0
 }
 

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/exit"
+	"github.com/huangzheng2016/pvm/internal/hostnet"
 	"github.com/huangzheng2016/pvm/internal/tunnel"
 )
 
@@ -32,9 +33,12 @@ func NewClient(baseURL string) *Client {
 	if baseURL == "" {
 		baseURL = DefaultAPIBase
 	}
+	d := &net.Dialer{Timeout: 15 * time.Second}
+	hostnet.BindDialer(d)
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		http: &http.Client{Transport: &http.Transport{
+			DialContext:       d.DialContext,
 			TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12, MaxVersion: tls.VersionTLS12},
 			ForceAttemptHTTP2: false,
 			Proxy:             http.ProxyFromEnvironment,

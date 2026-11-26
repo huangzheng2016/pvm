@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/huangzheng2016/pvm/internal/fsutil"
+	"github.com/huangzheng2016/pvm/internal/netcheck"
 )
 
 var nameRe = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]{0,31}$`)
@@ -22,7 +23,16 @@ func entryPath(dir, name string) string {
 	return filepath.Join(dir, name+".json")
 }
 
-const ProviderWARP = "warp"
+const (
+	ProviderWARP   = "warp"
+	ProviderMihomo = "mihomo"
+)
+
+type MihomoSpec struct {
+	Selected string   `json:"selected"`
+	Chain    []string `json:"chain,omitempty"`
+	Port     int      `json:"port"`
+}
 
 type WARPAccount struct {
 	DeviceID string `json:"device_id"`
@@ -46,17 +56,20 @@ type Entry struct {
 	MTU          int          `json:"mtu"`
 	Endpoint     string       `json:"endpoint"` // wireguard data-plane host:port
 	WARP         *WARPAccount `json:"warp,omitempty"`
+	Mihomo       *MihomoSpec  `json:"mihomo,omitempty"`
 	// Region profile: applied to VMs routed via this exit so their
 	// environment matches the exit's geography. TZ is the manual
 	// override (exit set --tz); AutoTZ is learned from the exit-agent's
 	// enroll response and used when TZ is empty.
-	TZ        string    `json:"tz,omitempty"`
-	AutoTZ    string    `json:"auto_tz,omitempty"`
-	Locale    string    `json:"locale,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	TZ        string               `json:"tz,omitempty"`
+	AutoTZ    string               `json:"auto_tz,omitempty"`
+	Locale    string               `json:"locale,omitempty"`
+	Policy    *netcheck.ExitPolicy `json:"policy,omitempty"`
+	CreatedAt time.Time            `json:"created_at"`
 }
 
-func (e *Entry) IsWARP() bool { return e.Provider == ProviderWARP }
+func (e *Entry) IsWARP() bool   { return e.Provider == ProviderWARP }
+func (e *Entry) IsMihomo() bool { return e.Provider == ProviderMihomo }
 
 // SaveEntry persists an entry (0600).
 func SaveEntry(dir string, e *Entry) error {

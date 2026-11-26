@@ -52,13 +52,14 @@ type vmInfoView struct {
 
 type imageBuildOptions struct {
 	spec            string
-	keep            bool
+	keep, fresh     bool
 	cpus, mem, disk int
 }
 
 func parseImageBuildArgs(args []string) (imageBuildOptions, bool) {
-	fs := newFlagSet("image build", "<distro:version> [--keep-vm] [--cpus 4] [--mem 6144] [--disk 25]")
-	keep := fs.Bool("keep-vm", false, "keep the build VM for debugging")
+	fs := newFlagSet("image build", "<distro:version> [--keep-vm] [--fresh] [--cpus 4] [--mem 6144] [--disk 25]")
+	keep := fs.Bool("keep-vm", false, "keep the build VM after success for debugging")
+	fresh := fs.Bool("fresh", false, "discard any resumable build VM and start clean")
 	cpus := fs.Int("cpus", 4, "build vm vcpus")
 	mem := fs.Int("mem", 6144, "build vm memory MB")
 	disk := fs.Int("disk", 25, "build vm disk GB")
@@ -69,7 +70,7 @@ func parseImageBuildArgs(args []string) (imageBuildOptions, bool) {
 		fs.Usage()
 		return imageBuildOptions{}, false
 	}
-	return imageBuildOptions{spec: fs.Arg(0), keep: *keep, cpus: *cpus, mem: *mem, disk: *disk}, true
+	return imageBuildOptions{spec: fs.Arg(0), keep: *keep, fresh: *fresh, cpus: *cpus, mem: *mem, disk: *disk}, true
 }
 
 func CmdImage(args []string) int {
@@ -110,7 +111,7 @@ func CmdImage(args []string) int {
 		if !ok {
 			return 2
 		}
-		return cmdImageBuild(p, opts.spec, opts.keep, opts.cpus, opts.mem, opts.disk)
+		return cmdImageBuild(p, opts.spec, opts.keep, opts.fresh, opts.cpus, opts.mem, opts.disk)
 	case "default":
 		return cmdImageDefault(p, args[1:])
 	case "list":
@@ -158,7 +159,7 @@ func CmdImage(args []string) int {
 	return fatalf("unknown image subcommand %q", args[0])
 }
 
-func cmdImageBuild(p *paths.Paths, spec string, keep bool, cpus, mem, disk int) int {
+func cmdImageBuild(p *paths.Paths, spec string, keep, fresh bool, cpus, mem, disk int) int {
 	tc, err := qemu.Find(p.Runtime)
 	if err != nil {
 		return fatalf("%v", err)
@@ -168,7 +169,7 @@ func cmdImageBuild(p *paths.Paths, spec string, keep bool, cpus, mem, disk int) 
 	entry, err := image.Bake(&image.BakeOptions{
 		Spec: spec, P: p, TC: tc, Accel: accel,
 		Out:    os.Stderr,
-		KeepVM: keep, BuildCPUs: cpus, BuildMem: mem, BuildDisk: disk,
+		KeepVM: keep, Fresh: fresh, BuildCPUs: cpus, BuildMem: mem, BuildDisk: disk,
 		Proxy: image.ProxyConfigFromEnv(),
 	})
 	if err != nil {
@@ -301,7 +302,7 @@ func CmdCreate(args []string) int {
 			}
 		}
 		fmt.Printf("no golden image for %s yet; baking one now (one-time)...\n", spec)
-		if rc := cmdImageBuild(p, spec, false, 4, 6144, 25); rc != 0 {
+		if rc := cmdImageBuild(p, spec, false, false, 4, 6144, 25); rc != 0 {
 			return fatalf("golden bake failed; retry, or use --base to create from the plain base image")
 		}
 	}

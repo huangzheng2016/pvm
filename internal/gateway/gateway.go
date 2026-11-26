@@ -68,12 +68,13 @@ func routingConfigEqual(a, b *Config) bool {
 type Agent struct {
 	configPath string
 
-	mu    sync.Mutex
-	cfg   *Config
-	upl   string // uplink interface name, e.g. enp0s1
-	br    string
-	exits *exitManager
-	stop  chan struct{}
+	mu        sync.Mutex
+	cfg       *Config
+	upl       string // uplink interface name, e.g. enp0s1
+	br        string
+	exits     *exitManager
+	admission admissionState
+	stop      chan struct{}
 }
 
 func New(configPath string) *Agent {
@@ -91,11 +92,25 @@ func New(configPath string) *Agent {
 			log.Printf("nft bypass4 del %s: %v (%s)", cidr, err, strings.TrimSpace(string(out)))
 		}
 	}
+	a.exits.onPrivateBypass = func(cidr string) {
+		if out, err := exec.Command("nft", "add", "element", "inet", "pvm", "private_bypass4", "{", cidr, "}").CombinedOutput(); err != nil {
+			log.Printf("nft private_bypass4 add %s: %v (%s)", cidr, err, strings.TrimSpace(string(out)))
+		}
+	}
+	a.exits.onPrivateEvict = func(cidr string) {
+		if out, err := exec.Command("nft", "delete", "element", "inet", "pvm", "private_bypass4", "{", cidr, "}").CombinedOutput(); err != nil {
+			log.Printf("nft private_bypass4 del %s: %v (%s)", cidr, err, strings.TrimSpace(string(out)))
+		}
+	}
 	return a
 }
 
 func (a *Agent) loadConfig() (*Config, error) {
-	data, err := os.ReadFile(a.configPath)
+	return LoadConfig(a.configPath)
+}
+
+func LoadConfig(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -246,6 +261,7 @@ func (a *Agent) Run() error {
 				if fproxy != nil {
 					fproxy.SetPolicy(pol)
 					fproxy.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
+					fproxy.SetMihomoHook(a.exits.MihomoPortFor)
 				}
 				if fudp != nil {
 					fudp.SetPolicy(pol)
@@ -271,6 +287,18 @@ func (a *Agent) Run() error {
 				lastReconcile = time.Now()
 			} else {
 				a.syncExits(&c)
+				mihomoChanged := a.exits.probeMihomo()
+				if a.exits.checkExitPolicies(&c) || mihomoChanged {
+					if fproxy != nil {
+						fproxy.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
+					}
+					if fudp != nil {
+						fudp.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
+					}
+					if ficmp != nil {
+						ficmp.SetExitHooks(a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)
+					}
+				}
 				if err := a.checkNFT(&c); err != nil {
 					log.Printf("network drift: %v; reapplying", err)
 					if err := a.applyNetwork(&c); err != nil {
@@ -281,6 +309,12 @@ func (a *Agent) Run() error {
 				} else {
 					lastReconcile = time.Now()
 				}
+			}
+		}
+		if len(lastCfg) > 0 {
+			var c Config
+			if json.Unmarshal(lastCfg, &c) == nil {
+				a.admission.reconcile(&c)
 			}
 		}
 		a.reconcileLinks()

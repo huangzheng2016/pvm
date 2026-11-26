@@ -30,6 +30,16 @@ func dnsUpstreamAddress(raw string) (network, addr string, err error) {
 }
 
 func dnsUpstream(raw string) (gwdns.Upstream, error) {
+	if strings.HasPrefix(raw, "https://") {
+		var endpoints []string
+		for _, ep := range strings.Split(raw, ",") {
+			if ep = strings.TrimSpace(ep); ep != "" {
+				endpoints = append(endpoints, ep)
+			}
+		}
+		d := &net.Dialer{Timeout: 5 * time.Second}
+		return gwdns.NewDoHUpstream(endpoints, d.DialContext)
+	}
 	network, addr, err := dnsUpstreamAddress(raw)
 	if err != nil {
 		return nil, err
@@ -41,6 +51,20 @@ func dnsUpstream(raw string) (gwdns.Upstream, error) {
 }
 
 func upstreamResolver(upstream string) *net.Resolver {
+	if strings.HasPrefix(upstream, "https://") {
+		up, err := dnsUpstream(upstream)
+		if err != nil {
+			return nil
+		}
+		return &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			client, server := net.Pipe()
+			go func() {
+				defer server.Close()
+				_ = gwdns.ServeSingleConn(ctx, server, up)
+			}()
+			return client, nil
+		}}
+	}
 	network, addr, err := dnsUpstreamAddress(upstream)
 	if err != nil {
 		return nil

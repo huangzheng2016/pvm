@@ -27,7 +27,8 @@ type BakeOptions struct {
 	TC        *qemu.Toolchain
 	Accel     qemu.Accel
 	Out       io.Writer // progress log
-	KeepVM    bool      // keep the build VM for debugging
+	KeepVM    bool      // keep the build VM after success for debugging
+	Fresh     bool      // discard any resumable build VM and start clean
 	BuildCPUs int
 	BuildMem  int
 	BuildDisk int
@@ -126,30 +127,51 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 	if disk == 0 {
 		disk = 25
 	}
-	usedPorts, err := vm.UsedSSHPorts(o.P)
-	if err != nil {
-		return nil, err
+	name := "bake-" + nameStem
+	if o.Fresh {
+		if _, err := vm.Load(o.P, name); err == nil {
+			stopInst := &qemu.Instance{StatePath: filepath.Join(o.P.VMDir(name), "run.json"), Toolchain: o.TC}
+			if err := stopInst.Stop(); err != nil {
+				return nil, fmt.Errorf("stop previous build vm %s: %w", name, err)
+			}
+			if err := vm.Delete(o.P, name); err != nil {
+				return nil, fmt.Errorf("remove previous build vm %s: %w", name, err)
+			}
+		}
 	}
-	port, err := vm.AllocSSHPort(usedPorts, vm.SSHPortBase)
-	if err != nil {
-		return nil, err
-	}
-	name := fmt.Sprintf("bake-%s-%s", nameStem, strconv.FormatInt(time.Now().UnixNano(), 36))
-	spec := &vm.Spec{
-		Name: name, Image: o.Spec, User: "baker",
-		ShareMode: vm.ShareNone,
-		GuestUID:  vm.HostUID(),
-		CPUs:      cpus, MemMB: mem, DiskGB: disk,
-		SSHPort: port, BaseDisk: base,
-		KernelArgs: o.Accel.GuestKernelArgs(),
-	}
-	fmt.Fprintf(o.Out, "creating build vm %s (base %s)\n", name, ref.FileName())
-	if err := vm.Create(o.P, o.TC, spec); err != nil {
-		return nil, err
+	spec, loadErr := vm.Load(o.P, name)
+	resuming := loadErr == nil
+	if resuming {
+		fmt.Fprintf(o.Out, "resuming build vm %s (reusing cached packages)...\n", name)
+	} else {
+		usedPorts, err := vm.UsedSSHPorts(o.P)
+		if err != nil {
+			return nil, err
+		}
+		port, err := vm.AllocSSHPort(usedPorts, vm.SSHPortBase)
+		if err != nil {
+			return nil, err
+		}
+		spec = &vm.Spec{
+			Name: name, Image: o.Spec, User: "baker",
+			ShareMode: vm.ShareNone,
+			GuestUID:  vm.HostUID(),
+			CPUs:      cpus, MemMB: mem, DiskGB: disk,
+			SSHPort: port, BaseDisk: base,
+			KernelArgs: o.Accel.GuestKernelArgs(),
+		}
+		fmt.Fprintf(o.Out, "creating build vm %s (base %s)\n", name, ref.FileName())
+		if err := vm.Create(o.P, o.TC, spec); err != nil {
+			return nil, err
+		}
 	}
 	cfg := spec.QEMUConfig(o.P, o.Accel, "")
+	instCfg := cfg
+	if !resuming {
+		instCfg = firstBootConfig(cfg)
+	}
 	inst := &qemu.Instance{
-		Cfg:       firstBootConfig(cfg),
+		Cfg:       instCfg,
 		StatePath: filepath.Join(o.P.VMDir(name), "run.json"),
 		Toolchain: o.TC,
 	}
@@ -162,6 +184,10 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 			retErr = errors.Join(retErr, fmt.Errorf("build vm %s retained because shutdown could not be verified: %w", name, err))
 			return
 		}
+		if retErr != nil && !o.KeepVM {
+			fmt.Fprintf(o.Out, "build vm %s kept for resume; rerun to continue with cached packages, or pass --fresh to start over\n", name)
+			return
+		}
 		if !o.KeepVM {
 			if err := vm.Delete(o.P, name); err != nil {
 				retErr = errors.Join(retErr, fmt.Errorf("remove build vm %s: %w", name, err))
@@ -172,7 +198,7 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 		return nil, fmt.Errorf("start build vm: %w", err)
 	}
 
-	r := &sshRunner{key: spec.SSHKeyPath(o.P), port: port, user: spec.User}
+	r := &sshRunner{key: spec.SSHKeyPath(o.P), port: spec.SSHPort, user: spec.User}
 	// TCG software emulation is extremely slow; build VM may take 20+ minutes to boot.
 	// Hardware acceleration is much faster and needs only 10 minutes.
 	sshTimeout := 10 * time.Minute
@@ -185,7 +211,12 @@ func Bake(o *BakeOptions) (result *GoldenEntry, retErr error) {
 	if err := waitSSH(r, sshTimeout, cfg.ConsoleLog); err != nil {
 		return nil, err
 	}
-	if spec.KernelArgs != "" {
+	if resuming {
+		if _, err := r.output("id", "-u", "baker"); err != nil {
+			return nil, fmt.Errorf("build vm %s was already sealed (build user removed) and cannot be resumed; rerun with --fresh", name)
+		}
+	}
+	if !resuming && spec.KernelArgs != "" {
 		if err := applyKernelArgs(o.Out, r, inst, cfg, spec.KernelArgs, sshTimeout); err != nil {
 			return nil, err
 		}

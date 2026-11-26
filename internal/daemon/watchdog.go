@@ -66,6 +66,7 @@ func (s *Server) currentWatchSeq(name string) uint64 {
 func (s *Server) watchVM(spec *vm.Spec) {
 	seq := s.nextWatchSeq(spec.Name)
 	go s.watchVMLoop(spec, seq)
+	s.watchBalloon(spec, seq)
 }
 
 func (s *Server) watchVMLoop(spec *vm.Spec, seq uint64) {
@@ -91,6 +92,11 @@ func (s *Server) watchVMLoop(spec *vm.Spec, seq uint64) {
 		}
 		size := consoleSize(s.P.VMDir(spec.Name) + "/console.log")
 		progress := lastConsoleSize >= 0 && size > lastConsoleSize
+		if lastConsoleSize > 0 && size >= 0 && size < lastConsoleSize {
+			// Rotated or truncated between ticks: reset the baseline rather
+			// than treating a smaller file as a silent, stalled boot.
+			progress = size > 0
+		}
 		lastConsoleSize = size
 		if time.Now().Before(deadline) {
 			continue

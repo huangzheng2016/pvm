@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"github.com/huangzheng2016/pvm/internal/hostnet"
 	"io"
 	"net"
 	"net/http"
@@ -49,11 +50,25 @@ func ProbeFingerprint(server string) (string, error) {
 // clientHTTPTimeout bounds control-plane calls (relaxed in -race test runs).
 var clientHTTPTimeout = 20 * time.Second
 
+func hostOnlyIsPrivate(server string) bool {
+	h, _, err := net.SplitHostPort(server)
+	if err != nil {
+		h = server
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast())
+}
+
 func (c *Client) tlsClient() *http.Client {
 	expect := c.Fingerprint
+	d := &net.Dialer{Timeout: 10 * time.Second}
+	if !hostOnlyIsPrivate(c.Server) {
+		hostnet.BindDialer(d)
+	}
 	return &http.Client{
 		Timeout: clientHTTPTimeout,
 		Transport: &http.Transport{
+			DialContext: d.DialContext,
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true, //nolint:gosec
 				VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {

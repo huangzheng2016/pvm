@@ -10,6 +10,7 @@ import (
 	"github.com/huangzheng2016/pvm/internal/cluster"
 	"github.com/huangzheng2016/pvm/internal/exit"
 	"github.com/huangzheng2016/pvm/internal/gw/rules"
+	"github.com/huangzheng2016/pvm/internal/netcheck"
 )
 
 func gatewayDNSUpstream(goos string) string {
@@ -35,32 +36,35 @@ func gatewayConfigFromCluster(s *Server, cl *cluster.Cluster) []byte {
 		Proto     string `json:"proto"`
 	}
 	type exitDef struct {
-		Provider     string `json:"provider,omitempty"`
-		Server       string `json:"server"`
-		Token        string `json:"token"`
-		Transport    string `json:"transport"`
-		Fingerprint  string `json:"fingerprint"`
-		WGPrivateKey string `json:"wg_private_key,omitempty"`
-		ServerPubKey string `json:"server_pubkey,omitempty"`
-		TunnelIP     string `json:"tunnel_ip,omitempty"`
-		MTU          int    `json:"mtu,omitempty"`
-		Endpoint     string `json:"endpoint,omitempty"`
-		DNS          string `json:"dns,omitempty"`
+		Provider     string               `json:"provider,omitempty"`
+		Server       string               `json:"server"`
+		Token        string               `json:"token"`
+		Transport    string               `json:"transport"`
+		Fingerprint  string               `json:"fingerprint"`
+		WGPrivateKey string               `json:"wg_private_key,omitempty"`
+		ServerPubKey string               `json:"server_pubkey,omitempty"`
+		TunnelIP     string               `json:"tunnel_ip,omitempty"`
+		MTU          int                  `json:"mtu,omitempty"`
+		Endpoint     string               `json:"endpoint,omitempty"`
+		DNS          string               `json:"dns,omitempty"`
+		MihomoPort   int                  `json:"mihomo_port,omitempty"`
+		Policy       *netcheck.ExitPolicy `json:"policy,omitempty"`
 	}
 	doc := struct {
-		CIDR        string             `json:"cidr"`
-		GwIP        string             `json:"gw_ip"`
-		DNSUpstream string             `json:"dns_upstream"`
-		VMs         []vmEntry          `json:"vms"`
-		Maps        []mapEntry         `json:"maps"`
-		Rules       []rules.Rule       `json:"rules,omitempty"`
-		VMExits     map[string]string  `json:"vm_exits,omitempty"`
-		DefaultExit string             `json:"default_exit,omitempty"`
-		Exits       map[string]exitDef `json:"exits,omitempty"`
-		Paused      map[string]bool    `json:"paused,omitempty"`
+		CIDR         string             `json:"cidr"`
+		GwIP         string             `json:"gw_ip"`
+		DNSUpstream  string             `json:"dns_upstream"`
+		VMs          []vmEntry          `json:"vms"`
+		Maps         []mapEntry         `json:"maps"`
+		Rules        []rules.Rule       `json:"rules,omitempty"`
+		VMExits      map[string]string  `json:"vm_exits,omitempty"`
+		DefaultExit  string             `json:"default_exit,omitempty"`
+		Paused       map[string]bool    `json:"paused,omitempty"`
+		RequireCheck map[string]bool    `json:"require_check,omitempty"`
+		Exits        map[string]exitDef `json:"exits,omitempty"`
 	}{
 		CIDR: cl.CIDR, GwIP: cl.GwIP, DNSUpstream: gatewayDNSUpstream(runtime.GOOS),
-		Rules: cl.Rules, VMExits: cl.VMExits, DefaultExit: cl.DefaultExit, Paused: cl.Paused,
+		Rules: cl.Rules, VMExits: cl.VMExits, DefaultExit: cl.DefaultExit, Paused: cl.Paused, RequireCheck: cl.RequireCheck,
 	}
 	for _, v := range cl.VMs {
 		doc.VMs = append(doc.VMs, vmEntry{Name: v.Name, MAC: v.MAC, IP: v.IP})
@@ -91,7 +95,7 @@ func gatewayConfigFromCluster(s *Server, cl *cluster.Cluster) []byte {
 		if doc.Exits == nil {
 			doc.Exits = map[string]exitDef{}
 		}
-		def := exitDef{Server: e.Server, Token: e.Token, Transport: e.Transport, Fingerprint: e.Fingerprint}
+		def := exitDef{Server: e.Server, Token: e.Token, Transport: e.Transport, Fingerprint: e.Fingerprint, Policy: e.Policy}
 		if e.IsWARP() {
 			def.Provider = e.Provider
 			def.WGPrivateKey = e.WGPrivateKey
@@ -100,6 +104,9 @@ func gatewayConfigFromCluster(s *Server, cl *cluster.Cluster) []byte {
 			def.MTU = e.MTU
 			def.Endpoint = e.Endpoint
 			def.DNS = "1.1.1.1"
+		} else if e.IsMihomo() && e.Mihomo != nil {
+			def.Provider = e.Provider
+			def.MihomoPort = e.Mihomo.Port
 		}
 		doc.Exits[name] = def
 	}

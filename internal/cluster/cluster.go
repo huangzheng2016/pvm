@@ -58,6 +58,9 @@ type Cluster struct {
 	// Paused blocks external egress for a VM name, or "*" for the cluster,
 	// while keeping SSH, mounts, cluster-local links and host port maps alive.
 	Paused map[string]bool `json:"paused,omitempty"`
+	// RequireCheck keeps a VM offline until the host daemon renews a 90s
+	// verification lease from a passing `pvm check` report.
+	RequireCheck map[string]bool `json:"require_check,omitempty"`
 }
 
 type Store struct {
@@ -185,6 +188,12 @@ func (c *Cluster) deepCopy() *Cluster {
 		out.Paused = make(map[string]bool, len(c.Paused))
 		for k, v := range c.Paused {
 			out.Paused[k] = v
+		}
+	}
+	if c.RequireCheck != nil {
+		out.RequireCheck = make(map[string]bool, len(c.RequireCheck))
+		for k, v := range c.RequireCheck {
+			out.RequireCheck[k] = v
 		}
 	}
 	return &out

@@ -33,6 +33,7 @@ vm:
   doctor        diagnose local state consistency and permissions (read-only, redacted)
   audit         read-only health audit: pvm audit dev1 [--privacy] (vm, route, tcp/udp/icmp probes, dns, ipv6, timezone, locale)
   diag          export a redacted diagnostic zip: pvm diag [output.zip] [--offline]
+  check         run active isolation & two-path egress checks: pvm check <vm> [--json]
   job           inspect async operations: pvm job <id> [--wait [duration]] | pvm job ls [--vm NAME]
   capabilities  print the machine-readable agent contract (offline, --json)
   default       show or set the default vm: pvm default [<vm>|--clear]; pvm image default [<distro:version>|--clear]
@@ -213,6 +214,8 @@ func main() {
 		code = cli.CmdDoctor(args)
 	case "diag":
 		code = cli.CmdDiag(args)
+	case "check":
+		code = cli.CmdCheck(args)
 	case "job":
 		code = cli.CmdJob(args)
 	case "capabilities":
