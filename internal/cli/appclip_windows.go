@@ -3,14 +3,11 @@ package cli
 import (
 	"bufio"
 	"bytes"
-	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
-	"io"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -118,32 +115,6 @@ func windowTitle(hwnd uintptr) string {
 func inDir(path, dir string) bool {
 	rel, err := filepath.Rel(strings.ToLower(dir), strings.ToLower(path))
 	return err == nil && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel)
-}
-
-// clipContent is one snapshot of the host clipboard.
-type clipContent struct {
-	kind  string // "text", "png" or "files"
-	data  []byte
-	paths []string // of files
-}
-
-// sum identifies the content; files by their names, sizes and times.
-func (c clipContent) sum() [32]byte {
-	h := sha256.New()
-	h.Write([]byte(c.kind + "\x00"))
-	h.Write(c.data)
-	for _, p := range c.paths {
-		fmt.Fprintf(h, "%s\x00", p)
-		walkClipFiles([]string{p}, func(name, _ string, d fs.DirEntry) error {
-			if fi, err := d.Info(); err == nil {
-				fmt.Fprintf(h, "%s %d %d\x00", name, fi.Size(), fi.ModTime().UnixNano())
-			}
-			return nil
-		})
-	}
-	var sum [32]byte
-	h.Sum(sum[:0])
-	return sum
 }
 
 func openClipboard(hwnd uintptr) bool {
@@ -314,18 +285,6 @@ func dibToPNG(b []byte) ([]byte, error) {
 		return nil, err
 	}
 	return out.Bytes(), nil
-}
-
-// clipBridge is what runClipboardBridge may do for a VM.
-type clipBridge struct {
-	toGuest, toHost bool
-	// send copies host content into the VM
-	send func(clipContent) error
-	// openFiles opens a stream that copies files from the VM's clipboard;
-	// see the agent's clipFilesSource
-	openFiles func() (io.ReadWriteCloser, error)
-	// stage holds files copied from the VM until the next copy
-	stage string
 }
 
 // runClipboardBridge carries what Xpra's clipboard does not, while the
@@ -507,33 +466,4 @@ func setClipboardBytes(format uintptr, b []byte) error {
 		return fmt.Errorf("SetClipboardData: %v", err)
 	}
 	return nil
-}
-
-// sendClipboard writes one snapshot to the guest and waits until the
-// guest holds it.
-func sendClipboard(open func(kind string) (io.ReadWriteCloser, error), c clipContent) error {
-	if c.kind == "files" {
-		// fail before the VM drops the files it holds now
-		if err := checkClipFiles(c.paths); err != nil {
-			return err
-		}
-	}
-	s, err := open(c.kind)
-	if err != nil {
-		return err
-	}
-	defer s.Close()
-	if c.kind == "files" {
-		err = writeClipFiles(s, c.paths)
-	} else {
-		_, err = s.Write(c.data)
-	}
-	if err != nil {
-		return err
-	}
-	if cw, ok := s.(interface{ CloseWrite() error }); ok {
-		cw.CloseWrite()
-	}
-	_, err = io.Copy(io.Discard, s)
-	return err
 }

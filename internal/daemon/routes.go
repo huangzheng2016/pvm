@@ -26,13 +26,16 @@ type routeRuleRequest struct {
 
 func (s *Server) handleRouteList(w http.ResponseWriter, r *http.Request) {
 	cl := s.Clusters.Get(cluster.DefaultClusterID)
-	out := map[string]any{"rules": []rules.Rule{}, "vm_exits": map[string]string{}, "default_exit": ""}
+	out := map[string]any{"rules": []rules.Rule{}, "vm_exits": map[string]string{}, "default_exit": "", "paused": map[string]bool{}}
 	if cl != nil {
 		if cl.Rules != nil {
 			out["rules"] = cl.Rules
 		}
 		if cl.VMExits != nil {
 			out["vm_exits"] = cl.VMExits
+		}
+		if cl.Paused != nil {
+			out["paused"] = cl.Paused
 		}
 		out["default_exit"] = cl.DefaultExit
 	}

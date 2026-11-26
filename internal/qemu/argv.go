@@ -90,8 +90,12 @@ type VMConfig struct {
 	// SmbiosSpoof presents common commodity hardware in DMI instead of
 	// the QEMU defaults.
 	SmbiosSpoof bool
-	GPU         bool // virtio-gpu display device
-	Balloon     bool // virtio-balloon with free-page-reporting
+	// UUID pins the guest hardware UUID across reboots; SMBIOSSerials holds
+	// the system, board and chassis serials used with SmbiosSpoof.
+	UUID          string
+	SMBIOSSerials [3]string
+	GPU           bool // virtio-gpu display device
+	Balloon       bool // virtio-balloon with free-page-reporting
 }
 
 func validateUnixSocketPath(name, path string) error {
@@ -156,6 +160,9 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 	if c.MemMB <= 0 {
 		c.MemMB = 4096
 	}
+	if max := MaxCPUs(runtime.GOOS); c.CPUs > max {
+		return nil, fmt.Errorf("cpus %d exceeds the %s limit of %d", c.CPUs, runtime.GOOS, max)
+	}
 	args := []string{}
 
 	if native.Arch == "arm64" {
@@ -177,14 +184,33 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 		args = append(args, "-L", t.FirmwareDir)
 	}
 	args = append(args, c.Accel.ArgsForGuest(c.GuestKernelArgs)...)
+	if c.UUID != "" {
+		args = append(args, "-uuid", c.UUID)
+	}
 	if c.SmbiosSpoof {
 		// A coherent desktop persona: VMs have no battery/ACPI power
-		// supply, so a laptop model would contradict itself.
+		// supply, so a laptop model would contradict itself. Serials and
+		// UUID are unique per VM so spoofed VMs do not cluster by DMI.
+		sys := "type=1,manufacturer=Dell Inc.,product=OptiPlex 7010,version=01"
+		board := "type=2,manufacturer=Dell Inc.,product=0GY6YJ,version=A01"
+		chassis := "type=3,manufacturer=Dell Inc.,version=01"
+		if c.UUID != "" {
+			sys += ",uuid=" + c.UUID
+		}
+		if c.SMBIOSSerials[0] != "" {
+			sys += ",serial=" + c.SMBIOSSerials[0]
+		}
+		if c.SMBIOSSerials[1] != "" {
+			board += ",serial=" + c.SMBIOSSerials[1]
+		}
+		if c.SMBIOSSerials[2] != "" {
+			chassis += ",serial=" + c.SMBIOSSerials[2]
+		}
 		args = append(args,
 			"-smbios", "type=0,vendor=Dell Inc.,version=2.7.0,date=03/16/2023",
-			"-smbios", "type=1,manufacturer=Dell Inc.,product=OptiPlex 7010,version=01",
-			"-smbios", "type=2,manufacturer=Dell Inc.,product=0GY6YJ,version=A01",
-			"-smbios", "type=3,manufacturer=Dell Inc.,version=01",
+			"-smbios", sys,
+			"-smbios", board,
+			"-smbios", chassis,
 		)
 	}
 	args = append(args,
@@ -193,7 +219,16 @@ func BuildArgs(t *Toolchain, c *VMConfig) ([]string, error) {
 		"-display", "none",
 		"-chardev", chardevSocketArg("ser0", c.SerialSock, c.ConsoleLog),
 		"-serial", "chardev:ser0",
-		"-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio,cache=writeback,discard=unmap,detect-zeroes=unmap", keyval(c.DiskPath)),
+	)
+	if runtime.GOOS == "windows" {
+		args = append(args,
+			"-drive", fmt.Sprintf("file=%s,format=qcow2,if=none,id=bootdisk,cache=writeback,discard=unmap,detect-zeroes=unmap", keyval(c.DiskPath)),
+			"-device", "virtio-blk-pci,drive=bootdisk,num-queues=4",
+		)
+	} else {
+		args = append(args, "-drive", fmt.Sprintf("file=%s,format=qcow2,if=virtio,cache=writeback,discard=unmap,detect-zeroes=unmap", keyval(c.DiskPath)))
+	}
+	args = append(args,
 		"-drive", fmt.Sprintf("file=%s,format=raw,if=virtio,readonly=on", keyval(c.SeedPath)),
 		"-object", rngObjectArg(),
 		"-device", "virtio-rng-pci,rng=rng0",

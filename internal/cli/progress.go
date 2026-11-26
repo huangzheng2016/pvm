@@ -83,6 +83,7 @@ func (t *stuckTracker) observe(size int64) bool {
 }
 
 func followProvision(c *daemon.Client, name string, timeout time.Duration) int {
+	pw := progressWriter()
 	deadline := time.Now().Add(timeout)
 	stuck := newStuckTracker(90 * time.Second)
 	stuckNoted := false
@@ -103,7 +104,7 @@ func followProvision(c *daemon.Client, name string, timeout time.Duration) int {
 						continue
 					}
 					printed[key] = true
-					fmt.Printf("        | %s\n", ln)
+					fmt.Fprintf(pw, "        | %s\n", ln)
 				}
 				seenSize = cv.Size
 			}
@@ -122,14 +123,14 @@ func followProvision(c *daemon.Client, name string, timeout time.Duration) int {
 						continue
 					}
 					printed[key] = true
-					fmt.Printf("[5/5] provision: SSH and agent ready (total %.0fs)\n", time.Since(start).Seconds())
+					fmt.Fprintf(pw, "[5/5] provision: SSH and agent ready (total %.0fs)\n", time.Since(start).Seconds())
 					return 0
 				case "failed":
 					fmt.Fprintf(os.Stderr, "provision failed: %s\n", st.Detail)
 					return 1
 				case "provision", "ssh", "agent":
 					printed[key] = true
-					fmt.Printf("        .. %s %s\n", st.Stage, st.Detail)
+					fmt.Fprintf(pw, "        .. %s %s\n", st.Stage, st.Detail)
 				}
 			}
 		}

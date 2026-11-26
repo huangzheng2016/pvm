@@ -73,6 +73,34 @@ func (s *Store) SetVMExit(id int, vmName, exit string) error {
 	return s.saveCluster(id, previous)
 }
 
+// SetPaused pauses or resumes external egress for vmName, or the whole
+// cluster when vmName is empty.
+func (s *Store) SetPaused(id int, vmName string, paused bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.data.Clusters[id]
+	if c == nil {
+		return fmt.Errorf("cluster %d does not exist", id)
+	}
+	if vmName != "" && c.VMs[vmName] == nil {
+		return fmt.Errorf("vm %q is not in cluster %d", vmName, id)
+	}
+	key := vmName
+	if key == "" {
+		key = "*"
+	}
+	previous := c.deepCopy()
+	if c.Paused == nil {
+		c.Paused = map[string]bool{}
+	}
+	if paused {
+		c.Paused[key] = true
+	} else {
+		delete(c.Paused, key)
+	}
+	return s.saveCluster(id, previous)
+}
+
 // SetDefaultExit sets the cluster-wide fallback route; "" or "direct"
 // restores direct egress for unmatched traffic.
 func (s *Store) SetDefaultExit(id int, exit string) error {

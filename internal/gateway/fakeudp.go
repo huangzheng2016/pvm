@@ -296,6 +296,9 @@ func (p *fakeUDP) dial(domain string, dst *net.UDPAddr, vmName string) (*net.UDP
 	if pol == nil {
 		return nil, gwpolicy.Direct, "", fmt.Errorf("policy is not ready")
 	}
+	if pol.IsPaused(vmName) {
+		return nil, gwpolicy.Direct, "", fmt.Errorf("egress is paused for %s", vmName)
+	}
 	dec := pol.DecideFlow(domain, dst.IP, vmName)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

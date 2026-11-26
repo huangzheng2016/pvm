@@ -105,9 +105,19 @@ func (a Accel) Args() []string {
 // its kernel may enable CET state that the host CPU model cannot switch safely.
 func (a Accel) ArgsForGuest(kernelArgs string) []string {
 	if a == AccelWHPX && !slices.Contains(strings.Fields(kernelArgs), "noxsave") {
-		return []string{"-accel", "whpx,kernel-irqchip=off", "-machine", "vmport=off", "-cpu", "qemu64", "-no-reboot"}
+		return []string{"-accel", "whpx,kernel-irqchip=off", "-machine", "vmport=off", "-cpu", whpxQEMU64CPU(), "-no-reboot"}
 	}
 	return a.Args()
+}
+
+// MaxCPUs bounds vCPUs per VM. Windows QEMU's aio-win32 waits on a single
+// 64-handle WaitForMultipleObjects set; above 16 vCPUs with per-vCPU virtio
+// queues it aborts on handle exhaustion.
+func MaxCPUs(goos string) int {
+	if goos == "windows" {
+		return 16
+	}
+	return 64
 }
 
 // GuestKernelArgs are kernel parameters the guest must boot with under

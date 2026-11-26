@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/huangzheng2016/pvm/internal/cluster"
 	"github.com/huangzheng2016/pvm/internal/config"
@@ -12,6 +13,7 @@ import (
 	"github.com/huangzheng2016/pvm/internal/gw/rules"
 	"github.com/huangzheng2016/pvm/internal/keys"
 	"github.com/huangzheng2016/pvm/internal/paths"
+	"github.com/huangzheng2016/pvm/internal/qemu"
 	"github.com/huangzheng2016/pvm/internal/vm"
 )
 
@@ -122,16 +124,35 @@ func cmdPrivacyAudit(name string) int {
 }
 
 func CmdDoctor(args []string) int {
-	if len(args) != 0 {
-		return fatalf("usage: pvm doctor")
+	args = scanJSONFlag(args)
+	fix := false
+	var rest []string
+	for _, a := range args {
+		if a == "--fix" || a == "-fix" {
+			fix = true
+		} else {
+			rest = append(rest, a)
+		}
+	}
+	if len(rest) != 0 {
+		return fatalf("usage: pvm doctor [--fix] [--json]")
 	}
 	p, err := paths.Default()
 	if err != nil {
 		return fatalf("cannot locate pvm state")
 	}
 	checks := []auditCheck{}
+	if fix {
+		if n, err := doctorFixSafe(p); err != nil {
+			checks = append(checks, auditCheck{"fix", "fail", err.Error()})
+		} else {
+			checks = append(checks, auditCheck{"fix", "ok", fmt.Sprintf("repaired %d item(s) (directory modes 0700, unreferenced temp artifacts)", n)})
+		}
+	}
 	if err := p.CheckPermissions(); err != nil {
-		checks = append(checks, auditCheck{"permissions", "fail", "check state directory ownership and mode 0700"})
+		checks = append(checks, auditCheck{"permissions", "fail", "check state directory ownership and mode 0700 (or run `pvm doctor --fix`)"})
+	} else {
+		checks = append(checks, auditCheck{"permissions", "ok", "state directories are private"})
 	}
 	specs, err := vm.ListAll(p)
 	if err != nil {
@@ -142,19 +163,19 @@ func CmdDoctor(args []string) int {
 		checks = append(checks, auditCheck{"clusters", "fail", "cluster state is unreadable"})
 	}
 	known := map[string]*vm.Spec{}
-	missingDisk, badKeys, badMembers := 0, 0, 0
+	var missingDisks, badKeys, badMembers []string
 	for _, spec := range specs {
 		known[spec.Name] = spec
 		if _, err := os.Stat(spec.Disk(p)); err != nil {
-			missingDisk++
+			missingDisks = append(missingDisks, spec.Name)
 		}
 		if err := checkExistingKey(spec.SSHKeyPath(p)); err != nil {
-			badKeys++
+			badKeys = append(badKeys, spec.Name)
 		}
 		if store != nil && spec.Role != "gateway" && spec.ClusterID != 0 {
 			cl := store.Get(spec.ClusterID)
 			if cl == nil || cl.VMs[spec.Name] == nil || cl.VMs[spec.Name].IP != spec.IP || cl.VMs[spec.Name].MAC != spec.MAC {
-				badMembers++
+				badMembers = append(badMembers, spec.Name)
 			}
 		}
 	}
@@ -162,29 +183,109 @@ func CmdDoctor(args []string) int {
 		for _, cl := range store.List() {
 			for name := range cl.VMs {
 				if known[name] == nil {
-					badMembers++
+					badMembers = append(badMembers, name)
 				}
 			}
 			for _, m := range cl.Maps {
 				if member := cl.VMs[m.VM]; member == nil || member.IP != m.VMIP {
-					badMembers++
+					badMembers = append(badMembers, m.VM)
 				}
 			}
 		}
 	}
 	for _, item := range []struct {
-		name  string
-		count int
-	}{{"disks", missingDisk}, {"keys", badKeys}, {"membership", badMembers}} {
+		name string
+		vms  []string
+	}{{"disks", missingDisks}, {"keys", badKeys}, {"membership", badMembers}} {
 		status := "ok"
-		if item.count != 0 {
+		detail := "0 inconsistencies"
+		if len(item.vms) != 0 {
 			status = "fail"
+			detail = fmt.Sprintf("%d inconsistencies: %s", len(item.vms), strings.Join(item.vms, ", "))
 		}
-		checks = append(checks, auditCheck{item.name, status, fmt.Sprintf("%d inconsistencies; identifiers withheld", item.count)})
+		checks = append(checks, auditCheck{item.name, status, detail})
 	}
 	checks = append(checks, windowsDoctorChecks(p)...)
-	checks = append(checks, auditCheck{"runtime", "skipped", "read-only disk snapshot; active relays and applied gateway rules are not inspected"})
+	checks = append(checks, auditCheck{"runtime", "skipped", "local disk snapshot; active relays and applied gateway rules are not inspected"})
 	return printAudit(os.Stdout, checks)
+}
+
+// doctorFixSafe performs only non-destructive repairs: tightening private
+// state directory modes to 0700 and removing temporary artifacts that no live
+// VM or upgrade is using. It never touches SSH keys, vm.json or disks.
+func doctorFixSafe(p *paths.Paths) (int, error) {
+	fixed := 0
+	for _, d := range []string{p.Home, p.Images, p.VMs, p.Clusters, p.Keys, p.Run, p.Runtime} {
+		fi, err := os.Lstat(d)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil || !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		if fi.Mode().Perm() != 0o700 {
+			if err := os.Chmod(d, 0o700); err != nil {
+				return fixed, err
+			}
+			fixed++
+		}
+	}
+	patterns := []string{
+		filepath.Join(p.Images, "*.tmp"),
+		filepath.Join(p.Images, "golden", "*.tmp"),
+		filepath.Join(p.Runtime, "qemu", ".upgrade-qemu-*"),
+	}
+	for _, pat := range patterns {
+		matches, _ := filepath.Glob(pat)
+		for _, m := range matches {
+			if err := os.RemoveAll(m); err == nil {
+				fixed++
+			}
+		}
+	}
+	tc, tcErr := qemu.Find(p.Runtime)
+	if entries, err := os.ReadDir(p.VMs); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			vmDir := p.VMDir(e.Name())
+			inst := &qemu.Instance{StatePath: filepath.Join(vmDir, "run.json")}
+			if st, err := inst.Running(); err != nil || st != nil {
+				continue
+			}
+			if matches, _ := filepath.Glob(filepath.Join(vmDir, ".tmp-*")); len(matches) > 0 {
+				for _, m := range matches {
+					if err := os.RemoveAll(m); err == nil {
+						fixed++
+					}
+				}
+			}
+			if tcErr == nil && tc != nil && tc.Img != "" {
+				overlay := filepath.Join(vmDir, "disk.qcow2")
+				if cur, err := qemu.InspectBacking(tc.Img, overlay); err == nil && filepath.IsAbs(cur) {
+					if target := findLocalImageByBase(p, filepath.Base(cur)); target != "" {
+						if rel := vm.RelativeBacking(p, overlay, target); rel != cur {
+							if err := qemu.RebaseBacking(tc.Img, overlay, rel); err == nil {
+								fixed++
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return fixed, nil
+}
+
+func findLocalImageByBase(p *paths.Paths, base string) string {
+	for _, dir := range []string{p.Images, filepath.Join(p.Images, "golden")} {
+		cand := filepath.Join(dir, base)
+		if fi, err := os.Stat(cand); err == nil && fi.Mode().IsRegular() {
+			return cand
+		}
+	}
+	return ""
 }
 
 func routeExplanation(cl *cluster.Cluster, name, destination string) (string, error) {
@@ -225,6 +326,7 @@ func routeExplanation(cl *cluster.Cluster, name, destination string) (string, er
 }
 
 func cmdRouteExplain(args []string) int {
+	args = scanJSONFlag(args)
 	if len(args) != 2 {
 		return fatalf("usage: pvm route explain <vm> <domain-or-ip>")
 	}
@@ -250,6 +352,9 @@ func cmdRouteExplain(args []string) int {
 	result, err := routeExplanation(cl, spec.Name, args[1])
 	if err != nil {
 		return fatalf("invalid stored routing rules")
+	}
+	if jsonOutput {
+		return failErr(writeJSONOut(map[string]any{"status": "completed", "data": map[string]string{"vm": spec.Name, "destination": args[1], "decision": result}}))
 	}
 	fmt.Println(result)
 	fmt.Println("Local configuration only; no DNS query or connection made. Domain results do not include CIDR rules for unresolved addresses or cached direct-domain IPs.")

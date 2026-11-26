@@ -485,6 +485,8 @@ func (s *Server) pushGatewayConfigCtx(ctx context.Context, clusterID int) error 
 		if err != nil {
 			return fmt.Errorf("install config: %v\n%s", err, out)
 		}
+		now := time.Now()
+		s.updateClusterStatus(clusterID, func(cs *ClusterStatus) { cs.ConfigPushedAt = &now })
 		return nil
 	})
 }

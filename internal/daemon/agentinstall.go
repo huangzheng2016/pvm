@@ -125,9 +125,11 @@ func (s *Server) resumeAgentInstallIfRunning(name string) {
 func (s *Server) ensureAgentAsync(spec *vm.Spec) {
 	spec = copySpec(spec)
 	task := s.beginAgentInstall(spec.Name)
+	job := s.startJob("provision", spec.Name)
 	bin := s.P.AgentBin()
 	if _, err := os.Stat(bin); err != nil {
 		s.stageIfCurrent(spec.Name, task.seq, "failed", fmt.Sprintf("guest agent asset unavailable; rebuild with script/build.sh, then run `pvm stop %s && pvm start %s`", spec.Name, spec.Name))
+		s.finishJob(job.ID, err)
 		s.finishAgentInstall(spec.Name, task)
 		log.Printf("agent: asset unavailable for %s: %v", spec.Name, err)
 		return
@@ -136,6 +138,7 @@ func (s *Server) ensureAgentAsync(spec *vm.Spec) {
 		defer s.finishAgentInstall(spec.Name, task)
 		if err := s.installAgentGeneration(task.ctx, spec, bin, task.seq); err != nil {
 			if errors.Is(task.ctx.Err(), context.Canceled) {
+				s.finishJob(job.ID, err)
 				return
 			}
 			var ciErr *cloudInitError
@@ -144,9 +147,11 @@ func (s *Server) ensureAgentAsync(spec *vm.Spec) {
 			} else {
 				s.stageIfCurrent(spec.Name, task.seq, "failed", fmt.Sprintf("agent installation failed: %v; run `pvm stop %s && pvm start %s`", err, spec.Name, spec.Name))
 			}
+			s.finishJob(job.ID, err)
 			log.Printf("agent: install into %s failed: %v", spec.Name, err)
 			return
 		}
+		s.finishJob(job.ID, nil)
 		log.Printf("agent: installed and reachable in %s", spec.Name)
 	}()
 }

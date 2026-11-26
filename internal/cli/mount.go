@@ -104,6 +104,7 @@ func writeMountTable(w io.Writer, mounts []mountView) error {
 }
 
 func CmdMount(args []string) int {
+	args = scanJSONFlag(args)
 	p, err := mustPaths()
 	if err != nil {
 		return fatalf("%v", err)
@@ -116,6 +117,12 @@ func CmdMount(args []string) int {
 		var mounts []mountView
 		if err := c.Get("/v1/vms/"+args[1]+"/mounts", &mounts); err != nil {
 			return fatalf("%v", err)
+		}
+		if jsonOutput {
+			if mounts == nil {
+				mounts = []mountView{}
+			}
+			return failErr(writeJSONOut(map[string]any{"status": "completed", "data": mounts}))
 		}
 		if err := writeMountTable(os.Stdout, mounts); err != nil {
 			return fatalf("%v", err)

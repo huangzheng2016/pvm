@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,8 +70,12 @@ type Spec struct {
 	GitEmail    string `json:"git_email,omitempty"`
 	GitName     string `json:"git_name,omitempty"`
 	SmbiosSpoof bool   `json:"smbios_spoof,omitempty"`
-	PrevTZ      string `json:"prev_tz,omitempty"`
-	PrevLocale  string `json:"prev_locale,omitempty"`
+
+	// HardwareIdentity pins the QEMU -uuid and per-VM SMBIOS serials.
+	UUID          string         `json:"uuid,omitempty"`
+	SMBIOSSerials *SMBIOSSerials `json:"smbios_serials,omitempty"`
+	PrevTZ        string         `json:"prev_tz,omitempty"`
+	PrevLocale    string         `json:"prev_locale,omitempty"`
 
 	// IdentityReset marks a fresh clone whose guest identity (hostname,
 	// machine-id, ssh host keys) must be regenerated after first boot.
@@ -220,9 +225,67 @@ func (s *Spec) QEMUConfig(p *paths.Paths, accel qemu.Accel, linkSock string) qem
 		Accel:           accel,
 		GuestKernelArgs: s.bootKernelArgs(),
 		SmbiosSpoof:     s.SmbiosSpoof,
+		UUID:            s.UUID,
+		SMBIOSSerials:   s.smbiosSerialsArray(),
 		GPU:             s.GPU,
 		Balloon:         s.Balloon,
 	}
+}
+
+type SMBIOSSerials struct {
+	System  string `json:"system"`
+	Board   string `json:"board"`
+	Chassis string `json:"chassis"`
+}
+
+func (s *Spec) smbiosSerialsArray() [3]string {
+	if s.SMBIOSSerials == nil {
+		return [3]string{}
+	}
+	return [3]string{s.SMBIOSSerials.System, s.SMBIOSSerials.Board, s.SMBIOSSerials.Chassis}
+}
+
+// EnsureHardwareIdentity assigns a stable random UUIDv4 and SMBIOS serials
+// once per VM. Existing identities are never rotated implicitly.
+func (s *Spec) EnsureHardwareIdentity() error {
+	if s.UUID == "" {
+		var b [16]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return err
+		}
+		b[6] = (b[6] & 0x0f) | 0x40
+		b[8] = (b[8] & 0x3f) | 0x80
+		s.UUID = fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+	}
+	if s.SMBIOSSerials == nil {
+		sys, err := randomSerial()
+		if err != nil {
+			return err
+		}
+		board, err := randomSerial()
+		if err != nil {
+			return err
+		}
+		chassis, err := randomSerial()
+		if err != nil {
+			return err
+		}
+		s.SMBIOSSerials = &SMBIOSSerials{System: sys, Board: board, Chassis: chassis}
+	}
+	return nil
+}
+
+const serialAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+func randomSerial() (string, error) {
+	var b [12]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	for i, v := range b {
+		b[i] = serialAlphabet[int(v)%len(serialAlphabet)]
+	}
+	return string(b[:]), nil
 }
 
 // bootKernelArgs are the kernel args the next boot is known to have.
@@ -273,6 +336,9 @@ func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec) error {
 			return err
 		}
 	}
+	if err := spec.EnsureHardwareIdentity(); err != nil {
+		return fmt.Errorf("generate hardware identity: %w", err)
+	}
 	spec.SSHKeyName = spec.Name
 	sshPub, err := keys.Ensure(spec.SSHKeyPath(p))
 	if err != nil {
@@ -280,7 +346,7 @@ func Create(p *paths.Paths, tc *qemu.Toolchain, spec *Spec) error {
 	}
 
 	overlay := spec.Disk(p)
-	createCmd := exec.Command(tc.Img, "create", "-f", "qcow2", "-b", qemu.BackingPath(spec.BaseDisk), "-F", "qcow2", overlay)
+	createCmd := exec.Command(tc.Img, "create", "-f", "qcow2", "-b", RelativeBacking(p, overlay, spec.BaseDisk), "-F", "qcow2", overlay)
 	fsutil.ConfigureHiddenCmd(createCmd)
 	out, err := createCmd.CombinedOutput()
 	if err != nil {

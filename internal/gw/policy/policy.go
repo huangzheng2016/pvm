@@ -34,6 +34,7 @@ type Engine struct {
 	mu      sync.RWMutex
 	vmExit  map[string]string // vmID -> default exit name, "" = direct
 	defExit string            // cluster-wide default exit, "" = direct
+	paused  map[string]bool
 }
 
 func New(eng *rules.Engine, pool *dns.Pool) *Engine {
@@ -100,6 +101,27 @@ func (e *Engine) DecideFlow(domain string, dstIP net.IP, vmID string) Decision {
 		return Decision{Route: Proxy, Exit: exit}
 	}
 	return Decision{Route: Direct}
+}
+
+func (e *Engine) SetPaused(paused map[string]bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.paused = make(map[string]bool, len(paused))
+	for k, v := range paused {
+		if v {
+			e.paused[k] = true
+		}
+	}
+}
+
+// IsPaused reports whether external egress is administratively paused for vmID.
+func (e *Engine) IsPaused(vmID string) bool {
+	if e == nil {
+		return false
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.paused["*"] || e.paused[vmID]
 }
 
 // AllowsPrivateDirect reports whether an explicit intranet-domain rule or an

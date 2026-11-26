@@ -18,6 +18,7 @@ type auditCheck struct {
 // and never touches routes. The exit code is 1 only when a check reports
 // fail; warn and skipped do not block the workflow.
 func CmdAudit(args []string) int {
+	args = scanJSONFlag(args)
 	if len(args) == 2 && args[0] == "--privacy" {
 		return cmdPrivacyAudit(args[1])
 	}
@@ -45,6 +46,21 @@ func CmdAudit(args []string) int {
 
 func printAudit(w io.Writer, checks []auditCheck) int {
 	code := 0
+	for _, c := range checks {
+		if c.Status == "fail" {
+			code = 1
+		}
+	}
+	if jsonOutput {
+		status := "completed"
+		if code != 0 {
+			status = "failed"
+		}
+		if err := writeJSONOut(map[string]any{"status": status, "data": checks}); err != nil {
+			return failErr(err)
+		}
+		return code
+	}
 	for _, c := range checks {
 		fmt.Fprintf(w, "%s=%s: %s\n", c.Name, c.Status, c.Detail)
 		if c.Status == "fail" {

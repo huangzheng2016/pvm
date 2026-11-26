@@ -19,21 +19,47 @@ type StageEvent struct {
 func (s *Server) stage(vmName, stage, detail string) {
 	s.progMu.Lock()
 	defer s.progMu.Unlock()
+	s.appendStageLocked(vmName, stage, detail)
+}
+
+// appendStageLocked updates memory, persisted status.json and the live job.
+// Lock order is progMu -> jobsMu; callers must not hold jobsMu.
+func (s *Server) appendStageLocked(vmName, stage, detail string) {
 	if s.prog == nil {
 		s.prog = make(map[string][]StageEvent)
 	}
-	ev := StageEvent{Stage: stage, Detail: detail, At: time.Now()}
-	evs := append(s.prog[vmName], ev)
+	evs := append(s.prog[vmName], StageEvent{Stage: stage, Detail: detail, At: time.Now()})
 	if len(evs) > 64 {
 		evs = evs[len(evs)-64:]
 	}
 	s.prog[vmName] = evs
+
+	st := s.vmStatusLocked(vmName)
+	switch stage {
+	case "provision", "ssh", "agent":
+		st.ProvisionState = ProvisionRunning
+		st.AgentReady = false
+		st.LastError = ""
+	case "ready":
+		st.ProvisionState = ProvisionReady
+		st.AgentReady = true
+		st.LastError = ""
+	case "failed":
+		st.ProvisionState = ProvisionFailed
+		st.AgentReady = false
+		st.LastError = detail
+	}
+	s.persistVMStatusLocked(vmName, stage == "ready" || stage == "failed")
+	s.updateJob(vmName, stage, detail)
 }
 
 func (s *Server) stages(vmName string) []StageEvent {
 	s.progMu.Lock()
 	defer s.progMu.Unlock()
-	return append([]StageEvent(nil), s.prog[vmName]...)
+	if len(s.prog[vmName]) > 0 {
+		return append([]StageEvent(nil), s.prog[vmName]...)
+	}
+	return append([]StageEvent(nil), s.vmStatusLocked(vmName).Stages...)
 }
 
 func (s *Server) resetStages(vmName string) {
@@ -47,6 +73,11 @@ func (s *Server) resetStages(vmName string) {
 		s.progSeq = make(map[string]uint64)
 	}
 	s.progSeq[vmName]++
+	st := s.vmStatusLocked(vmName)
+	st.ProvisionState = ProvisionPending
+	st.AgentReady = false
+	st.LastError = ""
+	s.persistVMStatusLocked(vmName, true)
 	s.progMu.Unlock()
 }
 
@@ -62,18 +93,16 @@ func (s *Server) stageIfCurrent(name string, seq uint64, stage, detail string) {
 	if s.progSeq[name] != seq {
 		return
 	}
-	if s.prog == nil {
-		s.prog = make(map[string][]StageEvent)
-	}
-	events := append(s.prog[name], StageEvent{Stage: stage, Detail: detail, At: time.Now()})
-	if len(events) > 64 {
-		events = events[len(events)-64:]
-	}
-	s.prog[name] = events
+	s.appendStageLocked(name, stage, detail)
 }
 
 func (s *Server) vmReady(vmName string) bool {
-	events := s.stages(vmName)
+	s.progMu.Lock()
+	defer s.progMu.Unlock()
+	events := s.prog[vmName]
+	if len(events) == 0 {
+		return s.vmStatusLocked(vmName).AgentReady
+	}
 	for i := len(events) - 1; i >= 0; i-- {
 		switch events[i].Stage {
 		case "ready":

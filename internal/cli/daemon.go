@@ -54,6 +54,9 @@ func warnTCG(c *daemon.Client) {
 }
 
 func CmdDaemon(args []string) int {
+	if len(args) > 0 && args[0] == "status" {
+		args = append([]string{"status"}, scanJSONFlag(args[1:])...)
+	}
 	if len(args) == 0 {
 		return fatalf("usage: pvm daemon run|start|stop|status|restart|install|uninstall")
 	}
@@ -96,7 +99,7 @@ func CmdDaemon(args []string) int {
 		os.Remove(p.DaemonStopMark())
 		c := daemon.NewClient(p)
 		if c.Healthy() {
-			if err := c.Post("/v1/shutdown", nil, nil); err != nil {
+			if err := c.Post("/v1/shutdown?restore=1", nil, nil); err != nil {
 				return fatalf("shutdown: %v", err)
 			}
 			for i := 0; i < 900 && c.Healthy(); i++ {
@@ -117,12 +120,19 @@ func CmdDaemon(args []string) int {
 	case "status":
 		c := daemon.NewClient(p)
 		if !c.Healthy() {
+			if jsonOutput {
+				return failErr(writeJSONOut(map[string]any{"status": "completed", "data": map[string]any{"running": false}}))
+			}
 			fmt.Println("daemon: not running")
 			return 0
 		}
 		var st map[string]any
 		if err := c.Get("/v1/status", &st); err != nil {
 			return fatalf("%v", err)
+		}
+		if jsonOutput {
+			st["running"] = true
+			return failErr(writeJSONOut(map[string]any{"status": "completed", "data": st}))
 		}
 		fmt.Printf("daemon: running\n  pid:     %v\n  version: %v\n  ready:   %v\n  uptime:  %v\n  accel:   %v\n  qemu:    %v (bundled=%v)\n  vms:     %v (%v running)\n",
 			st["pid"], st["version"], st["ready"], st["uptime"], st["accel"], st["qemu"], st["bundled"], st["vms"], st["running"])

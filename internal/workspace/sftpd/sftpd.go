@@ -127,6 +127,22 @@ func validName(c string) bool {
 	return true
 }
 
+var vcsMetaNames = []string{".git", ".hg", ".jj", ".sl"}
+
+// underVCSMeta blocks guest writes to repository metadata (.git/hooks,
+// .git/config, etc.) so a shared project cannot plant commands that run on
+// the host's next git invocation.
+func underVCSMeta(name string) bool {
+	for c := range strings.SplitSeq(name, "/") {
+		for _, v := range vcsMetaNames {
+			if strings.EqualFold(c, v) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (h *handler) Fileread(r *sftp.Request) (_ io.ReaderAt, err error) {
 	defer recovered(&err)
 	name, err := rel(r.Filepath)
@@ -159,6 +175,9 @@ func (h *handler) open(r *sftp.Request, flag int) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
+	if underVCSMeta(name) {
+		return nil, errDenied
+	}
 	pf := r.Pflags()
 	if pf.Creat {
 		flag |= os.O_CREATE
@@ -184,7 +203,7 @@ func (h *handler) Filecmd(r *sftp.Request) (err error) {
 	if err != nil {
 		return err
 	}
-	if name == "." {
+	if name == "." || underVCSMeta(name) {
 		return errDenied
 	}
 	switch r.Method {
@@ -195,7 +214,7 @@ func (h *handler) Filecmd(r *sftp.Request) (err error) {
 		if err != nil {
 			return err
 		}
-		if target == "." {
+		if target == "." || underVCSMeta(target) {
 			return errDenied
 		}
 		if err := h.checkMove(name, target); err != nil {
@@ -271,7 +290,7 @@ func (h *handler) symlink(target, link string) error {
 	if err != nil {
 		return err
 	}
-	if name == "." || target == "" || strings.HasPrefix(target, "/") || escapes(path.Dir(name), target) {
+	if name == "." || underVCSMeta(name) || target == "" || strings.HasPrefix(target, "/") || escapes(path.Dir(name), target) {
 		return errDenied
 	}
 	for c := range strings.SplitSeq(target, "/") {

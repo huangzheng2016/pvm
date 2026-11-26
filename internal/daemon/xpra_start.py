@@ -33,16 +33,23 @@ def _typist():
             except queue.Empty:
                 break
         try:
+            # XTEST delivers to the focused window; right after the Xpra
+            # server starts, focus may not have settled yet.
+            for _ in range(20):
+                fg = subprocess.run(["xdotool", "getwindowfocus"], capture_output=True, timeout=5)
+                if fg.returncode == 0 and fg.stdout.strip():
+                    break
+                time.sleep(0.05)
             keymap = subprocess.run(["xmodmap", "-pke"], capture_output=True, text=True, timeout=10).stdout
             if not re.search(r"^keycode 254 =\s*$", keymap, re.M):
                 subprocess.run(["xmodmap", "-e", "keycode 254 ="], timeout=10, check=False)
-                # applications reload the changed keymap; typing at once
-                # lost the first character
-                time.sleep(0.2)
-            # applications look the borrowed keycode up after the event; a
-            # shorter delay lost characters
+                # applications reload the changed keymap asynchronously
+                time.sleep(0.35)
             subprocess.run(["xdotool", "type", "--clearmodifiers", "--delay", "40", "--", s], timeout=60, check=False)
-            time.sleep(0.05)
+            # let applications look up the borrowed keysym before xdotool's
+            # restore and our cleanup can race their XGetKeyboardMapping
+            time.sleep(0.12)
+            subprocess.run(["xmodmap", "-e", "keycode 254 ="], timeout=10, check=False)
         except Exception as e:  # keep typing later text
             print("pvm: xdotool type failed: %s" % e, file=sys.stderr)
 

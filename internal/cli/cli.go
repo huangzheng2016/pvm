@@ -13,8 +13,10 @@ import (
 )
 
 func fatalf(format string, args ...any) int {
-	fmt.Fprintf(os.Stderr, "pvm: "+format+"\n", args...)
-	return 1
+	if ae := findAPIError(args...); ae != nil {
+		return failErr(ae)
+	}
+	return failErr(fmt.Errorf(format, args...))
 }
 
 func mustPaths() (*paths.Paths, error) {

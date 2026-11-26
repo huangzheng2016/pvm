@@ -26,6 +26,9 @@ func CloneSpec(src *Spec, newName, ip, mac string) *Spec {
 	dst.PrevTZ = ""
 	dst.PrevLocale = ""
 	dst.IdentityReset = true
+	dst.UUID = ""
+	dst.SMBIOSSerials = nil
+	_ = dst.EnsureHardwareIdentity()
 	if src.Mounts != nil {
 		dst.Mounts = append([]GuestMount(nil), src.Mounts...)
 	}

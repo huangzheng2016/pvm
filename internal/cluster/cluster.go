@@ -55,6 +55,9 @@ type Cluster struct {
 	// DefaultExit is the cluster-wide fallback route used when neither a
 	// rule nor a per-VM exit matches ("" = direct).
 	DefaultExit string `json:"default_exit,omitempty"`
+	// Paused blocks external egress for a VM name, or "*" for the cluster,
+	// while keeping SSH, mounts, cluster-local links and host port maps alive.
+	Paused map[string]bool `json:"paused,omitempty"`
 }
 
 type Store struct {
@@ -177,6 +180,12 @@ func (c *Cluster) deepCopy() *Cluster {
 	out.VMExits = make(map[string]string, len(c.VMExits))
 	for k, v := range c.VMExits {
 		out.VMExits[k] = v
+	}
+	if c.Paused != nil {
+		out.Paused = make(map[string]bool, len(c.Paused))
+		for k, v := range c.Paused {
+			out.Paused[k] = v
+		}
 	}
 	return &out
 }

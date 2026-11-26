@@ -61,6 +61,7 @@ func routingConfigEqual(a, b *Config) bool {
 		slices.Equal(a.VMs, b.VMs) &&
 		slices.Equal(a.Rules, b.Rules) &&
 		maps.Equal(a.VMExits, b.VMExits) &&
+		maps.Equal(a.Paused, b.Paused) &&
 		maps.EqualFunc(a.Exits, b.Exits, sameExitPeer)
 }
 
@@ -238,6 +239,7 @@ func (a *Agent) Run() error {
 					pol.SetVMExit(name, exit)
 				}
 				pol.SetDefaultExit(c.DefaultExit)
+				pol.SetPaused(c.Paused)
 				// DNS follows the same policy as the relays: unmatched
 				// names resolve through the source VM's effective exit.
 				fdns.SetExitHooks(pol, a.vmNameByIP, a.exits.MarkForExit, a.exits.DomainConnectAddr, a.exits.TunnelDNSAddr)

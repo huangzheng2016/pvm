@@ -111,7 +111,13 @@ func CmdImage(args []string) int {
 			return 2
 		}
 		return cmdImageBuild(p, opts.spec, opts.keep, opts.cpus, opts.mem, opts.disk)
+	case "default":
+		return cmdImageDefault(p, args[1:])
 	case "list":
+		rest := scanJSONFlag(args[1:])
+		if len(rest) != 0 {
+			return 2
+		}
 		imgs, err := image.List(p.Images)
 		if err != nil {
 			return fatalf("%v", err)
@@ -119,6 +125,15 @@ func CmdImage(args []string) int {
 		goldens, err := image.ListGolden(p.Images)
 		if err != nil {
 			return fatalf("golden catalog: %v", err)
+		}
+		if jsonOutput {
+			if imgs == nil {
+				imgs = []image.LocalImage{}
+			}
+			if goldens == nil {
+				goldens = []image.GoldenEntry{}
+			}
+			return failErr(writeJSONOut(map[string]any{"status": "completed", "data": map[string]any{"base": imgs, "golden": goldens}}))
 		}
 		if len(imgs) == 0 && len(goldens) == 0 {
 			fmt.Println("no images; run `pvm image fetch ubuntu:26.04`")
@@ -209,7 +224,14 @@ func CmdCreate(args []string) int {
 	gitName := fs.String("git-name", "", "git user.name in the guest")
 	share := fs.String("share", "private", "share mode: private | global | none")
 	smbiosSpoof := fs.Bool("smbios-spoof", false, "present commodity PC hardware in DMI instead of QEMU defaults")
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseInterleaved(fs, args)
+	if err != nil {
+		return 2
+	}
+	if *name == "" && len(pos) == 1 {
+		*name = pos[0]
+	} else if len(pos) > 0 {
+		fs.Usage()
 		return 2
 	}
 	spec, err := resolveImageSpec(*imageSpec, *distro, *version)
@@ -219,7 +241,7 @@ func CmdCreate(args []string) int {
 	if *share != "private" && *share != "global" && *share != "none" {
 		return fatalf("--share must be private, global, or none")
 	}
-	if spec == "" || *name == "" {
+	if *name == "" {
 		fs.Usage()
 		return 2
 	}
@@ -236,6 +258,12 @@ func CmdCreate(args []string) int {
 	p, err := mustPaths()
 	if err != nil {
 		return fatalf("%v", err)
+	}
+	if spec == "" {
+		spec, err = resolveDefaultImage(p)
+		if err != nil {
+			return fatalf("%v", err)
+		}
 	}
 	supports9p := true
 	if runtime.GOOS == "windows" {
@@ -313,21 +341,31 @@ func CmdCreate(args []string) int {
 	if err := c.Post("/v1/vms", body, &out); err != nil {
 		return fatalf("create: %v", err)
 	}
-	fmt.Printf("[2/5] disk+seed: overlay + cloud-init (done in %.1fs)\n", time.Since(start).Seconds())
-	fmt.Printf("[3/5] cluster: ip=%s via gateway\n", out.Spec.IP)
-	fmt.Printf("created %s (user=%s ip=%s)\n", out.Spec.Name, out.Spec.User, out.Spec.IP)
+	pw := progressWriter()
+	fmt.Fprintf(pw, "[2/5] disk+seed: overlay + cloud-init (done in %.1fs)\n", time.Since(start).Seconds())
+	fmt.Fprintf(pw, "[3/5] cluster: ip=%s via gateway\n", out.Spec.IP)
+	fmt.Fprintf(pw, "created %s (user=%s ip=%s)\n", out.Spec.Name, out.Spec.User, out.Spec.IP)
 	if *noStart {
+		if jsonOutput {
+			return failErr(writeJSONOut(map[string]any{"status": "completed", "data": out}))
+		}
 		fmt.Println("not started (--no-start)")
 		return 0
 	}
-	fmt.Println("[4/5] boot: qemu started; waiting for provisioning and agent")
+	fmt.Fprintln(pw, "[4/5] boot: qemu started; waiting for provisioning and agent")
 	if *noWait {
+		if jsonOutput {
+			return failErr(writeJSONOut(map[string]any{"status": "accepted", "data": map[string]any{"vm": *name, "next_action": "pvm job ls --vm " + *name}}))
+		}
 		fmt.Printf("provisioning in background; watch: pvm logs %s --follow\n", *name)
 		return 0
 	}
-	fmt.Printf("[5/5] provision: following (ctrl-c to detach; vm keeps provisioning)\n")
+	fmt.Fprintln(pw, "[5/5] provision: following (ctrl-c to detach; vm keeps provisioning)")
 	if rc := followProvision(c, *name, provisionFollowTimeout); rc != 0 {
 		return rc
+	}
+	if jsonOutput {
+		return failErr(writeJSONOut(map[string]any{"status": "completed", "data": map[string]any{"vm": *name, "ready": true, "ip": out.Spec.IP}}))
 	}
 	fmt.Printf("ready in %.0fs; ssh: pvm ssh %s\n", time.Since(start).Seconds(), *name)
 	return 0
@@ -375,6 +413,7 @@ func promptUsername() string {
 }
 
 func CmdList(args []string) int {
+	args = scanJSONFlag(args)
 	p, err := mustPaths()
 	if err != nil {
 		return fatalf("%v", err)
@@ -386,6 +425,12 @@ func CmdList(args []string) int {
 	var infos []vmInfoView
 	if err := c.Get("/v1/vms", &infos); err != nil {
 		return fatalf("%v", err)
+	}
+	if jsonOutput {
+		if infos == nil {
+			infos = []vmInfoView{}
+		}
+		return failErr(writeJSONOut(map[string]any{"status": "completed", "data": infos}))
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	fmt.Fprintln(tw, "NAME\tIMAGE\tROLE\tSTATUS\tIP\tCPU\tMEM\tUSER\tUPTIME")
@@ -551,7 +596,11 @@ func CmdRm(args []string) int {
 }
 
 func CmdSSH(args []string) int {
-	fs := newFlagSet("ssh", "[-t|--tty] [-T|--no-tty] <name> [command...]")
+	forceDefault := false
+	if len(args) > 0 && args[0] == "--" {
+		forceDefault, args = true, args[1:]
+	}
+	fs := newFlagSet("ssh", "[-t|--tty] [-T|--no-tty] [<name>] [command...]")
 	var forceTTY, disableTTY bool
 	fs.BoolVar(&forceTTY, "t", false, "force a pseudo-terminal")
 	fs.BoolVar(&forceTTY, "tty", false, "force a pseudo-terminal")
@@ -564,9 +613,6 @@ func CmdSSH(args []string) int {
 		return fatalf("-t and -T are mutually exclusive")
 	}
 	args = fs.Args()
-	if len(args) < 1 {
-		return fatalf("usage: pvm ssh [-t|-T] <name> [command...]")
-	}
 	p, err := mustPaths()
 	if err != nil {
 		return fatalf("%v", err)
@@ -575,22 +621,31 @@ func CmdSSH(args []string) int {
 	if err != nil {
 		return fatalf("%v", err)
 	}
-	var info vmInfoView
-	if err := c.Get("/v1/vms/"+args[0], &info); err != nil {
+	var name string
+	var restArgs []string
+	if forceDefault {
+		name, err = resolveVMName(p, "", false)
+		restArgs = args
+	} else {
+		name, restArgs, err = resolveVMNameFromArgs(p, args)
+	}
+	if err != nil {
 		return fatalf("%v", err)
 	}
-	if !info.Running {
-		return fatalf("vm %s is not running; `pvm start %s`", info.Spec.Name, info.Spec.Name)
+	infop, err := offerStartVM(c, name, false)
+	if err != nil {
+		return fatalf("%v", err)
 	}
+	info := *infop
 
 	sshArgs, target := vmSSHArgs(p, &info)
-	tty := !disableTTY && (forceTTY || sshWantsTTY(args[1:], stdinIsTTY(), isTTY(os.Stdout)))
+	tty := !disableTTY && (forceTTY || sshWantsTTY(restArgs, stdinIsTTY(), isTTY(os.Stdout)))
 	if tty {
 		sshArgs = append(sshArgs, "-tt")
 	}
 	sshArgs = append(sshArgs, target)
-	if len(args) > 1 {
-		sshArgs = append(sshArgs, sshLoginCommand(args[1:], tty))
+	if len(restArgs) > 0 {
+		sshArgs = append(sshArgs, sshLoginCommand(restArgs, tty))
 	}
 
 	cmd := exec.Command("ssh", sshArgs...)
@@ -605,13 +660,13 @@ func CmdSSH(args []string) int {
 		if isSSHConnFailure(err, errBuf.String()) {
 			fmt.Fprintf(os.Stderr, "ssh unreachable (%s), using agent channel\n", firstLine(errBuf.String()))
 			var execArgs []string
-			if len(args) > 1 {
+			if len(restArgs) > 0 {
 				// The agent channel execs argv directly without a shell;
 				// wrap like ssh does so compound commands keep working.
-				execArgs = []string{args[0], "sh", "-c", strings.Join(args[1:], " ")}
+				execArgs = []string{name, "sh", "-c", strings.Join(restArgs, " ")}
 			} else {
 				fmt.Fprintln(os.Stderr, "note: agent channel has no TTY; starting a line-based bash")
-				execArgs = []string{args[0], "bash", "-l"}
+				execArgs = []string{name, "bash", "-l"}
 			}
 			return CmdExec(execArgs)
 		}

@@ -19,7 +19,10 @@ import (
 )
 
 func CmdExitAgent(args []string) int {
-	fs := newFlagSet("exit-agent", "--token <tok> [--listen :18443] [--transport both|udp|tcp]")
+	if len(args) > 0 && (args[0] == "install" || args[0] == "uninstall") {
+		return cmdExitAgentService(args[0], args[1:])
+	}
+	fs := newFlagSet("exit-agent", "install|uninstall | --token <tok> [--listen :18443] [--transport both|udp|tcp]")
 	listen := fs.String("listen", ":18443", "control plane TLS listen address")
 	token := fs.String("token", "", "bearer token (prefer --token-file to avoid process arguments)")
 	tokenFile := fs.String("token-file", "", "private file containing the control token")
@@ -100,6 +103,10 @@ func CmdExit(args []string) int {
 	case "set":
 		return exitSet(args[1:])
 	case "ls", "list":
+		args = scanJSONFlag(args[1:])
+		if len(args) != 0 {
+			return 2
+		}
 		return exitLs()
 	case "rm", "del":
 		return exitRm(args[1:])

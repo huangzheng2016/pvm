@@ -22,9 +22,11 @@ type routeListView struct {
 	Rules       []ruleView        `json:"rules"`
 	VMExits     map[string]string `json:"vm_exits"`
 	DefaultExit string            `json:"default_exit"`
+	Paused      map[string]bool   `json:"paused"`
 }
 
 func CmdRoute(args []string) int {
+	args = scanJSONFlag(args)
 	if len(args) > 0 && args[0] == "explain" {
 		return cmdRouteExplain(args[1:])
 	}
@@ -44,6 +46,9 @@ func CmdRoute(args []string) int {
 		var v routeListView
 		if err := c.Get("/v1/routes", &v); err != nil {
 			return fatalf("%v", err)
+		}
+		if jsonOutput {
+			return failErr(writeJSONOut(map[string]any{"status": "completed", "data": v}))
 		}
 		tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 		fmt.Fprintln(tw, "INDEX\tTYPE\tPATTERN\tACTION\tVIA")
@@ -69,7 +74,46 @@ func CmdRoute(args []string) int {
 			def = "direct"
 		}
 		fmt.Fprintf(tw, "\tcluster-default\t*\troute\t%s\n", def)
+		for target := range v.Paused {
+			fmt.Fprintf(tw, "\tpaused\t%s\tegress\tblocked\n", target)
+		}
 		tw.Flush()
+		return 0
+	case "pause", "resume":
+		if len(args) > 2 {
+			return fatalf("usage: pvm route %s [vm]", args[0])
+		}
+		body := map[string]string{}
+		if len(args) == 2 {
+			body["vm"] = args[1]
+		}
+		var out map[string]any
+		if err := c.Post("/v1/routes/"+args[0], body, &out); err != nil {
+			return fatalf("%v", err)
+		}
+		if jsonOutput {
+			return failErr(writeJSONOut(map[string]any{"status": "completed", "data": out}))
+		}
+		fmt.Printf("%s external egress for %v (SSH, mounts and host port maps stay up)\n", map[string]string{"pause": "paused", "resume": "resumed"}[args[0]], out["target"])
+		return 0
+	case "require-check":
+		fs := flag.NewFlagSet("route require-check", flag.ContinueOnError)
+		off := fs.Bool("off", false, "disable the admission gate")
+		if err := fs.Parse(partitionFlags(args[1:])); err != nil || fs.NArg() != 1 {
+			return fatalf("usage: pvm route require-check <vm> [--off]")
+		}
+		path := "/v1/vms/" + fs.Arg(0) + "/require-check"
+		if *off {
+			path += "?off=1"
+		}
+		var out map[string]any
+		if err := c.Post(path, nil, &out); err != nil {
+			return fatalf("%v", err)
+		}
+		if jsonOutput {
+			return failErr(writeJSONOut(map[string]any{"status": "completed", "data": out}))
+		}
+		fmt.Printf("require-check for %s: %v\n", fs.Arg(0), out["require_check"])
 		return 0
 	case "add":
 		return routeAdd(c, args[1:])

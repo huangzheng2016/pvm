@@ -85,7 +85,7 @@ func (p *fakeProxy) SetPolicy(eng *gwpolicy.Engine) {
 	var kill []*trackedConn
 	for tc := range p.conns {
 		dec := eng.DecideFlow(tc.domain, nil, tc.vm)
-		if dec.Route != tc.route || dec.Exit != tc.exit {
+		if dec.Route != tc.route || dec.Exit != tc.exit || eng.IsPaused(tc.vm) {
 			kill = append(kill, tc)
 		}
 	}
@@ -277,6 +277,10 @@ func (p *fakeProxy) dialDirect(src *net.TCPConn, domain string, port int, vmName
 		log.Printf("fakeproxy: reserved probe has no direct target")
 		return
 	}
+	if p.curPolicy().IsPaused(vmName) {
+		log.Printf("fakeproxy: %s egress is paused; refusing %s", vmName, domain)
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	ips, err := p.resolver.LookupIP(ctx, "ip4", domain)
 	cancel()
@@ -303,6 +307,10 @@ func (p *fakeProxy) dialDirect(src *net.TCPConn, domain string, port int, vmName
 }
 
 func (p *fakeProxy) dialProxy(src *net.TCPConn, domain string, port int, exitName string, vmName string) {
+	if p.curPolicy().IsPaused(vmName) {
+		log.Printf("fakeproxy: %s egress is paused; refusing %s", vmName, domain)
+		return
+	}
 	markFor, dcAddrFor, dnsAddrFor := p.exitHooks()
 	mark := markFor(exitName)
 	if mark < 0 {

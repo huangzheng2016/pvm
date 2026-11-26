@@ -17,9 +17,11 @@ type mapView struct {
 	PoolPort  int    `json:"pool_port"`
 	GuestPort int    `json:"guest_port"`
 	Proto     string `json:"proto"`
+	Transport string `json:"transport,omitempty"`
 }
 
 func CmdMap(args []string) int {
+	args = scanJSONFlag(args)
 	const usage = "<vm> <hostPort>:<guestPort> [--udp] | ls | rm <port> [--udp]"
 	fs := newFlagSet("map", usage)
 	udp := fs.Bool("udp", false, "map UDP instead of TCP")
@@ -57,6 +59,12 @@ func CmdMap(args []string) int {
 		var maps []mapView
 		if err := c.Get("/v1/maps", &maps); err != nil {
 			return fatalf("%v", err)
+		}
+		if jsonOutput {
+			if maps == nil {
+				maps = []mapView{}
+			}
+			return failErr(writeJSONOut(map[string]any{"status": "completed", "data": maps}))
 		}
 		tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 		fmt.Fprintln(tw, "VM\tPROTO\tHOST\tGUEST")
